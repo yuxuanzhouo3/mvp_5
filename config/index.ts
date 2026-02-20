@@ -7,10 +7,10 @@ export const IS_DOMESTIC_VERSION = DEFAULT_LANGUAGE === "zh";
 
 // 应用配置
 export const APP_CONFIG = {
-  name: "MornGPT",
+  name: "MornStudio",
   description: IS_DOMESTIC_VERSION
-    ? "全能AI内容生成平台"
-    : "All-in-One AI Content Generation Platform",
+    ? "多媒体生成、编辑与检测一体化平台"
+    : "Unified platform for multimedia generation, editing and AI detection",
   url: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
 };
 
