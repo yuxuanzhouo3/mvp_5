@@ -70,16 +70,16 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
         };
 
   return (
-    <section className="rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-5 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+    <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-5 h-full flex flex-col">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+        <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-gray-100">
           {resultTitle}
         </h2>
-        <div className="inline-flex items-center rounded-lg p-1 bg-gray-100 dark:bg-gray-800">
+        <div className="inline-flex items-center rounded-lg p-1 bg-gray-100 dark:bg-gray-800 w-full sm:w-fit">
           <button
             type="button"
             onClick={() => setActiveResultCategory("generate")}
-            className={`h-7 px-3 rounded-md text-xs font-semibold transition-colors ${
+            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors flex-1 sm:flex-none ${
               activeResultCategory === "generate"
                 ? "bg-blue-600 text-white"
                 : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -90,7 +90,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
           <button
             type="button"
             onClick={() => setActiveResultCategory("detect")}
-            className={`h-7 px-3 rounded-md text-xs font-semibold transition-colors ${
+            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors flex-1 sm:flex-none ${
               activeResultCategory === "detect"
                 ? "bg-blue-600 text-white"
                 : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -101,7 +101,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
         </div>
       </div>
       {filteredGenerations.length === 0 ? (
-        <div className="flex-1 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 flex items-center justify-center bg-gray-50/60 dark:bg-[#111827]/30">
+        <div className="flex-1 min-h-[260px] rounded-xl border border-dashed border-gray-200 dark:border-gray-700 flex items-center justify-center bg-gray-50/60 dark:bg-[#111827]/30">
           <p className="text-sm text-gray-500 dark:text-gray-400">{emptyText}</p>
         </div>
       ) : (

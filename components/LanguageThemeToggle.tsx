@@ -27,7 +27,7 @@ const LanguageThemeToggle: React.FC<LanguageThemeToggleProps> = ({
   switchToDark,
 }) => {
   return (
-    <div className="flex items-center gap-1 bg-gray-100 dark:bg-[#565869]/50 rounded-md p-1">
+    <div className="h-8 flex items-center gap-0.5 bg-gray-100 dark:bg-[#565869]/50 rounded-md p-0.5">
       <button
         type="button"
         onClick={() =>
@@ -90,4 +90,3 @@ const LanguageThemeToggle: React.FC<LanguageThemeToggleProps> = ({
 };
 
 export default LanguageThemeToggle;
-

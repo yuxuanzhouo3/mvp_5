@@ -132,9 +132,9 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   };
 
   return (
-    <section className="rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-6 h-full flex flex-col gap-5">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+    <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-6 h-full flex flex-col gap-4 sm:gap-5">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100">
           {operationsTitle}
         </h2>
         <select
@@ -142,7 +142,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
           onChange={(event) =>
             setSettings({ ...settings, model: event.target.value })
           }
-          className="h-9 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 text-sm px-3 text-gray-700 dark:text-gray-200"
+          className="h-10 sm:h-9 w-full sm:w-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 text-sm px-3 text-gray-700 dark:text-gray-200"
         >
           {Object.entries(availableModels).map(([key, model]) => (
             <option key={key} value={key}>
@@ -152,11 +152,11 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         </select>
       </div>
 
-      <div className="inline-flex items-center rounded-xl p-1 bg-gray-100 dark:bg-gray-800 w-fit">
+      <div className="flex items-center rounded-xl p-1 bg-gray-100 dark:bg-gray-800 w-full sm:w-fit">
         <button
           type="button"
           onClick={() => handleCategorySwitch("generate")}
-          className={`h-9 px-4 rounded-lg text-sm font-semibold transition-colors ${
+          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
             activeCategory === "generate"
               ? "bg-blue-600 text-white shadow-sm"
               : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -167,7 +167,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         <button
           type="button"
           onClick={() => handleCategorySwitch("detect")}
-          className={`h-9 px-4 rounded-lg text-sm font-semibold transition-colors ${
+          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
             activeCategory === "detect"
               ? "bg-blue-600 text-white shadow-sm"
               : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -177,13 +177,13 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         </button>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
         {visibleContentTypes.map(([key, type]) => (
           <button
             key={key}
             type="button"
             onClick={() => setActiveTab(key)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+            className={`px-3 sm:px-4 py-2.5 sm:py-2 rounded-xl text-sm font-medium transition-colors w-full sm:w-auto ${
               activeTab === key
                 ? "bg-blue-600 text-white"
                 : "bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -195,7 +195,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
       </div>
 
       {isDetectMode ? (
-        <div className="w-full h-44 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-dashed border-blue-300 dark:border-blue-700 bg-blue-50/30 dark:bg-blue-950/10 p-6 flex flex-col items-center justify-center text-center gap-3">
+        <div className="w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-dashed border-blue-300 dark:border-blue-700 bg-blue-50/30 dark:bg-blue-950/10 p-4 sm:p-6 flex flex-col items-center justify-center text-center gap-3">
           <input
             ref={fileInputRef}
             type="file"
@@ -219,13 +219,13 @@ const AIOperations: React.FC<AIOperationsProps> = ({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="h-9 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+            className="h-10 sm:h-9 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
           >
             {currentLanguage === "zh" ? "选择文件" : "Choose File"}
           </button>
           {selectedFile && (
             <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200">
-              <span className="max-w-[260px] truncate">{selectedFile.name}</span>
+              <span className="max-w-[180px] sm:max-w-[260px] truncate">{selectedFile.name}</span>
               <button
                 type="button"
                 className="text-red-500 hover:text-red-600"
@@ -248,7 +248,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder={currentType?.placeholder}
-            className="w-full h-44 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 p-4 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+            className="w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 p-4 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/40"
           />
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -295,7 +295,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         type="button"
         onClick={onGenerate}
         disabled={isGenerating || (isDetectMode ? !selectedFile : prompt.trim().length === 0)}
-        className="w-full h-11 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-semibold transition-colors"
+        className="w-full h-12 sm:h-11 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-semibold transition-colors"
       >
         {isGenerating
           ? isDetectMode

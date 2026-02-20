@@ -301,17 +301,17 @@ const AIGeneratorPlatform: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-blue-50/50 dark:from-[#0f1115] dark:via-[#111827] dark:to-[#0f172a]">
-      <div className="max-w-7xl mx-auto w-full px-4 py-6 min-h-screen flex flex-col gap-6">
-        <header className="relative z-30 overflow-visible rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-[#1f2937]/70 backdrop-blur shadow-sm px-5 py-4">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent">
+      <div className="max-w-[1680px] mx-auto w-full px-3 sm:px-4 py-4 sm:py-6 min-h-screen flex flex-col gap-4 sm:gap-6">
+        <header className="relative z-30 overflow-visible rounded-xl sm:rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-[#1f2937]/70 backdrop-blur shadow-sm px-3 sm:px-5 py-3 sm:py-4">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-[1.45rem] leading-tight sm:text-[1.9rem] lg:text-3xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent truncate">
                   {text.appName}
                 </h1>
                 <div
                   ref={tierQuotaRef}
-                  className="relative"
+                  className="relative shrink-0"
                   onMouseEnter={() => setShowTierQuota(true)}
                   onMouseLeave={() => setShowTierQuota(false)}
                 >
@@ -323,7 +323,7 @@ const AIGeneratorPlatform: React.FC = () => {
                     {tierLabel}
                   </Badge>
                   {showTierQuota && (
-                    <div className="absolute left-0 top-full mt-2 w-64 rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-[#1f2937]/95 backdrop-blur p-3 shadow-2xl z-40 space-y-2">
+                    <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+4.75rem)] max-h-[70vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-[#1f2937]/95 backdrop-blur p-3 shadow-2xl z-[70] space-y-2 sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-2 sm:w-64 sm:max-h-[calc(100vh-9rem)]">
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-semibold text-gray-900 dark:text-gray-100">{tierLabel}</span>
                         <span className="text-gray-600 dark:text-gray-300">
@@ -380,7 +380,7 @@ const AIGeneratorPlatform: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 self-end md:self-auto">
+            <div className="ml-auto flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
               <LanguageThemeToggle
                 currentLanguage={currentLanguage}
                 setCurrentLanguage={setCurrentLanguage}
@@ -392,26 +392,36 @@ const AIGeneratorPlatform: React.FC = () => {
                 switchToDark={text.switchToDark}
               />
 
-              {user && (
-                <button
-                  type="button"
-                  onClick={() => setShowSubscriptionDialog(true)}
-                  className="flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white border border-blue-600 h-8 w-8 sm:w-auto rounded-md px-0 sm:px-2 transition-colors"
-                  title={text.upgradeTip}
+              <button
+                type="button"
+                onClick={() => setShowSubscriptionDialog(true)}
+                className="flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white border border-blue-600 h-8 w-8 sm:h-8 sm:w-auto rounded-md px-0 sm:px-2 transition-colors"
+                title={text.upgradeTip}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5 sm:mr-1"
+                  aria-hidden="true"
                 >
-                  <span className="text-sm sm:mr-1">👑</span>
-                  <span className="hidden sm:inline text-xs font-medium">
-                    {text.subscribeButton}
-                  </span>
-                </button>
-              )}
+                  <path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
+                  <path d="M5 21h14" />
+                </svg>
+                <span className="hidden sm:inline text-xs font-medium">
+                  {text.subscribeButton}
+                </span>
+              </button>
 
               {user ? (
                 <div className="relative" ref={userMenuRef}>
                   <button
                     type="button"
                     onClick={() => setShowUserMenu((previous) => !previous)}
-                    className="h-8 bg-white dark:bg-[#40414f] text-gray-900 dark:text-[#ececf1] border border-gray-300 dark:border-[#565869] hover:bg-gray-50 dark:hover:bg-[#565869] rounded-md px-2 text-xs flex items-center gap-1 min-w-[80px] sm:min-w-[110px]"
+                    className="h-8 bg-white dark:bg-[#40414f] text-gray-900 dark:text-[#ececf1] border border-gray-300 dark:border-[#565869] hover:bg-gray-50 dark:hover:bg-[#565869] rounded-md px-2 text-xs flex items-center gap-1 min-w-[84px] sm:min-w-[110px]"
                   >
                     <span className="truncate">{user.name}</span>
                     <span className="text-[10px]">▾</span>
@@ -441,9 +451,22 @@ const AIGeneratorPlatform: React.FC = () => {
               ) : (
                 <Link
                   href="/auth/login"
-                  className="h-9 text-sm font-medium bg-white dark:bg-[#40414f] text-gray-900 dark:text-[#ececf1] border border-gray-300 dark:border-[#565869] hover:bg-gray-50 dark:hover:bg-[#565869] rounded-md px-3 flex items-center"
+                  className="h-8 text-[11px] sm:text-xs font-medium bg-white dark:bg-[#40414f] text-gray-900 dark:text-[#ececf1] border border-gray-300 dark:border-[#565869] hover:bg-gray-50 dark:hover:bg-[#565869] rounded-md px-2.5 sm:px-3 flex items-center"
                 >
-                  <span className="mr-1">↪</span>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="mr-1 h-3.5 w-3.5 hidden sm:inline"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
+                    <path d="M16 17l5-5-5-5" />
+                    <path d="M21 12H9" />
+                  </svg>
                   {text.loginButton}
                 </Link>
               )}
@@ -451,7 +474,7 @@ const AIGeneratorPlatform: React.FC = () => {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 min-h-0">
+        <main className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 flex-1 min-h-0">
           <div className="lg:col-span-2 min-h-0">
             <AIOperations
               activeTab={activeTab}
