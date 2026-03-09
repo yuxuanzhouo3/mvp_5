@@ -1,14 +1,30 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import AIOperations from "./AIOperations";
-import OperationsDashboard, { type GenerationItem } from "./OperationsDashboard";
+import OperationsDashboard, {
+  type ResultCategory,
+  type ResultFolder,
+} from "./OperationsDashboard";
 import LanguageThemeToggle from "./LanguageThemeToggle";
 import AuthSystem, { type AuthFormState, type AuthMode } from "./AuthSystem";
 import PaymentSystem, { type BillingPeriod, type PlanKey } from "./PaymentSystem";
 import { Badge } from "./ui/badge";
 import { useLanguage } from "@/context/LanguageContext";
+import {
+  getDefaultModelIdForTab,
+  getGenerationModelLabel,
+  getGenerationModelOptions,
+  getGenerationUnavailableMessage,
+  isConnectedGenerationTab,
+  type GenerationItem,
+  type GenerationTab,
+} from "@/lib/ai-generation";
+import {
+  DOCUMENT_FILE_FORMATS,
+  type DocumentFileFormat,
+} from "@/lib/document-formats";
 import { getUIText } from "@/lib/ui-text";
 
 type UserPlan = "free" | PlanKey;
@@ -59,6 +75,26 @@ const quotaByPlan: Record<UserPlan, QuotaPreset> = {
   },
 };
 
+function getResultCategoryByTab(tab: string): ResultCategory {
+  return tab.startsWith("detect_") ? "detect" : "generate";
+}
+
+function getResultFolderByTab(tab: string): ResultFolder {
+  if (tab.endsWith("image")) {
+    return "image";
+  }
+
+  if (tab.endsWith("audio")) {
+    return "audio";
+  }
+
+  if (tab.endsWith("video")) {
+    return "video";
+  }
+
+  return "text";
+}
+
 const AIGeneratorPlatform: React.FC = () => {
   const { currentLanguage, setCurrentLanguage, isDomesticVersion } =
     useLanguage();
@@ -69,11 +105,8 @@ const AIGeneratorPlatform: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generations, setGenerations] = useState<GenerationItem[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [settings, setSettings] = useState({
-    temperature: 0.7,
-    maxTokens: 1000,
-    model: "auto",
-  });
+  const [model, setModel] = useState("auto");
+  const [selectedDocumentFormats, setSelectedDocumentFormats] = useState<DocumentFileFormat[]>(["docx"]);
   const [user, setUser] = useState<DashboardUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authForm, setAuthForm] = useState<AuthFormState>({
@@ -89,6 +122,11 @@ const AIGeneratorPlatform: React.FC = () => {
   const [showSubscriptionDialog, setShowSubscriptionDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showTierQuota, setShowTierQuota] = useState(false);
+  const [targetResultView, setTargetResultView] = useState<{
+    category: ResultCategory;
+    folder: ResultFolder;
+    key: number;
+  } | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const tierQuotaRef = useRef<HTMLDivElement | null>(null);
 
@@ -138,24 +176,165 @@ const AIGeneratorPlatform: React.FC = () => {
     return date.toISOString();
   };
 
-  const handleGenerate = () => {
-    if (!prompt.trim()) {
+  useEffect(() => {
+    const availableKeys = new Set(
+      isConnectedGenerationTab(activeTab)
+        ? Object.keys(getGenerationModelOptions(activeTab, currentLanguage))
+        : ["auto"],
+    );
+
+    if (!availableKeys.has(model)) {
+      setModel("auto");
+    }
+  }, [activeTab, currentLanguage, model]);
+
+  const generationDisabledReason = useMemo(
+    () =>
+      isConnectedGenerationTab(activeTab)
+        ? getGenerationUnavailableMessage(activeTab, currentLanguage)
+        : null,
+    [activeTab, currentLanguage],
+  );
+
+  const handleToggleDocumentFormat = (format: DocumentFileFormat) => {
+    setSelectedDocumentFormats((previous) =>
+      previous.includes(format)
+        ? previous.filter((item) => item !== format)
+        : [...previous, format],
+    );
+  };
+
+  const handleSelectAllDocumentFormats = () => {
+    setSelectedDocumentFormats([...DOCUMENT_FILE_FORMATS]);
+  };
+
+  const handleClearAllDocumentFormats = () => {
+    setSelectedDocumentFormats([]);
+  };
+
+  const handleGenerate = async () => {
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt) {
+      return;
+    }
+
+    if (activeTab === "text" && selectedDocumentFormats.length === 0) {
+      return;
+    }
+
+    setTargetResultView({
+      category: getResultCategoryByTab(activeTab),
+      folder: getResultFolderByTab(activeTab),
+      key: Date.now(),
+    });
+
+    if (isConnectedGenerationTab(activeTab) && generationDisabledReason) {
+      const modelId =
+        model === "auto"
+          ? getDefaultModelIdForTab(activeTab as GenerationTab)
+          : model;
+
+      setGenerations((previous) => [
+        {
+          id: `err_${Date.now()}`,
+          type: activeTab as GenerationTab,
+          prompt: trimmedPrompt,
+          modelId,
+          modelLabel: getGenerationModelLabel(modelId),
+          provider: "system",
+          status: "error",
+          summary: currentLanguage === "zh" ? "生成失败" : "Generation failed",
+          errorMessage: generationDisabledReason,
+          createdAt: new Date().toISOString(),
+        },
+        ...previous,
+      ]);
       return;
     }
 
     setIsGenerating(true);
-    window.setTimeout(() => {
+
+    if (!isConnectedGenerationTab(activeTab)) {
+      window.setTimeout(() => {
+        setGenerations((previous) => [
+          {
+            id: `demo_${Date.now()}`,
+            type: activeTab as GenerationTab,
+            prompt: trimmedPrompt,
+            modelId: "ui-demo",
+            modelLabel: currentLanguage === "zh" ? "演示模式" : "UI Demo",
+            provider: "demo",
+            status: "success",
+            summary:
+              currentLanguage === "zh"
+                ? "当前类型仍为 UI 演示，尚未接入后端模型。"
+                : "This category is still UI-only and not connected to a backend model yet.",
+            createdAt: new Date().toISOString(),
+          },
+          ...previous,
+        ]);
+        setIsGenerating(false);
+        setPrompt("");
+      }, 400);
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          type: activeTab,
+          prompt: trimmedPrompt,
+          model,
+          formats: activeTab === "text" ? selectedDocumentFormats : undefined,
+        }),
+      });
+
+      const payload = (await response.json()) as GenerationItem | { message?: string };
+      if (!response.ok) {
+        throw new Error(
+          "message" in payload && typeof payload.message === "string"
+            ? payload.message
+            : currentLanguage === "zh"
+              ? `请求失败（HTTP ${response.status}）`
+              : `Request failed (HTTP ${response.status})`,
+        );
+      }
+
+      setGenerations((previous) => [payload as GenerationItem, ...previous]);
+      setPrompt("");
+    } catch (error) {
+      const modelId =
+        model === "auto"
+          ? getDefaultModelIdForTab(activeTab as GenerationTab)
+          : model;
+
       setGenerations((previous) => [
         {
-          id: `gen_${Date.now()}`,
-          type: activeTab,
-          prompt,
+          id: `err_${Date.now()}`,
+          type: activeTab as GenerationTab,
+          prompt: trimmedPrompt,
+          modelId,
+          modelLabel: getGenerationModelLabel(modelId),
+          provider: "system",
+          status: "error",
+          summary: currentLanguage === "zh" ? "生成失败" : "Generation failed",
+          errorMessage:
+            error instanceof Error
+              ? error.message
+              : currentLanguage === "zh"
+                ? "请求失败，请稍后重试。"
+                : "Request failed. Please try again later.",
+          createdAt: new Date().toISOString(),
         },
         ...previous,
       ]);
+    } finally {
       setIsGenerating(false);
-      setPrompt("");
-    }, 700);
+    }
   };
 
   const handleAuthSubmit = () => {
@@ -165,7 +344,7 @@ const AIGeneratorPlatform: React.FC = () => {
     }
 
     const fallbackName =
-      authForm.email.split("@")[0] || (currentLanguage === "zh" ? "用户" : "User");
+      authForm.email.split("@")[0] || (currentLanguage === "zh" ? "鐢ㄦ埛" : "User");
     const nextUser: DashboardUser = {
       name: authForm.name || fallbackName,
       email: authForm.email || "demo@mornstudio.ai",
@@ -202,23 +381,17 @@ const AIGeneratorPlatform: React.FC = () => {
     setShowSubscriptionDialog(false);
   };
 
-  const availableModels = useMemo(
-    () => ({
+  const availableModels = useMemo<Record<string, { name: string }>>(() => {
+    if (isConnectedGenerationTab(activeTab)) {
+      return getGenerationModelOptions(activeTab, currentLanguage);
+    }
+
+    return {
       auto: {
-        name: "Auto",
+        name: currentLanguage === "zh" ? "演示模式" : "Demo Mode",
       },
-      "gpt-4.1": {
-        name: "GPT-4.1",
-      },
-      "deepseek-r1": {
-        name: "DeepSeek-R1",
-      },
-      "qwen2.5-vl": {
-        name: "Qwen2.5-VL",
-      },
-    }),
-    [],
-  );
+    };
+  }, [activeTab, currentLanguage]);
 
   const contentTypes = useMemo(
     () => ({
@@ -237,7 +410,10 @@ const AIGeneratorPlatform: React.FC = () => {
       audio: {
         label: currentLanguage === "zh" ? "音频" : "Audio",
         icon: "🎵",
-        placeholder: text.promptPlaceholderAudio,
+        placeholder:
+          currentLanguage === "zh"
+            ? "输入一句话生成音频，例如：舒缓钢琴、赛博鼓点、电影预告配乐"
+            : "Describe the audio you want, for example: calm piano, cyberpunk beat, cinematic trailer music",
         category: "generate" as const,
       },
       video: {
@@ -356,11 +532,11 @@ const AIGeneratorPlatform: React.FC = () => {
 
                       <div className="pt-2 border-t border-dashed border-gray-200 dark:border-gray-700 space-y-1 text-xs">
                         <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
-                          <span>{addonText} {currentLanguage === "zh" ? "图片" : "Images"}</span>
+                          <span>{addonText} {currentLanguage === "zh" ? "鍥剧墖" : "Images"}</span>
                           <span className="font-semibold text-gray-900 dark:text-gray-100">{quota.addonImage}</span>
                         </div>
                         <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
-                          <span>{addonText} {currentLanguage === "zh" ? "视频/音频" : "Video/Audio"}</span>
+                          <span>{addonText} {currentLanguage === "zh" ? "瑙嗛/闊抽" : "Video/Audio"}</span>
                           <span className="font-semibold text-gray-900 dark:text-gray-100">{quota.addonVideo}</span>
                         </div>
                       </div>
@@ -371,7 +547,7 @@ const AIGeneratorPlatform: React.FC = () => {
                             ? `${text.expiresAt}: ${new Date(user.planExp).toLocaleDateString()}`
                             : text.activeSubscription
                           : currentLanguage === "zh"
-                            ? "访客模式（演示）"
+                            ? "璁垮妯″紡锛堟紨绀猴級"
                             : "Guest mode (demo)"}
                       </p>
                     </div>
@@ -474,32 +650,36 @@ const AIGeneratorPlatform: React.FC = () => {
           </div>
         </header>
 
-        <main className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 flex-1 min-h-0">
-          <div className="lg:col-span-2 min-h-0">
+        <main className="grid grid-cols-1 lg:grid-cols-3 lg:items-start gap-4 sm:gap-6 flex-1 min-h-0">
+          <div className="lg:col-span-2 min-h-0 lg:h-[85vh] lg:max-h-[85vh]">
             <AIOperations
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               prompt={prompt}
               setPrompt={setPrompt}
               isGenerating={isGenerating}
-              settings={settings}
-              setSettings={setSettings}
+              model={model}
+              onModelChange={setModel}
               availableModels={availableModels}
               contentTypes={contentTypes}
               currentLanguage={currentLanguage}
               operationsTitle={text.operationsTitle}
-              temperatureLabel={text.temperature}
-              maxTokensLabel={text.maxTokens}
               generateText={text.generate}
               generatingText={text.generating}
+              selectedDocumentFormats={selectedDocumentFormats}
+              onToggleDocumentFormat={handleToggleDocumentFormat}
+              onSelectAllDocumentFormats={handleSelectAllDocumentFormats}
+              onClearAllDocumentFormats={handleClearAllDocumentFormats}
               onGenerate={handleGenerate}
+              generationDisabledReason={generationDisabledReason}
             />
           </div>
 
-          <div className="lg:col-span-1 min-h-0">
+          <div className="lg:col-span-1 min-h-0 lg:h-[85vh] lg:max-h-[85vh]">
             <OperationsDashboard
               generations={generations}
               currentLanguage={currentLanguage}
+              targetResultView={targetResultView}
             />
           </div>
         </main>
@@ -520,7 +700,7 @@ const AIGeneratorPlatform: React.FC = () => {
               className="absolute top-2 right-2 z-10 h-7 w-7 rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-700 dark:text-gray-200 text-sm border border-gray-200 dark:border-gray-700"
               aria-label={text.modalClose}
             >
-              ×
+              脳
             </button>
             <AuthSystem
               currentLanguage={currentLanguage}
@@ -554,7 +734,7 @@ const AIGeneratorPlatform: React.FC = () => {
               className="absolute top-2 right-2 z-10 h-7 w-7 rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-700 dark:text-gray-200 text-sm border border-gray-200 dark:border-gray-700"
               aria-label={text.modalClose}
             >
-              ×
+              脳
             </button>
             <PaymentSystem
               currentLanguage={currentLanguage}
@@ -574,3 +754,10 @@ const AIGeneratorPlatform: React.FC = () => {
 };
 
 export default AIGeneratorPlatform;
+
+
+
+
+
+
+

@@ -1,6 +1,11 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  DOCUMENT_FILE_FORMATS,
+  getDocumentFormatLabel,
+  type DocumentFileFormat,
+} from "@/lib/document-formats";
 
 interface ModelInfo {
   name: string;
@@ -19,25 +24,20 @@ interface AIOperationsProps {
   prompt: string;
   setPrompt: (prompt: string) => void;
   isGenerating: boolean;
-  settings: {
-    temperature: number;
-    maxTokens: number;
-    model: string;
-  };
-  setSettings: (settings: {
-    temperature: number;
-    maxTokens: number;
-    model: string;
-  }) => void;
+  model: string;
+  onModelChange: (model: string) => void;
   availableModels: Record<string, ModelInfo>;
   contentTypes: Record<string, ContentTypeInfo>;
   currentLanguage: "zh" | "en";
   operationsTitle: string;
-  temperatureLabel: string;
-  maxTokensLabel: string;
   generateText: string;
   generatingText: string;
+  selectedDocumentFormats: DocumentFileFormat[];
+  onToggleDocumentFormat: (format: DocumentFileFormat) => void;
+  onSelectAllDocumentFormats: () => void;
+  onClearAllDocumentFormats: () => void;
   onGenerate: () => void;
+  generationDisabledReason?: string | null;
 }
 
 const AIOperations: React.FC<AIOperationsProps> = ({
@@ -46,17 +46,20 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   prompt,
   setPrompt,
   isGenerating,
-  settings,
-  setSettings,
+  model,
+  onModelChange,
   availableModels,
   contentTypes,
   currentLanguage,
   operationsTitle,
-  temperatureLabel,
-  maxTokensLabel,
   generateText,
   generatingText,
+  selectedDocumentFormats,
+  onToggleDocumentFormat,
+  onSelectAllDocumentFormats,
+  onClearAllDocumentFormats,
   onGenerate,
+  generationDisabledReason,
 }) => {
   const currentType = contentTypes[activeTab];
   const [activeCategory, setActiveCategory] = useState<"generate" | "detect">(
@@ -86,6 +89,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
     if (currentType?.category === category) {
       return;
     }
+
     const firstKey = Object.entries(contentTypes).find(
       ([, type]) => type.category === category,
     )?.[0];
@@ -95,17 +99,22 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   };
 
   const isDetectMode = activeCategory === "detect";
+  const isDocumentGeneration = !isDetectMode && activeTab === "text";
+  const areAllDocumentFormatsSelected =
+    selectedDocumentFormats.length === DOCUMENT_FILE_FORMATS.length;
 
   useEffect(() => {
     if (!isDetectMode) {
       return;
     }
+
     setSelectedFile(null);
     setPrompt("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   }, [activeTab, isDetectMode, setPrompt]);
+
   const acceptByTab: Record<string, string> = {
     detect_text: ".txt,.md,.doc,.docx,.pdf",
     detect_image: "image/*",
@@ -113,16 +122,20 @@ const AIOperations: React.FC<AIOperationsProps> = ({
     detect_video: "video/*",
   };
   const currentAccept = acceptByTab[activeTab] || "*/*";
-  const detectButtonText =
-    currentLanguage === "zh" ? "上传并检测" : "Upload & Detect";
-  const detectingText =
-    currentLanguage === "zh" ? "检测中..." : "Detecting...";
+  const detectButtonText = currentLanguage === "zh" ? "上传并检测" : "Upload & Detect";
+  const detectingText = currentLanguage === "zh" ? "检测中..." : "Detecting...";
+  const canGenerate = isDetectMode
+    ? Boolean(selectedFile)
+    : prompt.trim().length > 0 &&
+      (!isDocumentGeneration || selectedDocumentFormats.length > 0) &&
+      !generationDisabledReason;
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
+
     setSelectedFile(file);
     setPrompt(
       currentLanguage === "zh"
@@ -132,16 +145,15 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   };
 
   return (
-    <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-6 h-full flex flex-col gap-4 sm:gap-5">
+    <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-6 h-full min-h-0 overflow-hidden flex flex-col">
+      <div className="min-h-0 flex-1 flex flex-col gap-4 sm:gap-5 overflow-y-auto pr-1">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100">
           {operationsTitle}
         </h2>
         <select
-          value={settings.model}
-          onChange={(event) =>
-            setSettings({ ...settings, model: event.target.value })
-          }
+          value={model}
+          onChange={(event) => onModelChange(event.target.value)}
           className="h-10 sm:h-9 w-full sm:w-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 text-sm px-3 text-gray-700 dark:text-gray-200"
         >
           {Object.entries(availableModels).map(([key, model]) => (
@@ -194,6 +206,65 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         ))}
       </div>
 
+      {isDocumentGeneration && (
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/30 p-3 sm:p-4 space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {currentLanguage === "zh"
+                ? "选择需要生成的文档格式"
+                : "Choose document formats before generating"}
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={onSelectAllDocumentFormats}
+                disabled={areAllDocumentFormatsSelected}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
+              >
+                {currentLanguage === "zh" ? "全选" : "Select all"}
+              </button>
+              <button
+                type="button"
+                onClick={onClearAllDocumentFormats}
+                disabled={selectedDocumentFormats.length === 0}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
+              >
+                {currentLanguage === "zh" ? "取消全选" : "Clear all"}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {DOCUMENT_FILE_FORMATS.map((format) => {
+              const selected = selectedDocumentFormats.includes(format);
+              return (
+                <button
+                  key={format}
+                  type="button"
+                  onClick={() => onToggleDocumentFormat(format)}
+                  className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                    selected
+                      ? "border-blue-600 bg-blue-600 text-white"
+                      : "border-gray-300 bg-white text-gray-700 hover:border-blue-400 hover:text-blue-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
+                  }`}
+                >
+                  {getDocumentFormatLabel(format, currentLanguage)}
+                </button>
+              );
+            })}
+          </div>
+
+          {selectedDocumentFormats.length === 0 && (
+            <p className="text-xs text-red-600 dark:text-red-400">
+              {currentLanguage === "zh"
+                ? "请至少选择一种文档格式。"
+                : "Please select at least one document format."}
+            </p>
+          )}
+        </div>
+      )}
+
       {isDetectMode ? (
         <div className="w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-dashed border-blue-300 dark:border-blue-700 bg-blue-50/30 dark:bg-blue-950/10 p-4 sm:p-6 flex flex-col items-center justify-center text-center gap-3">
           <input
@@ -203,7 +274,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
             className="hidden"
             onChange={handleFileChange}
           />
-          <div className="text-3xl">📁</div>
+          <div className="text-3xl">📤</div>
           <div className="space-y-1">
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
               {currentLanguage === "zh"
@@ -243,59 +314,27 @@ const AIOperations: React.FC<AIOperationsProps> = ({
           )}
         </div>
       ) : (
-        <>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder={currentType?.placeholder}
-            className="w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 p-4 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-          />
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <label className="text-xs text-gray-600 dark:text-gray-300">
-              {temperatureLabel}: {settings.temperature.toFixed(1)}
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.1}
-                value={settings.temperature}
-                onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    temperature: Number(event.target.value),
-                  })
-                }
-                className="w-full mt-1 accent-blue-600"
-              />
-            </label>
-
-            <label className="text-xs text-gray-600 dark:text-gray-300">
-              {maxTokensLabel}: {settings.maxTokens}
-              <input
-                type="range"
-                min={200}
-                max={2000}
-                step={100}
-                value={settings.maxTokens}
-                onChange={(event) =>
-                  setSettings({
-                    ...settings,
-                    maxTokens: Number(event.target.value),
-                  })
-                }
-                className="w-full mt-1 accent-blue-600"
-              />
-            </label>
-          </div>
-        </>
+        <textarea
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder={currentType?.placeholder}
+          className="w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 p-4 text-sm text-gray-900 dark:text-gray-100 resize-none transition-colors focus:outline-none focus:ring-0 focus:border-blue-400 dark:focus:border-blue-500"
+        />
       )}
+
+      {!isDetectMode && generationDisabledReason && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          {generationDisabledReason}
+        </p>
+      )}
+
+      </div>
 
       <button
         type="button"
         onClick={onGenerate}
-        disabled={isGenerating || (isDetectMode ? !selectedFile : prompt.trim().length === 0)}
-        className="w-full h-12 sm:h-11 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-semibold transition-colors"
+        disabled={isGenerating || !canGenerate}
+        className="mt-4 sm:mt-5 w-full shrink-0 h-12 sm:h-11 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-semibold transition-colors"
       >
         {isGenerating
           ? isDetectMode
@@ -310,3 +349,6 @@ const AIOperations: React.FC<AIOperationsProps> = ({
 };
 
 export default AIOperations;
+
+
+
