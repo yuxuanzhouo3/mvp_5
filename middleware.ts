@@ -4,6 +4,7 @@ import { RegionType } from "@/lib/utils/ip-detection";
 
 const FAIL_CLOSED =
   (process.env.GEO_FAIL_CLOSED || "true").toLowerCase() === "true";
+const ADMIN_SESSION_COOKIE_NAME = "admin_session";
 
 export async function middleware(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
@@ -15,6 +16,20 @@ export async function middleware(request: NextRequest) {
     (pathname.includes(".") && !pathname.startsWith("/api/"))
   ) {
     return NextResponse.next();
+  }
+
+  // Admin 路由: 登录页放行，其他页面要求存在后台会话 Cookie
+  if (pathname.startsWith("/admin")) {
+    if (!pathname.startsWith("/admin/login")) {
+      const adminSessionToken = request.cookies.get(ADMIN_SESSION_COOKIE_NAME)?.value;
+      if (!adminSessionToken) {
+        return NextResponse.redirect(new URL("/admin/login", request.url));
+      }
+    }
+
+    const adminResponse = NextResponse.next();
+    adminResponse.headers.set("x-pathname", pathname);
+    return adminResponse;
   }
 
   try {

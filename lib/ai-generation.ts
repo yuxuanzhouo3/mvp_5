@@ -5,6 +5,10 @@ export type GenerationTab =
   | "image"
   | "video"
   | "audio"
+  | "edit_text"
+  | "edit_image"
+  | "edit_audio"
+  | "edit_video"
   | "detect_text"
   | "detect_image"
   | "detect_audio"
@@ -137,7 +141,16 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     label: "UI Demo",
     provider: "demo",
     mode: "demo",
-    tabs: ["detect_text", "detect_image", "detect_audio", "detect_video"],
+    tabs: [
+      "edit_text",
+      "edit_image",
+      "edit_audio",
+      "edit_video",
+      "detect_text",
+      "detect_image",
+      "detect_audio",
+      "detect_video",
+    ],
     region: "demo",
     optionLabelZh: "演示模式",
     optionLabelEn: "Demo Mode",
@@ -154,6 +167,10 @@ const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
     DEFAULT_LANGUAGE === "zh"
       ? "qwen3-tts-instruct-flash"
       : "stability-ai/stable-audio-2.5",
+  edit_text: "ui-demo",
+  edit_image: "ui-demo",
+  edit_audio: "ui-demo",
+  edit_video: "ui-demo",
   detect_text: "ui-demo",
   detect_image: "ui-demo",
   detect_audio: "ui-demo",

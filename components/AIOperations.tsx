@@ -15,7 +15,7 @@ interface ContentTypeInfo {
   label: string;
   icon: string;
   placeholder: string;
-  category: "generate" | "detect";
+  category: "generate" | "edit" | "detect";
 }
 
 interface AIOperationsProps {
@@ -62,7 +62,9 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   generationDisabledReason,
 }) => {
   const currentType = contentTypes[activeTab];
-  const [activeCategory, setActiveCategory] = useState<"generate" | "detect">(
+  const [activeCategory, setActiveCategory] = useState<
+    "generate" | "edit" | "detect"
+  >(
     currentType?.category ?? "generate",
   );
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -82,7 +84,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
     [activeCategory, contentTypes],
   );
 
-  const handleCategorySwitch = (category: "generate" | "detect") => {
+  const handleCategorySwitch = (category: "generate" | "edit" | "detect") => {
     setActiveCategory(category);
     setSelectedFile(null);
     setPrompt("");
@@ -99,12 +101,14 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   };
 
   const isDetectMode = activeCategory === "detect";
-  const isDocumentGeneration = !isDetectMode && activeTab === "text";
+  const isEditMode = activeCategory === "edit";
+  const requiresFileUpload = isDetectMode || isEditMode;
+  const isDocumentGeneration = activeCategory === "generate" && activeTab === "text";
   const areAllDocumentFormatsSelected =
     selectedDocumentFormats.length === DOCUMENT_FILE_FORMATS.length;
 
   useEffect(() => {
-    if (!isDetectMode) {
+    if (!requiresFileUpload) {
       return;
     }
 
@@ -113,9 +117,13 @@ const AIOperations: React.FC<AIOperationsProps> = ({
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-  }, [activeTab, isDetectMode, setPrompt]);
+  }, [activeTab, requiresFileUpload, setPrompt]);
 
   const acceptByTab: Record<string, string> = {
+    edit_text: ".txt,.md,.doc,.docx,.pdf,.xlsx",
+    edit_image: "image/*",
+    edit_audio: "audio/*",
+    edit_video: "video/*",
     detect_text: ".txt,.md,.doc,.docx,.pdf",
     detect_image: "image/*",
     detect_audio: "audio/*",
@@ -124,11 +132,15 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   const currentAccept = acceptByTab[activeTab] || "*/*";
   const detectButtonText = currentLanguage === "zh" ? "上传并检测" : "Upload & Detect";
   const detectingText = currentLanguage === "zh" ? "检测中..." : "Detecting...";
+  const editButtonText = currentLanguage === "zh" ? "上传并编辑" : "Upload & Edit";
+  const editingText = currentLanguage === "zh" ? "编辑中..." : "Editing...";
   const canGenerate = isDetectMode
     ? Boolean(selectedFile)
-    : prompt.trim().length > 0 &&
-      (!isDocumentGeneration || selectedDocumentFormats.length > 0) &&
-      !generationDisabledReason;
+    : isEditMode
+      ? Boolean(selectedFile) && prompt.trim().length > 0
+      : prompt.trim().length > 0 &&
+        (!isDocumentGeneration || selectedDocumentFormats.length > 0) &&
+        !generationDisabledReason;
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -137,12 +149,87 @@ const AIOperations: React.FC<AIOperationsProps> = ({
     }
 
     setSelectedFile(file);
-    setPrompt(
-      currentLanguage === "zh"
-        ? `检测文件：${file.name}`
-        : `Detect file: ${file.name}`,
-    );
+    if (isDetectMode) {
+      setPrompt(
+        currentLanguage === "zh"
+          ? `检测文件：${file.name}`
+          : `Detect file: ${file.name}`,
+      );
+      return;
+    }
+
+    if (isEditMode && prompt.trim().length === 0) {
+      setPrompt(
+        currentLanguage === "zh"
+          ? `编辑文件：${file.name}\n编辑要求：`
+          : `Edit file: ${file.name}\nInstructions:`,
+      );
+    }
   };
+
+  const uploadTitle = isDetectMode
+    ? currentLanguage === "zh"
+      ? `上传${currentType?.label || "文件"}进行检测`
+      : `Upload ${currentType?.label || "file"} for detection`
+    : currentLanguage === "zh"
+      ? `上传${currentType?.label || "文件"}进行编辑`
+      : `Upload ${currentType?.label || "file"} for editing`;
+
+  const uploadCardClassName = isDetectMode
+    ? "w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1"
+    : "w-full";
+
+  const uploadPanel = (
+    <div
+      className={`${uploadCardClassName} rounded-xl border border-dashed border-blue-300 dark:border-blue-700 bg-blue-50/30 dark:bg-blue-950/10 p-4 sm:p-6 flex flex-col items-center justify-center text-center gap-3`}
+    >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={currentAccept}
+        className="hidden"
+        onChange={handleFileChange}
+      />
+      <div className="text-3xl">📤</div>
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+          {uploadTitle}
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {currentLanguage === "zh"
+            ? "支持拖拽上传或点击选择文件"
+            : "Drag and drop or click to choose a file"}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        className="h-10 sm:h-9 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+      >
+        {currentLanguage === "zh" ? "选择文件" : "Choose File"}
+      </button>
+      {selectedFile && (
+        <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200">
+          <span className="max-w-[180px] sm:max-w-[260px] truncate">{selectedFile.name}</span>
+          <button
+            type="button"
+            className="text-red-500 hover:text-red-600"
+            onClick={() => {
+              setSelectedFile(null);
+              if (isDetectMode) {
+                setPrompt("");
+              }
+              if (fileInputRef.current) {
+                fileInputRef.current.value = "";
+              }
+            }}
+          >
+            {currentLanguage === "zh" ? "移除" : "Remove"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-6 h-full min-h-0 overflow-hidden flex flex-col">
@@ -175,6 +262,17 @@ const AIOperations: React.FC<AIOperationsProps> = ({
           }`}
         >
           {currentLanguage === "zh" ? "AI生成" : "AI Generation"}
+        </button>
+        <button
+          type="button"
+          onClick={() => handleCategorySwitch("edit")}
+          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
+            activeCategory === "edit"
+              ? "bg-blue-600 text-white shadow-sm"
+              : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+          }`}
+        >
+          {currentLanguage === "zh" ? "AI编辑" : "AI Editing"}
         </button>
         <button
           type="button"
@@ -266,52 +364,16 @@ const AIOperations: React.FC<AIOperationsProps> = ({
       )}
 
       {isDetectMode ? (
-        <div className="w-full h-44 sm:h-52 lg:h-auto lg:min-h-[240px] lg:flex-1 rounded-xl border border-dashed border-blue-300 dark:border-blue-700 bg-blue-50/30 dark:bg-blue-950/10 p-4 sm:p-6 flex flex-col items-center justify-center text-center gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={currentAccept}
-            className="hidden"
-            onChange={handleFileChange}
+        uploadPanel
+      ) : isEditMode ? (
+        <div className="w-full lg:flex-1 lg:min-h-[240px] flex flex-col gap-3">
+          {uploadPanel}
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder={currentType?.placeholder}
+            className="w-full h-36 sm:h-40 lg:flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900/70 p-4 text-sm text-gray-900 dark:text-gray-100 resize-none transition-colors focus:outline-none focus:ring-0 focus:border-blue-400 dark:focus:border-blue-500"
           />
-          <div className="text-3xl">📤</div>
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-              {currentLanguage === "zh"
-                ? `上传${currentType?.label || "文件"}进行检测`
-                : `Upload ${currentType?.label || "file"} for detection`}
-            </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {currentLanguage === "zh"
-                ? "支持拖拽上传或点击选择文件"
-                : "Drag and drop or click to choose a file"}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="h-10 sm:h-9 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-          >
-            {currentLanguage === "zh" ? "选择文件" : "Choose File"}
-          </button>
-          {selectedFile && (
-            <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200">
-              <span className="max-w-[180px] sm:max-w-[260px] truncate">{selectedFile.name}</span>
-              <button
-                type="button"
-                className="text-red-500 hover:text-red-600"
-                onClick={() => {
-                  setSelectedFile(null);
-                  setPrompt("");
-                  if (fileInputRef.current) {
-                    fileInputRef.current.value = "";
-                  }
-                }}
-              >
-                {currentLanguage === "zh" ? "移除" : "Remove"}
-              </button>
-            </div>
-          )}
         </div>
       ) : (
         <textarea
@@ -322,7 +384,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         />
       )}
 
-      {!isDetectMode && generationDisabledReason && (
+      {activeCategory === "generate" && generationDisabledReason && (
         <p className="text-sm text-amber-600 dark:text-amber-400">
           {generationDisabledReason}
         </p>
@@ -339,10 +401,14 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         {isGenerating
           ? isDetectMode
             ? detectingText
-            : generatingText
+            : isEditMode
+              ? editingText
+              : generatingText
           : isDetectMode
             ? detectButtonText
-            : generateText}
+            : isEditMode
+              ? editButtonText
+              : generateText}
       </button>
     </section>
   );

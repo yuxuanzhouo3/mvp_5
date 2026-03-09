@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import type { GenerationItem } from "@/lib/ai-generation";
-import { getUIText, type UILanguage } from "@/lib/ui-text";
+import { type UILanguage } from "@/lib/ui-text";
 
 interface OperationsDashboardProps {
   generations: GenerationItem[];
@@ -14,7 +14,7 @@ interface OperationsDashboardProps {
   } | null;
 }
 
-export type ResultCategory = "generate" | "detect";
+export type ResultCategory = "generate" | "edit" | "detect";
 export type ResultFolder = "all" | "text" | "image" | "audio" | "video";
 
 const ACTION_BUTTON_CLASS_NAME =
@@ -30,18 +30,26 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   currentLanguage,
   targetResultView,
 }) => {
-  const text = getUIText(currentLanguage);
   const resultTitle = currentLanguage === "zh" ? "输出结果" : "Output Results";
   const [activeResultCategory, setActiveResultCategory] = useState<ResultCategory>("generate");
   const [activeResultFolder, setActiveResultFolder] = useState<ResultFolder>("all");
 
   const categoryLabel =
     currentLanguage === "zh"
-      ? { generate: "AI生成", detect: "AI检测" }
-      : { generate: "AI Generation", detect: "AI Detection" };
+      ? { generate: "AI生成", edit: "AI编辑", detect: "AI检测" }
+      : { generate: "AI Generation", edit: "AI Editing", detect: "AI Detection" };
 
-  const getCategoryByType = (type: string) =>
-    type.startsWith("detect_") ? "detect" : "generate";
+  const getCategoryByType = (type: string) => {
+    if (type.startsWith("detect_")) {
+      return "detect";
+    }
+
+    if (type.startsWith("edit_")) {
+      return "edit";
+    }
+
+    return "generate";
+  };
 
   const folderTypeMap: Record<ResultCategory, Record<Exclude<ResultFolder, "all">, string[]>> = {
     generate: {
@@ -49,6 +57,12 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
       image: ["image"],
       audio: ["audio"],
       video: ["video"],
+    },
+    edit: {
+      text: ["edit_text"],
+      image: ["edit_image"],
+      audio: ["edit_audio"],
+      video: ["edit_video"],
     },
     detect: {
       text: ["detect_text"],
@@ -89,10 +103,14 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
     currentLanguage === "zh"
       ? activeResultCategory === "generate"
         ? "暂无 AI 生成记录"
-        : "暂无 AI 检测记录"
+        : activeResultCategory === "edit"
+          ? "暂无 AI 编辑记录"
+          : "暂无 AI 检测记录"
       : activeResultCategory === "generate"
         ? "No AI generation records"
-        : "No AI detection records";
+        : activeResultCategory === "edit"
+          ? "No AI editing records"
+          : "No AI detection records";
 
   const typeLabelMap: Record<string, string> =
     currentLanguage === "zh"
@@ -101,6 +119,10 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
           image: "图片",
           audio: "音频",
           video: "视频",
+          edit_text: "文档编辑",
+          edit_image: "图片编辑",
+          edit_audio: "音频编辑",
+          edit_video: "视频编辑",
           detect_text: "文档检测",
           detect_image: "图片检测",
           detect_audio: "音频检测",
@@ -111,6 +133,10 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
           image: "Image",
           audio: "Audio",
           video: "Video",
+          edit_text: "Docs Editing",
+          edit_image: "Image Editing",
+          edit_audio: "Audio Editing",
+          edit_video: "Video Editing",
           detect_text: "Docs Detection",
           detect_image: "Image Detection",
           detect_audio: "Audio Detection",
@@ -219,6 +245,17 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
             }`}
           >
             {categoryLabel.generate}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleResultCategorySwitch("edit")}
+            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors flex-1 sm:flex-none ${
+              activeResultCategory === "edit"
+                ? "bg-blue-600 text-white"
+                : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+            }`}
+          >
+            {categoryLabel.edit}
           </button>
           <button
             type="button"

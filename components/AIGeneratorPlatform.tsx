@@ -76,7 +76,15 @@ const quotaByPlan: Record<UserPlan, QuotaPreset> = {
 };
 
 function getResultCategoryByTab(tab: string): ResultCategory {
-  return tab.startsWith("detect_") ? "detect" : "generate";
+  if (tab.startsWith("detect_")) {
+    return "detect";
+  }
+
+  if (tab.startsWith("edit_")) {
+    return "edit";
+  }
+
+  return "generate";
 }
 
 function getResultFolderByTab(tab: string): ResultFolder {
@@ -255,6 +263,19 @@ const AIGeneratorPlatform: React.FC = () => {
     setIsGenerating(true);
 
     if (!isConnectedGenerationTab(activeTab)) {
+      const summary =
+        activeTab.startsWith("edit_")
+          ? currentLanguage === "zh"
+            ? "编辑功能当前为 UI 演示，尚未接入后端模型。"
+            : "Editing is currently UI-only and not connected to a backend model yet."
+          : activeTab.startsWith("detect_")
+            ? currentLanguage === "zh"
+              ? "检测功能当前为 UI 演示，尚未接入后端模型。"
+              : "Detection is currently UI-only and not connected to a backend model yet."
+            : currentLanguage === "zh"
+              ? "当前类型仍为 UI 演示，尚未接入后端模型。"
+              : "This category is still UI-only and not connected to a backend model yet.";
+
       window.setTimeout(() => {
         setGenerations((previous) => [
           {
@@ -265,10 +286,7 @@ const AIGeneratorPlatform: React.FC = () => {
             modelLabel: currentLanguage === "zh" ? "演示模式" : "UI Demo",
             provider: "demo",
             status: "success",
-            summary:
-              currentLanguage === "zh"
-                ? "当前类型仍为 UI 演示，尚未接入后端模型。"
-                : "This category is still UI-only and not connected to a backend model yet.",
+            summary,
             createdAt: new Date().toISOString(),
           },
           ...previous,
@@ -421,6 +439,42 @@ const AIGeneratorPlatform: React.FC = () => {
         icon: "🎬",
         placeholder: text.promptPlaceholderVideo,
         category: "generate" as const,
+      },
+      edit_text: {
+        label: currentLanguage === "zh" ? "文档" : "Docs",
+        icon: "📝",
+        placeholder:
+          currentLanguage === "zh"
+            ? "上传文档后输入编辑要求，例如：提炼为三段摘要并修正错别字"
+            : "Upload a document and describe edits, for example: summarize into 3 paragraphs and fix grammar",
+        category: "edit" as const,
+      },
+      edit_image: {
+        label: currentLanguage === "zh" ? "图片" : "Image",
+        icon: "🖼️",
+        placeholder:
+          currentLanguage === "zh"
+            ? "上传图片后输入编辑要求，例如：去背景、替换人物服饰、增强清晰度"
+            : "Upload an image and describe edits, for example: remove background, replace outfit, improve clarity",
+        category: "edit" as const,
+      },
+      edit_audio: {
+        label: currentLanguage === "zh" ? "音频" : "Audio",
+        icon: "🎵",
+        placeholder:
+          currentLanguage === "zh"
+            ? "上传音频后输入编辑要求，例如：降噪、提取人声、调整语速"
+            : "Upload audio and describe edits, for example: denoise, isolate vocals, adjust speaking speed",
+        category: "edit" as const,
+      },
+      edit_video: {
+        label: currentLanguage === "zh" ? "视频" : "Video",
+        icon: "🎬",
+        placeholder:
+          currentLanguage === "zh"
+            ? "上传视频后输入编辑要求，例如：替换背景、自动加字幕、修改画面风格"
+            : "Upload a video and describe edits, for example: replace background, add subtitles, restyle visuals",
+        category: "edit" as const,
       },
       detect_text: {
         label: currentLanguage === "zh" ? "文档" : "Docs",
