@@ -74,7 +74,7 @@ type Advertisement = Omit<AdminAd, "source" | "status" | "link_url"> & {
 };
 
 function getUiSourceFromEnv(): "supabase" | "cloudbase" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "en").toLowerCase();
+  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
   return language.startsWith("zh") ? "cloudbase" : "supabase";
 }
 

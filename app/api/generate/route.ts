@@ -21,9 +21,23 @@ import {
 } from "@/lib/document-export";
 import { storeGeneratedFile } from "@/lib/generated-files";
 import { getProviderProxyStatus, providerFetch } from "@/lib/provider-http";
+import { verifyCloudbaseAccessToken } from "@/lib/server/cloudbase-auth";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  consumeGuestGenerationQuota,
+  releaseGuestGenerationQuota,
+  type GuestQuotaReservation,
+  type GuestQuotaSnapshot,
+} from "@/lib/server/guest-quota";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
+
+const CLOUDBASE_ACCESS_TOKEN_HEADER = "x-cloudbase-access-token";
+const AUTHORIZATION_HEADER = "authorization";
+const IS_DOMESTIC_RUNTIME = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
+  .toLowerCase()
+  .startsWith("zh");
 
 const FILE_GENERATION_SYSTEM_PROMPT_LINES = [
   "You generate structured documents for export to PDF, Excel, Word, TXT, and Markdown.",
@@ -77,6 +91,21 @@ type DashScopeDocumentResponseMode = "json_schema" | "json_object" | "prompt_onl
 
 const cachedDashScopeDocumentResponseMode = new Map<string, DashScopeDocumentResponseMode>();
 const DASHSCOPE_JSON_SCHEMA_MODEL_IDS = new Set<string>();
+
+function extractBearerToken(request: Request) {
+  const authHeader = request.headers.get(AUTHORIZATION_HEADER)?.trim() || "";
+  if (!authHeader) {
+    return "";
+  }
+
+  const bearerPrefix = "bearer ";
+  if (!authHeader.toLowerCase().startsWith(bearerPrefix)) {
+    return "";
+  }
+
+  return authHeader.slice(bearerPrefix.length).trim();
+}
+
 function buildGeneratedDocumentJsonSchema(requireSpreadsheet: boolean) {
   return {
     type: "object",
@@ -2145,9 +2174,28 @@ function buildFileGenerationPrompt(userPrompt: string, requireSpreadsheet: boole
   ].join("\n");
 }
 
+type GenerateResponsePayload = GenerationItem & {
+  guestQuota?: GuestQuotaSnapshot;
+};
+
+function jsonWithCookie(
+  payload: unknown,
+  init?: ResponseInit,
+  setCookieHeader?: string,
+) {
+  const response = Response.json(payload, init);
+  if (setCookieHeader) {
+    response.headers.append("Set-Cookie", setCookieHeader);
+  }
+  return response;
+}
+
 export async function POST(req: Request) {
   const requestId = randomUUID();
   const requestTimer = createRequestTimer(requestId);
+  let guestQuotaReservation: GuestQuotaReservation | null = null;
+  let guestQuotaSnapshot: GuestQuotaSnapshot | undefined;
+  let guestSetCookieHeader: string | undefined;
 
   try {
     const body = (await req.json()) as {
@@ -2159,9 +2207,95 @@ export async function POST(req: Request) {
 
     const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
     const type = typeof body.type === "string" ? body.type : "";
+    const cloudbaseAccessToken =
+      req.headers.get(CLOUDBASE_ACCESS_TOKEN_HEADER)?.trim() || "";
+    const supabaseAccessToken = extractBearerToken(req);
+
+    type VerifiedLoginUser = {
+      userId: string;
+      email: string | null;
+    };
+    let loginUser: VerifiedLoginUser | null = null;
+
+    if (!IS_DOMESTIC_RUNTIME && cloudbaseAccessToken) {
+      return Response.json(
+        { message: "当前为国际版环境，禁止使用国内版 CloudBase 登录令牌。" },
+        { status: 403 },
+      );
+    }
+
+    if (IS_DOMESTIC_RUNTIME && supabaseAccessToken) {
+      return Response.json(
+        { message: "当前为国内版环境，禁止使用国际版 Supabase 登录令牌。" },
+        { status: 403 },
+      );
+    }
+
+    if (IS_DOMESTIC_RUNTIME && cloudbaseAccessToken) {
+      try {
+        const verifiedCloudbaseUser = await verifyCloudbaseAccessToken(
+          cloudbaseAccessToken,
+        );
+        if (!verifiedCloudbaseUser) {
+          return Response.json(
+            { message: "登录状态已失效，请重新登录。" },
+            { status: 401 },
+          );
+        }
+        loginUser = verifiedCloudbaseUser;
+      } catch (error) {
+        console.error(`[Generate][${requestId}] CloudBase 登录校验失败:`, error);
+        return Response.json(
+          { message: "登录校验失败，请稍后重试。" },
+          { status: 503 },
+        );
+      }
+    }
+
+    if (!IS_DOMESTIC_RUNTIME && supabaseAccessToken) {
+      if (!supabaseAdmin) {
+        return Response.json(
+          { message: "服务端缺少 Supabase 配置，暂时无法校验登录状态。" },
+          { status: 503 },
+        );
+      }
+
+      try {
+        const { data, error } = await supabaseAdmin.auth.getUser(
+          supabaseAccessToken,
+        );
+        if (error || !data.user) {
+          return Response.json(
+            { message: "登录状态已失效，请重新登录。" },
+            { status: 401 },
+          );
+        }
+
+        loginUser = {
+          userId: data.user.id,
+          email: data.user.email || null,
+        };
+      } catch (error) {
+        console.error(`[Generate][${requestId}] Supabase 登录校验失败:`, error);
+        return Response.json(
+          { message: "登录校验失败，请稍后重试。" },
+          { status: 503 },
+        );
+      }
+    }
+
+    const isGuestRequest = !loginUser;
 
     if (!isGenerationTab(type) || !isConnectedGenerationTab(type)) {
       return Response.json({ message: "当前类型尚未接入后端模型。" }, { status: 400 });
+    }
+
+    if (isGuestRequest && type !== "text") {
+      return jsonWithCookie(
+        { message: "未登录用户仅可使用文档生成功能。" },
+        { status: 403 },
+        guestSetCookieHeader,
+      );
     }
 
     if (!prompt) {
@@ -2199,6 +2333,33 @@ export async function POST(req: Request) {
         }
 
         requestedFormats = filteredFormats;
+      }
+
+      if (isGuestRequest && requestedFormats.length !== 1) {
+        return jsonWithCookie(
+          { message: "未登录用户每次仅能选择一种文档格式。" },
+          { status: 400 },
+          guestSetCookieHeader,
+        );
+      }
+
+      if (isGuestRequest) {
+        const guestConsumeResult = await consumeGuestGenerationQuota(req);
+        guestQuotaSnapshot = guestConsumeResult.snapshot;
+        guestSetCookieHeader = guestConsumeResult.setCookieHeader;
+
+        if (!guestConsumeResult.allowed) {
+          return jsonWithCookie(
+            {
+              message: "游客本月文档生成额度已用完，请登录后继续使用。",
+              guestQuota: guestQuotaSnapshot,
+            },
+            { status: 429 },
+            guestSetCookieHeader,
+          );
+        }
+
+        guestQuotaReservation = guestConsumeResult.reservation || null;
       }
 
       const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
@@ -2259,7 +2420,7 @@ export async function POST(req: Request) {
       });
       requestTimer.phase("文档文件落库完成", storageStartedAt, `count: ${downloadLinks.length}`);
 
-      const result: GenerationItem = {
+      const result: GenerateResponsePayload = {
         id: requestId,
         type,
         prompt,
@@ -2273,9 +2434,12 @@ ${object.summary}`,
         downloadLinks,
         createdAt: new Date().toISOString(),
       };
+      if (guestQuotaSnapshot) {
+        result.guestQuota = guestQuotaSnapshot;
+      }
 
       requestTimer.total("文档请求完成");
-      return Response.json(result);
+      return jsonWithCookie(result, undefined, guestSetCookieHeader);
     }
 
     if (modelConfig.mode === "audio-generation") {
@@ -2403,6 +2567,17 @@ ${object.summary}`,
 
     return Response.json(result);
   } catch (error) {
+    if (guestQuotaReservation) {
+      try {
+        const releasedQuota = await releaseGuestGenerationQuota(guestQuotaReservation);
+        if (releasedQuota) {
+          guestQuotaSnapshot = releasedQuota;
+        }
+      } catch (releaseError) {
+        console.error(`[Generate][${requestId}] 游客额度回滚失败:`, releaseError);
+      }
+    }
+
     const statusCode = getErrorStatusCode(error);
     const message = getGenerationErrorMessage(error);
     console.error(
@@ -2410,9 +2585,10 @@ ${object.summary}`,
       error,
     );
 
-    return Response.json(
-      { message },
+    return jsonWithCookie(
+      guestQuotaSnapshot ? { message, guestQuota: guestQuotaSnapshot } : { message },
       { status: statusCode >= 400 ? statusCode : 500 },
+      guestSetCookieHeader,
     );
   }
 }

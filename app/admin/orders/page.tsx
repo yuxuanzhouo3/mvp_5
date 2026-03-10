@@ -112,7 +112,7 @@ function getPaymentStatusLabel(status: string): string {
 }
 
 function getFixedSourceScope(): "global" | "cn" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "en").toLowerCase();
+  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
   return language.startsWith("zh") ? "cn" : "global";
 }
 

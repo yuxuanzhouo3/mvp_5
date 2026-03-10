@@ -220,7 +220,9 @@ export async function getAdminOrders(filters: OrderFilters = {}): Promise<Orders
         `provider_transaction_id.ilike.%${s}%`,
         `user_id.ilike.%${s}%`,
       ];
-      const matchedUserIds = (matchedUsers || []).map((user) => user.id).filter(Boolean);
+      const matchedUserIds = ((matchedUsers || []) as Array<{ id?: string | null }>)
+        .map((user) => user.id)
+        .filter(Boolean);
       if (matchedUserIds.length > 0) {
         searchParts.push(`user_id.in.(${matchedUserIds.join(",")})`);
       }
@@ -275,7 +277,11 @@ export async function getAdminOrderStats(source: "all" | "global" | "cn" = "all"
     };
   }
 
-  const rows = data || [];
+  const rows = (data || []) as Array<{
+    payment_status?: string | null;
+    amount?: number | string | null;
+    risk_level?: string | null;
+  }>;
   return {
     total: rows.length,
     paid: rows.filter((row) => row.payment_status === "paid").length,

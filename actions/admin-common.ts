@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { getAdminSession } from "@/lib/admin/session";
 import { getAdminSourceScope } from "@/lib/admin/source-scope";
+import { getRoutedAdminDbClient } from "@/lib/server/database-routing";
 
 export type AdminActionResult<T = undefined> = {
   success: boolean;
@@ -12,13 +12,14 @@ export type AdminActionResult<T = undefined> = {
 export async function requireAdminContext() {
   const session = await getAdminSession();
   const sourceScope = getAdminSourceScope();
+  const db = await getRoutedAdminDbClient(sourceScope);
   if (!session) {
     return { session: null, db: null, sourceScope };
   }
-  if (!supabaseAdmin) {
+  if (!db) {
     return { session, db: null, sourceScope };
   }
-  return { session, db: supabaseAdmin, sourceScope };
+  return { session, db, sourceScope };
 }
 
 export function createTextId(prefix: string) {

@@ -114,7 +114,7 @@ async function uploadSocialIconIfNeeded(
     return null;
   }
 
-  const { data } = db.storage.from("ads-media").getPublicUrl(objectPath);
+  const { data } = await db.storage.from("ads-media").getPublicUrl(objectPath);
   return data?.publicUrl || null;
 }
 

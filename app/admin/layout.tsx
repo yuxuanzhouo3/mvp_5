@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getAdminSession } from "@/lib/admin/session";
 import AdminSidebar from "@/app/admin/components/AdminSidebar";
 import { getAdminSourceLabel, getAdminSourceScope } from "@/lib/admin/source-scope";
+import { getAppDisplayName } from "@/lib/app-branding";
 
 export default async function AdminLayout({
   children,
@@ -23,10 +24,12 @@ export default async function AdminLayout({
 
   const sourceScope = getAdminSourceScope();
   const sourceLabel = getAdminSourceLabel(sourceScope);
+  const appDisplayName = await getAppDisplayName();
 
   return (
     <div className="min-h-screen bg-slate-50">
       <AdminSidebar
+        appDisplayName={appDisplayName}
         username={session.username}
         sourceScope={sourceScope}
         sourceLabel={sourceLabel}

@@ -1,14 +1,15 @@
 ﻿"use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import AIOperations from "./AIOperations";
 import OperationsDashboard, {
   type ResultCategory,
   type ResultFolder,
 } from "./OperationsDashboard";
 import LanguageThemeToggle from "./LanguageThemeToggle";
-import AuthSystem, { type AuthFormState, type AuthMode } from "./AuthSystem";
+import AuthSystem from "./AuthSystem";
 import PaymentSystem, { type BillingPeriod, type PlanKey } from "./PaymentSystem";
 import { Badge } from "./ui/badge";
 import { useLanguage } from "@/context/LanguageContext";
@@ -26,54 +27,118 @@ import {
   type DocumentFileFormat,
 } from "@/lib/document-formats";
 import { getUIText } from "@/lib/ui-text";
-
-type UserPlan = "free" | PlanKey;
+import { getCloudbaseApp, getCloudbaseAuth } from "@/lib/cloudbase/client";
+import { createClient as createSupabaseClient } from "@/lib/supabase/client";
+import {
+  buildQuotaSummary,
+  mapPlanCodeToUserPlan,
+  pickPlanDefinition,
+  resolveEffectivePlan,
+  type QuotaSummary,
+  type UserPlan,
+} from "@/lib/user-status";
 
 interface DashboardUser {
+  id: string;
+  source: "cn" | "global";
   name: string;
   email: string;
+  rawPlan: UserPlan;
   plan: UserPlan;
   planExp: string | null;
+  isPlanActive: boolean;
+  planDisplayName: string;
+  quotaSummary: QuotaSummary;
 }
 
-interface QuotaPreset {
-  dailyLimit: number;
-  imageLimit: number;
-  videoLimit: number;
-  addonImage: number;
-  addonVideo: number;
-}
-
-const quotaByPlan: Record<UserPlan, QuotaPreset> = {
-  free: {
-    dailyLimit: 10,
-    imageLimit: 20,
-    videoLimit: 5,
-    addonImage: 0,
-    addonVideo: 0,
-  },
-  basic: {
-    dailyLimit: 100,
-    imageLimit: 200,
-    videoLimit: 60,
-    addonImage: 100,
-    addonVideo: 30,
-  },
-  pro: {
-    dailyLimit: 300,
-    imageLimit: 600,
-    videoLimit: 180,
-    addonImage: 260,
-    addonVideo: 90,
-  },
-  enterprise: {
-    dailyLimit: 1200,
-    imageLimit: 2000,
-    videoLimit: 600,
-    addonImage: 800,
-    addonVideo: 240,
-  },
+type CloudbaseLoginUser = {
+  uid?: string;
+  id?: string;
+  email?: string;
+  name?: string;
+  username?: string;
 };
+
+type CloudbaseQueryResult<T> = {
+  data?: T[] | null;
+  error?: { message?: string } | null;
+};
+
+type AppUserRow = {
+  id?: string | null;
+  email?: string | null;
+  display_name?: string | null;
+  current_plan_code?: string | null;
+  plan_expires_at?: string | null;
+};
+
+type SubscriptionPlanRow = {
+  plan_code?: string | null;
+  display_name_cn?: string | null;
+  display_name_en?: string | null;
+  monthly_document_limit?: number | null;
+  monthly_image_limit?: number | null;
+  monthly_video_limit?: number | null;
+  monthly_audio_limit?: number | null;
+};
+
+type UserQuotaAccountRow = {
+  id?: string | null;
+  cycle_end_date?: string | null;
+};
+
+type UserQuotaBalanceRow = {
+  quota_type?: string | null;
+  base_limit?: number | null;
+  addon_limit?: number | null;
+  admin_adjustment?: number | null;
+  used_amount?: number | null;
+  remaining_amount?: number | null;
+};
+
+type GuestQuotaState = {
+  monthKey: string;
+  limit: number;
+  used: number;
+  remaining: number;
+};
+
+function toSafeNonNegativeNumber(value: unknown, fallback: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, fallback);
+  }
+  return Math.max(0, Math.trunc(numeric));
+}
+
+function readGuestLimitFromEnv() {
+  return toSafeNonNegativeNumber(process.env.NEXT_PUBLIC_GUEST_MONTHLY_LIMIT, 0);
+}
+
+function parseGuestQuotaPayload(payload: unknown): GuestQuotaState | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const data = payload as Record<string, unknown>;
+  if (typeof data.monthKey !== "string" || !data.monthKey.trim()) {
+    return null;
+  }
+
+  const limit = toSafeNonNegativeNumber(data.limit, readGuestLimitFromEnv());
+  const used = toSafeNonNegativeNumber(data.used, 0);
+  const remaining = toSafeNonNegativeNumber(
+    data.remaining,
+    Math.max(0, limit - used),
+  );
+
+  return {
+    monthKey: data.monthKey.trim(),
+    limit,
+    used,
+    remaining,
+  };
+}
 
 function getResultCategoryByTab(tab: string): ResultCategory {
   if (tab.startsWith("detect_")) {
@@ -103,7 +168,26 @@ function getResultFolderByTab(tab: string): ResultFolder {
   return "text";
 }
 
-const AIGeneratorPlatform: React.FC = () => {
+function getUnsupportedTabMessage(tab: string, language: "zh" | "en") {
+  if (tab.startsWith("edit_")) {
+    return language === "zh"
+      ? "AI 编辑功能正在开发中，暂不可用。"
+      : "AI Editing is under development and currently unavailable.";
+  }
+
+  if (tab.startsWith("detect_")) {
+    return language === "zh"
+      ? "AI 检测功能正在开发中，暂不可用。"
+      : "AI Detection is under development and currently unavailable.";
+  }
+
+  return language === "zh"
+    ? "当前功能暂不可用。"
+    : "This feature is currently unavailable.";
+}
+
+const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayName }) => {
+  const router = useRouter();
   const { currentLanguage, setCurrentLanguage, isDomesticVersion } =
     useLanguage();
   const text = getUIText(currentLanguage);
@@ -116,14 +200,7 @@ const AIGeneratorPlatform: React.FC = () => {
   const [model, setModel] = useState("auto");
   const [selectedDocumentFormats, setSelectedDocumentFormats] = useState<DocumentFileFormat[]>(["docx"]);
   const [user, setUser] = useState<DashboardUser | null>(null);
-  const [authMode, setAuthMode] = useState<AuthMode>("login");
-  const [authForm, setAuthForm] = useState<AuthFormState>({
-    name: "",
-    email: "",
-    password: "",
-    verificationCode: "",
-  });
-  const [showPassword, setShowPassword] = useState(false);
+  const [guestQuota, setGuestQuota] = useState<GuestQuotaState | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>("pro");
   const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>("monthly");
   const [showAuthDialog, setShowAuthDialog] = useState(false);
@@ -144,6 +221,394 @@ const AIGeneratorPlatform: React.FC = () => {
     setIsDarkMode(shouldUseDark);
     document.documentElement.classList.toggle("dark", shouldUseDark);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateDomesticUser = async () => {
+      if (!isDomesticVersion) {
+        return;
+      }
+
+      try {
+        const auth = getCloudbaseAuth();
+        const loginState = (await auth.getLoginState()) as {
+          user?: CloudbaseLoginUser;
+          data?: { user?: CloudbaseLoginUser };
+        } | null;
+        const loginUser = loginState?.user || loginState?.data?.user || null;
+        if (!loginUser) {
+          if (!cancelled) {
+            setUser(null);
+          }
+          return;
+        }
+
+        let profile: CloudbaseLoginUser | null = null;
+        try {
+          profile = (await auth.getUserInfo()) as CloudbaseLoginUser;
+        } catch (error) {
+          console.warn("[AIGeneratorPlatform] getUserInfo failed:", error);
+        }
+
+        const userId = (
+          profile?.uid ||
+          profile?.id ||
+          loginUser.uid ||
+          loginUser.id ||
+          ""
+        ).trim();
+        if (!userId) {
+          if (!cancelled) {
+            setUser(null);
+          }
+          return;
+        }
+
+        const authEmail = (profile?.email || loginUser.email || "")
+          .trim()
+          .toLowerCase();
+        const fallbackName = authEmail
+          ? authEmail.split("@")[0]
+          : currentLanguage === "zh"
+            ? "用户"
+            : "User";
+
+        const mysql = getCloudbaseApp().mysql();
+        const [appUserResult, planRowsResult] = (await Promise.all([
+          mysql
+            .from("app_users")
+            .select("id,email,display_name,current_plan_code,plan_expires_at")
+            .eq("id", userId)
+            .eq("source", "cn")
+            .limit(1),
+          mysql
+            .from("subscription_plans")
+            .select(
+              "plan_code,display_name_cn,display_name_en,monthly_document_limit,monthly_image_limit,monthly_video_limit,monthly_audio_limit",
+            )
+            .limit(20),
+        ])) as [
+          CloudbaseQueryResult<AppUserRow>,
+          CloudbaseQueryResult<SubscriptionPlanRow>,
+        ];
+
+        if (appUserResult?.error) {
+          console.warn(
+            "[AIGeneratorPlatform] fetch app_users failed:",
+            appUserResult.error,
+          );
+        }
+        if (planRowsResult?.error) {
+          console.warn(
+            "[AIGeneratorPlatform] fetch subscription_plans failed:",
+            planRowsResult.error,
+          );
+        }
+
+        const appUserRow = appUserResult?.data?.[0];
+        const rawPlan = mapPlanCodeToUserPlan(appUserRow?.current_plan_code);
+        const planExp = appUserRow?.plan_expires_at || null;
+        const { effectivePlan, isPlanActive } = resolveEffectivePlan(
+          rawPlan,
+          planExp,
+        );
+        const planRows = (planRowsResult?.data || []) as SubscriptionPlanRow[];
+        const planDefinition = pickPlanDefinition(planRows, effectivePlan);
+
+        const quotaAccountResult = (await mysql
+          .from("user_quota_accounts")
+          .select("id,cycle_end_date")
+          .eq("user_id", userId)
+          .eq("source", "cn")
+          .eq("status", "active")
+          .limit(20)) as CloudbaseQueryResult<UserQuotaAccountRow>;
+
+        if (quotaAccountResult?.error) {
+          console.warn(
+            "[AIGeneratorPlatform] fetch user_quota_accounts failed:",
+            quotaAccountResult.error,
+          );
+        }
+
+        const latestQuotaAccount = (quotaAccountResult?.data || [])
+          .map((item) => ({
+            id: String(item.id || "").trim(),
+            cycleEndDate: item.cycle_end_date || "",
+          }))
+          .filter((item) => item.id)
+          .sort(
+            (left, right) =>
+              new Date(right.cycleEndDate || 0).getTime() -
+              new Date(left.cycleEndDate || 0).getTime(),
+          )[0];
+
+        let quotaBalanceRows: UserQuotaBalanceRow[] = [];
+        if (latestQuotaAccount?.id) {
+          const quotaBalanceResult = (await mysql
+            .from("user_quota_balances")
+            .select(
+              "quota_type,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount",
+            )
+            .eq("quota_account_id", latestQuotaAccount.id)
+            .limit(20)) as CloudbaseQueryResult<UserQuotaBalanceRow>;
+
+          if (quotaBalanceResult?.error) {
+            console.warn(
+              "[AIGeneratorPlatform] fetch user_quota_balances failed:",
+              quotaBalanceResult.error,
+            );
+          }
+          quotaBalanceRows = (quotaBalanceResult?.data ||
+            []) as UserQuotaBalanceRow[];
+        }
+
+        const quotaSummary = buildQuotaSummary(planDefinition, quotaBalanceRows);
+        const dbEmail = String(appUserRow?.email || "").trim().toLowerCase();
+        const email = dbEmail || authEmail || "demo@mornstudio.ai";
+        const nameCandidate =
+          appUserRow?.display_name ||
+          profile?.name ||
+          profile?.username ||
+          loginUser.name ||
+          loginUser.username ||
+          fallbackName;
+        const displayName = String(nameCandidate || "").trim() || fallbackName;
+        const planDisplayName =
+          currentLanguage === "zh"
+            ? planDefinition.displayNameCn
+            : planDefinition.displayNameEn;
+
+        if (!cancelled) {
+          setUser({
+            id: userId,
+            source: "cn",
+            name: displayName,
+            email,
+            rawPlan,
+            plan: effectivePlan,
+            planExp,
+            isPlanActive,
+            planDisplayName,
+            quotaSummary,
+          });
+        }
+      } catch (error) {
+        console.warn("[AIGeneratorPlatform] hydrate domestic user failed:", error);
+      }
+    };
+
+    const hydrateGlobalUser = async () => {
+      if (isDomesticVersion) {
+        return;
+      }
+
+      try {
+        const supabase = createSupabaseClient();
+        if (!supabase) {
+          if (!cancelled) {
+            setUser(null);
+          }
+          return;
+        }
+
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+        if (sessionError) {
+          throw sessionError;
+        }
+
+        let authUser = session?.user || null;
+        if (!authUser) {
+          const {
+            data: { user: fetchedUser },
+            error: getUserError,
+          } = await supabase.auth.getUser();
+          if (getUserError) {
+            throw getUserError;
+          }
+          authUser = fetchedUser || null;
+        }
+        if (!authUser) {
+          if (!cancelled) {
+            setUser(null);
+          }
+          return;
+        }
+
+        const metadata = (authUser.user_metadata ||
+          {}) as Record<string, unknown>;
+        const planCodeCandidate =
+          (typeof metadata.current_plan_code === "string"
+            ? metadata.current_plan_code
+            : null) ||
+          (typeof metadata.plan_code === "string" ? metadata.plan_code : null) ||
+          (typeof metadata.subscription_plan === "string"
+            ? metadata.subscription_plan
+            : null);
+        const planExpCandidate =
+          (typeof metadata.plan_expires_at === "string"
+            ? metadata.plan_expires_at
+            : null) ||
+          (typeof metadata.subscription_expires_at === "string"
+            ? metadata.subscription_expires_at
+            : null);
+
+        const rawPlan = mapPlanCodeToUserPlan(planCodeCandidate);
+        const { effectivePlan, isPlanActive } = resolveEffectivePlan(
+          rawPlan,
+          planExpCandidate,
+        );
+        const planDefinition = pickPlanDefinition([], effectivePlan);
+        const quotaSummary = buildQuotaSummary(planDefinition, []);
+        const email = String(authUser.email || "").trim().toLowerCase();
+        const fallbackName = email
+          ? email.split("@")[0]
+          : currentLanguage === "zh"
+            ? "用户"
+            : "User";
+        const nameCandidate =
+          (typeof metadata.full_name === "string" ? metadata.full_name : null) ||
+          (typeof metadata.display_name === "string"
+            ? metadata.display_name
+            : null) ||
+          (typeof metadata.name === "string" ? metadata.name : null) ||
+          fallbackName;
+        const displayName = String(nameCandidate || "").trim() || fallbackName;
+
+        if (!cancelled) {
+          setUser({
+            id: authUser.id,
+            source: "global",
+            name: displayName,
+            email: email || "user@global",
+            rawPlan,
+            plan: effectivePlan,
+            planExp: planExpCandidate,
+            isPlanActive,
+            planDisplayName:
+              currentLanguage === "zh"
+                ? planDefinition.displayNameCn
+                : planDefinition.displayNameEn,
+            quotaSummary,
+          });
+        }
+      } catch (error) {
+        console.warn("[AIGeneratorPlatform] hydrate global user failed:", error);
+        if (!cancelled) {
+          setUser(null);
+        }
+      }
+    };
+
+    const hydrateCurrentUser = async () => {
+      if (isDomesticVersion) {
+        await hydrateDomesticUser();
+        return;
+      }
+      await hydrateGlobalUser();
+    };
+
+    void hydrateCurrentUser();
+
+    const handleFocus = () => {
+      void hydrateCurrentUser();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void hydrateCurrentUser();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("quota:refresh", handleFocus);
+
+    let removeAuthSubscription: (() => void) | null = null;
+    if (!isDomesticVersion) {
+      const supabase = createSupabaseClient();
+      if (supabase) {
+        const { data } = supabase.auth.onAuthStateChange(() => {
+          void hydrateCurrentUser();
+        });
+        removeAuthSubscription = () => {
+          data.subscription.unsubscribe();
+        };
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("quota:refresh", handleFocus);
+      if (removeAuthSubscription) {
+        removeAuthSubscription();
+      }
+    };
+  }, [currentLanguage, isDomesticVersion]);
+
+  const refreshGuestQuota = useCallback(async () => {
+    if (user) {
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/user/guest-quota", {
+        method: "GET",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as unknown;
+      const parsedQuota = parseGuestQuotaPayload(payload);
+      if (parsedQuota) {
+        setGuestQuota(parsedQuota);
+      }
+    } catch (error) {
+      console.warn("[AIGeneratorPlatform] fetch guest quota failed:", error);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      setGuestQuota(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadGuestQuota = async () => {
+      await refreshGuestQuota();
+      if (cancelled) {
+        return;
+      }
+    };
+
+    void loadGuestQuota();
+
+    const handleFocus = () => {
+      void loadGuestQuota();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void loadGuestQuota();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("quota:refresh", handleFocus);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("quota:refresh", handleFocus);
+    };
+  }, [refreshGuestQuota, user]);
 
   useEffect(() => {
     const handleEsc = (event: KeyboardEvent) => {
@@ -184,6 +649,36 @@ const AIGeneratorPlatform: React.FC = () => {
     return date.toISOString();
   };
 
+  const buildDemoUser = (input: {
+    userId: string;
+    source: "cn" | "global";
+    name: string;
+    email: string;
+    rawPlan: UserPlan;
+    planExp: string | null;
+  }): DashboardUser => {
+    const { effectivePlan, isPlanActive } = resolveEffectivePlan(
+      input.rawPlan,
+      input.planExp,
+    );
+    const planDefinition = pickPlanDefinition([], effectivePlan);
+    return {
+      id: input.userId,
+      source: input.source,
+      name: input.name,
+      email: input.email,
+      rawPlan: input.rawPlan,
+      plan: effectivePlan,
+      planExp: input.planExp,
+      isPlanActive,
+      planDisplayName:
+        currentLanguage === "zh"
+          ? planDefinition.displayNameCn
+          : planDefinition.displayNameEn,
+      quotaSummary: buildQuotaSummary(planDefinition, []),
+    };
+  };
+
   useEffect(() => {
     const availableKeys = new Set(
       isConnectedGenerationTab(activeTab)
@@ -203,8 +698,42 @@ const AIGeneratorPlatform: React.FC = () => {
         : null,
     [activeTab, currentLanguage],
   );
+  const featureUnavailableReason = useMemo(
+    () =>
+      isConnectedGenerationTab(activeTab)
+        ? generationDisabledReason
+        : getUnsupportedTabMessage(activeTab, currentLanguage),
+    [activeTab, currentLanguage, generationDisabledReason],
+  );
+
+  useEffect(() => {
+    if (user) {
+      return;
+    }
+  }, [activeTab, user]);
+
+  useEffect(() => {
+    if (user) {
+      return;
+    }
+
+    setSelectedDocumentFormats((previous) => {
+      if (previous.length === 1) {
+        return previous;
+      }
+
+      const fallbackFormat =
+        previous.find((item) => DOCUMENT_FILE_FORMATS.includes(item)) || "docx";
+      return [fallbackFormat];
+    });
+  }, [user]);
 
   const handleToggleDocumentFormat = (format: DocumentFileFormat) => {
+    if (!user) {
+      setSelectedDocumentFormats([format]);
+      return;
+    }
+
     setSelectedDocumentFormats((previous) =>
       previous.includes(format)
         ? previous.filter((item) => item !== format)
@@ -213,10 +742,16 @@ const AIGeneratorPlatform: React.FC = () => {
   };
 
   const handleSelectAllDocumentFormats = () => {
+    if (!user) {
+      return;
+    }
     setSelectedDocumentFormats([...DOCUMENT_FILE_FORMATS]);
   };
 
   const handleClearAllDocumentFormats = () => {
+    if (!user) {
+      return;
+    }
     setSelectedDocumentFormats([]);
   };
 
@@ -226,7 +761,17 @@ const AIGeneratorPlatform: React.FC = () => {
       return;
     }
 
-    if (activeTab === "text" && selectedDocumentFormats.length === 0) {
+    const isGuest = !user;
+    if (isGuest && activeTab !== "text") {
+      return;
+    }
+
+    if (activeTab === "text" && isGuest && selectedDocumentFormats.length !== 1) {
+      setSelectedDocumentFormats([selectedDocumentFormats[0] || "docx"]);
+      return;
+    }
+
+    if (activeTab === "text" && !isGuest && selectedDocumentFormats.length === 0) {
       return;
     }
 
@@ -236,11 +781,12 @@ const AIGeneratorPlatform: React.FC = () => {
       key: Date.now(),
     });
 
-    if (isConnectedGenerationTab(activeTab) && generationDisabledReason) {
-      const modelId =
-        model === "auto"
+    if (featureUnavailableReason) {
+      const modelId = isConnectedGenerationTab(activeTab)
+        ? model === "auto"
           ? getDefaultModelIdForTab(activeTab as GenerationTab)
-          : model;
+          : model
+        : "pending";
 
       setGenerations((previous) => [
         {
@@ -248,11 +794,16 @@ const AIGeneratorPlatform: React.FC = () => {
           type: activeTab as GenerationTab,
           prompt: trimmedPrompt,
           modelId,
-          modelLabel: getGenerationModelLabel(modelId),
+          modelLabel:
+            modelId === "pending"
+              ? currentLanguage === "zh"
+                ? "暂未开放"
+                : "Coming Soon"
+              : getGenerationModelLabel(modelId),
           provider: "system",
           status: "error",
           summary: currentLanguage === "zh" ? "生成失败" : "Generation failed",
-          errorMessage: generationDisabledReason,
+          errorMessage: featureUnavailableReason,
           createdAt: new Date().toISOString(),
         },
         ...previous,
@@ -262,47 +813,56 @@ const AIGeneratorPlatform: React.FC = () => {
 
     setIsGenerating(true);
 
-    if (!isConnectedGenerationTab(activeTab)) {
-      const summary =
-        activeTab.startsWith("edit_")
-          ? currentLanguage === "zh"
-            ? "编辑功能当前为 UI 演示，尚未接入后端模型。"
-            : "Editing is currently UI-only and not connected to a backend model yet."
-          : activeTab.startsWith("detect_")
-            ? currentLanguage === "zh"
-              ? "检测功能当前为 UI 演示，尚未接入后端模型。"
-              : "Detection is currently UI-only and not connected to a backend model yet."
-            : currentLanguage === "zh"
-              ? "当前类型仍为 UI 演示，尚未接入后端模型。"
-              : "This category is still UI-only and not connected to a backend model yet.";
-
-      window.setTimeout(() => {
-        setGenerations((previous) => [
-          {
-            id: `demo_${Date.now()}`,
-            type: activeTab as GenerationTab,
-            prompt: trimmedPrompt,
-            modelId: "ui-demo",
-            modelLabel: currentLanguage === "zh" ? "演示模式" : "UI Demo",
-            provider: "demo",
-            status: "success",
-            summary,
-            createdAt: new Date().toISOString(),
-          },
-          ...previous,
-        ]);
-        setIsGenerating(false);
-        setPrompt("");
-      }, 400);
-      return;
-    }
-
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (user && isDomesticVersion) {
+        try {
+          const tokenResult = await getCloudbaseAuth().getAccessToken();
+          const accessToken = tokenResult?.accessToken?.trim() || "";
+          if (!accessToken) {
+            throw new Error("EMPTY_TOKEN");
+          }
+          headers["x-cloudbase-access-token"] = accessToken;
+        } catch (error) {
+          console.warn("[AIGeneratorPlatform] getAccessToken failed:", error);
+          throw new Error(
+            currentLanguage === "zh"
+              ? "登录状态已失效，请重新登录后再试。"
+              : "Session expired. Please sign in again.",
+          );
+        }
+      }
+
+      if (user && !isDomesticVersion) {
+        const supabase = createSupabaseClient();
+        if (!supabase) {
+          throw new Error(
+            currentLanguage === "zh"
+              ? "Supabase 配置缺失，请联系管理员。"
+              : "Missing Supabase configuration.",
+          );
+        }
+
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+        if (sessionError || !session?.access_token) {
+          throw new Error(
+            currentLanguage === "zh"
+              ? "登录状态已失效，请重新登录后再试。"
+              : "Session expired. Please sign in again.",
+          );
+        }
+        headers.Authorization = `Bearer ${session.access_token}`;
+      }
+
       const response = await fetch("/api/generate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
           type: activeTab,
           prompt: trimmedPrompt,
@@ -311,7 +871,16 @@ const AIGeneratorPlatform: React.FC = () => {
         }),
       });
 
-      const payload = (await response.json()) as GenerationItem | { message?: string };
+      const payload = (await response.json()) as
+        | (GenerationItem & { guestQuota?: unknown })
+        | { message?: string; guestQuota?: unknown };
+      const payloadGuestQuota = parseGuestQuotaPayload(
+        (payload as { guestQuota?: unknown }).guestQuota,
+      );
+      if (payloadGuestQuota) {
+        setGuestQuota(payloadGuestQuota);
+      }
+
       if (!response.ok) {
         throw new Error(
           "message" in payload && typeof payload.message === "string"
@@ -355,47 +924,83 @@ const AIGeneratorPlatform: React.FC = () => {
     }
   };
 
-  const handleAuthSubmit = () => {
-    if (authMode === "reset") {
-      setAuthMode("login");
+  const navigateToAuthPage = useCallback(
+    (target: "login" | "signup" | "reset") => {
+      const nextPath =
+        typeof window === "undefined"
+          ? "/"
+          : `${window.location.pathname}${window.location.search}`;
+      const encodedNext = encodeURIComponent(nextPath || "/");
+      const path =
+        target === "login"
+          ? `/auth/login?next=${encodedNext}`
+          : target === "signup"
+            ? `/auth/sign-up?next=${encodedNext}`
+            : `/auth/forgot-password?next=${encodedNext}`;
+
+      setShowUserMenu(false);
+      setShowAuthDialog(false);
+      router.push(path);
+    },
+    [router],
+  );
+
+  const handleOpenLogin = useCallback(() => {
+    navigateToAuthPage("login");
+  }, [navigateToAuthPage]);
+
+  const handleOpenSignup = useCallback(() => {
+    navigateToAuthPage("signup");
+  }, [navigateToAuthPage]);
+
+  const handleOpenResetPassword = useCallback(() => {
+    navigateToAuthPage("reset");
+  }, [navigateToAuthPage]);
+
+  const handleOpenAccountCenter = useCallback(() => {
+    if (!user) {
+      navigateToAuthPage("login");
       return;
     }
-
-    const fallbackName =
-      authForm.email.split("@")[0] || (currentLanguage === "zh" ? "鐢ㄦ埛" : "User");
-    const nextUser: DashboardUser = {
-      name: authForm.name || fallbackName,
-      email: authForm.email || "demo@mornstudio.ai",
-      plan: selectedPlan,
-      planExp: getPlanExpiry(billingPeriod),
-    };
-    setUser(nextUser);
-    setShowAuthDialog(false);
-  };
+    setShowUserMenu(false);
+    setShowAuthDialog(true);
+  }, [navigateToAuthPage, user]);
 
   const handleLogout = () => {
+    if (isDomesticVersion) {
+      void getCloudbaseAuth()
+        .signOut()
+        .catch((error: unknown) => {
+          console.warn("[AIGeneratorPlatform] cloudbase signOut failed:", error);
+        });
+    } else {
+      const supabase = createSupabaseClient();
+      if (supabase) {
+        void supabase.auth.signOut().catch((error: unknown) => {
+          console.warn("[AIGeneratorPlatform] supabase signOut failed:", error);
+        });
+      }
+    }
     setUser(null);
+    setGuestQuota(null);
     setShowUserMenu(false);
-    setAuthMode("login");
-    setAuthForm({
-      name: "",
-      email: "",
-      password: "",
-      verificationCode: "",
-    });
   };
 
   const handleSubscribe = () => {
     if (!user) {
-      setAuthMode("login");
       setShowAuthDialog(true);
       return;
     }
-    setUser({
-      ...user,
-      plan: selectedPlan,
-      planExp: getPlanExpiry(billingPeriod),
-    });
+    setUser(
+      buildDemoUser({
+        userId: user.id,
+        source: user.source,
+        name: user.name,
+        email: user.email,
+        rawPlan: mapPlanCodeToUserPlan(selectedPlan),
+        planExp: getPlanExpiry(billingPeriod),
+      }),
+    );
     setShowSubscriptionDialog(false);
   };
 
@@ -406,13 +1011,13 @@ const AIGeneratorPlatform: React.FC = () => {
 
     return {
       auto: {
-        name: currentLanguage === "zh" ? "演示模式" : "Demo Mode",
+        name: currentLanguage === "zh" ? "暂未开放" : "Coming Soon",
       },
     };
   }, [activeTab, currentLanguage]);
 
-  const contentTypes = useMemo(
-    () => ({
+  const contentTypes = useMemo(() => {
+    const allContentTypes = {
       text: {
         label: currentLanguage === "zh" ? "文档" : "Docs",
         icon: "📝",
@@ -500,16 +1105,16 @@ const AIGeneratorPlatform: React.FC = () => {
         placeholder: text.promptPlaceholderDetection,
         category: "detect" as const,
       },
-    }),
-    [currentLanguage, text],
-  );
+    };
+
+    return allContentTypes;
+  }, [currentLanguage, text]);
 
   const tierLabel = (() => {
-    if (!user) return text.guest;
-    if (user.plan === "enterprise") return text.enterprisePlan;
-    if (user.plan === "pro") return text.proPlan;
-    if (user.plan === "basic") return text.basicPlan;
-    return text.freePlan;
+    if (!user) {
+      return text.guest;
+    }
+    return user.planDisplayName;
   })();
 
   const tierClassName = (() => {
@@ -519,15 +1124,62 @@ const AIGeneratorPlatform: React.FC = () => {
     if (user.plan === "basic") return "bg-amber-500 text-white";
     return "bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-100";
   })();
-  const currentPlan: UserPlan = user?.plan ?? "free";
-  const quota = quotaByPlan[currentPlan];
-  const dailyUsed = Math.round(quota.dailyLimit * 0.36);
-  const imageUsed = Math.round(quota.imageLimit * 0.41);
-  const videoUsed = Math.round(quota.videoLimit * 0.28);
-  const dailyPercent = Math.min((dailyUsed / quota.dailyLimit) * 100, 100);
-  const imagePercent = Math.min((imageUsed / quota.imageLimit) * 100, 100);
-  const videoPercent = Math.min((videoUsed / quota.videoLimit) * 100, 100);
+  const quotaSummary = user ? user.quotaSummary : null;
+  const documentQuota = quotaSummary?.document || null;
+  const imageQuota = quotaSummary?.image || null;
+  const videoQuota = quotaSummary?.video || null;
+  const audioQuota = quotaSummary?.audio || null;
+  const guestDocumentLimit = guestQuota?.limit ?? readGuestLimitFromEnv();
+  const guestDocumentRemaining =
+    guestQuota?.remaining ??
+    Math.max(0, guestDocumentLimit - (guestQuota?.used ?? 0));
+  const displayedDocumentLimit = user
+    ? documentQuota?.totalLimit || 0
+    : guestDocumentLimit;
+  const displayedDocumentRemaining = user
+    ? documentQuota?.remainingAmount || 0
+    : guestDocumentRemaining;
+  const displayedImageLimit = user ? imageQuota?.totalLimit || 0 : 0;
+  const displayedImageRemaining = user ? imageQuota?.remainingAmount || 0 : 0;
+  const displayedVideoAudioLimit = user
+    ? (videoQuota?.totalLimit || 0) + (audioQuota?.totalLimit || 0)
+    : 0;
+  const displayedVideoAudioRemaining = user
+    ? (videoQuota?.remainingAmount || 0) + (audioQuota?.remainingAmount || 0)
+    : 0;
+  const videoAudioAddonRemaining = user
+    ? (videoQuota?.addonRemaining || 0) + (audioQuota?.addonRemaining || 0)
+    : 0;
+  const documentPercent =
+    displayedDocumentLimit > 0
+      ? Math.min(
+          100,
+          Math.max(
+            0,
+            (displayedDocumentRemaining / displayedDocumentLimit) * 100,
+          ),
+        )
+      : 0;
+  const imagePercent =
+    displayedImageLimit > 0
+      ? Math.min(
+        100,
+        Math.max(0, (displayedImageRemaining / displayedImageLimit) * 100),
+        )
+      : 0;
+  const videoAudioPercent =
+    displayedVideoAudioLimit > 0
+      ? Math.min(
+        100,
+        Math.max(0, (displayedVideoAudioRemaining / displayedVideoAudioLimit) * 100),
+        )
+      : 0;
+  const isPaidUser = Boolean(user && user.plan !== "free");
   const addonText = currentLanguage === "zh" ? "加油包" : "Add-on";
+  const guestModeHint =
+    currentLanguage === "zh"
+      ? `游客仅可使用文档生成（单次单格式），本月额度 ${displayedDocumentRemaining}/${displayedDocumentLimit}`
+      : `Guest mode: docs-only, single format each time, quota ${displayedDocumentRemaining}/${displayedDocumentLimit}`;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-blue-50/50 dark:from-[#0f1115] dark:via-[#111827] dark:to-[#0f172a]">
@@ -537,7 +1189,7 @@ const AIGeneratorPlatform: React.FC = () => {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 min-w-0">
                 <h1 className="text-[1.45rem] leading-tight sm:text-[1.9rem] lg:text-3xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent truncate">
-                  {text.appName}
+                  {appDisplayName || text.appName}
                 </h1>
                 <div
                   ref={tierQuotaRef}
@@ -555,54 +1207,75 @@ const AIGeneratorPlatform: React.FC = () => {
                   {showTierQuota && (
                     <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+4.75rem)] max-h-[70vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-[#1f2937]/95 backdrop-blur p-3 shadow-2xl z-[70] space-y-2 sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-2 sm:w-64 sm:max-h-[calc(100vh-9rem)]">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="font-semibold text-gray-900 dark:text-gray-100">{tierLabel}</span>
+                        <span className="font-semibold text-gray-900 dark:text-gray-100">{text.monthlyDocument}</span>
                         <span className="text-gray-600 dark:text-gray-300">
-                          {dailyUsed}/{quota.dailyLimit}
+                          {displayedDocumentRemaining}/{displayedDocumentLimit}
                         </span>
                       </div>
                       <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                        <div className="h-full bg-gradient-to-r from-green-400 to-blue-500" style={{ width: `${dailyPercent}%` }} />
+                        <div
+                          className="h-full bg-gradient-to-r from-green-400 to-blue-500"
+                          style={{ width: `${documentPercent}%` }}
+                        />
                       </div>
 
-                      <div className="flex items-center justify-between text-xs text-gray-700 dark:text-gray-300">
-                        <span>{text.monthlyImage}</span>
-                        <span className="font-semibold text-gray-900 dark:text-gray-100">
-                          {imageUsed}/{quota.imageLimit}
-                        </span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                        <div className="h-full bg-gradient-to-r from-purple-400 to-violet-500" style={{ width: `${imagePercent}%` }} />
-                      </div>
+                      {user && (
+                        <>
+                          <div className="flex items-center justify-between text-xs text-gray-700 dark:text-gray-300">
+                            <span>{text.monthlyImage}</span>
+                            <span className="font-semibold text-gray-900 dark:text-gray-100">
+                              {displayedImageRemaining}/{displayedImageLimit}
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-purple-400 to-violet-500"
+                              style={{ width: `${imagePercent}%` }}
+                            />
+                          </div>
 
-                      <div className="flex items-center justify-between text-xs text-gray-700 dark:text-gray-300">
-                        <span>{text.monthlyVideo}</span>
-                        <span className="font-semibold text-gray-900 dark:text-gray-100">
-                          {videoUsed}/{quota.videoLimit}
-                        </span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                        <div className="h-full bg-gradient-to-r from-orange-400 to-rose-500" style={{ width: `${videoPercent}%` }} />
-                      </div>
+                          <div className="flex items-center justify-between text-xs text-gray-700 dark:text-gray-300">
+                            <span>{text.monthlyVideo}</span>
+                            <span className="font-semibold text-gray-900 dark:text-gray-100">
+                              {displayedVideoAudioRemaining}/{displayedVideoAudioLimit}
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-orange-400 to-rose-500"
+                              style={{ width: `${videoAudioPercent}%` }}
+                            />
+                          </div>
 
-                      <div className="pt-2 border-t border-dashed border-gray-200 dark:border-gray-700 space-y-1 text-xs">
-                        <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
-                          <span>{addonText} {currentLanguage === "zh" ? "鍥剧墖" : "Images"}</span>
-                          <span className="font-semibold text-gray-900 dark:text-gray-100">{quota.addonImage}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
-                          <span>{addonText} {currentLanguage === "zh" ? "瑙嗛/闊抽" : "Video/Audio"}</span>
-                          <span className="font-semibold text-gray-900 dark:text-gray-100">{quota.addonVideo}</span>
-                        </div>
-                      </div>
+                          <div className="pt-2 border-t border-dashed border-gray-200 dark:border-gray-700 space-y-1 text-xs">
+                            <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
+                              <span>{addonText} {currentLanguage === "zh" ? "图片" : "Images"}</span>
+                              <span className="font-semibold text-gray-900 dark:text-gray-100">
+                                {imageQuota?.addonRemaining || 0}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
+                              <span>{addonText} {currentLanguage === "zh" ? "视频/音频" : "Video/Audio"}</span>
+                              <span className="font-semibold text-gray-900 dark:text-gray-100">
+                                {videoAudioAddonRemaining}
+                              </span>
+                            </div>
+                          </div>
+                        </>
+                      )}
 
                       <p className="text-[11px] text-gray-500 dark:text-gray-400 pt-1">
                         {user
                           ? user.planExp
-                            ? `${text.expiresAt}: ${new Date(user.planExp).toLocaleDateString()}`
-                            : text.activeSubscription
-                          : currentLanguage === "zh"
-                            ? "璁垮妯″紡锛堟紨绀猴級"
-                            : "Guest mode (demo)"}
+                            ? user.isPlanActive
+                              ? `${text.expiresAt}: ${new Date(user.planExp).toLocaleDateString()}`
+                              : currentLanguage === "zh"
+                                ? "已过期"
+                                : "Expired"
+                            : user.plan === "free"
+                              ? text.freePlan
+                              : text.activeSubscription
+                          : guestModeHint}
                       </p>
                     </div>
                   )}
@@ -622,48 +1295,62 @@ const AIGeneratorPlatform: React.FC = () => {
                 switchToDark={text.switchToDark}
               />
 
-              <button
-                type="button"
-                onClick={() => setShowSubscriptionDialog(true)}
-                className="flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white border border-blue-600 h-8 w-8 sm:h-8 sm:w-auto rounded-md px-0 sm:px-2 transition-colors"
-                title={text.upgradeTip}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-3.5 w-3.5 sm:mr-1"
-                  aria-hidden="true"
+              {user && (
+                <button
+                  type="button"
+                  onClick={() => setShowSubscriptionDialog(true)}
+                  className="flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white border border-blue-600 h-8 w-8 sm:h-8 sm:w-auto rounded-md px-0 sm:px-2 transition-colors"
+                  title={text.upgradeTip}
                 >
-                  <path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
-                  <path d="M5 21h14" />
-                </svg>
-                <span className="hidden sm:inline text-xs font-medium">
-                  {text.subscribeButton}
-                </span>
-              </button>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-3.5 w-3.5 sm:mr-1"
+                    aria-hidden="true"
+                  >
+                    <path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
+                    <path d="M5 21h14" />
+                  </svg>
+                  <span className="hidden sm:inline text-xs font-medium">
+                    {text.subscribeButton}
+                  </span>
+                </button>
+              )}
 
               {user ? (
                 <div className="relative" ref={userMenuRef}>
                   <button
                     type="button"
                     onClick={() => setShowUserMenu((previous) => !previous)}
-                    className="h-8 bg-white dark:bg-[#40414f] text-gray-900 dark:text-[#ececf1] border border-gray-300 dark:border-[#565869] hover:bg-gray-50 dark:hover:bg-[#565869] rounded-md px-2 text-xs flex items-center gap-1 min-w-[84px] sm:min-w-[110px]"
+                    className="h-8 w-20 sm:w-28 bg-white dark:bg-[#40414f] text-gray-900 dark:text-[#ececf1] border border-gray-300 dark:border-[#565869] hover:bg-gray-50 dark:hover:bg-[#565869] rounded-md px-1.5 sm:px-2 text-xs flex items-center justify-center gap-1"
                   >
-                    <span className="truncate">{user.name}</span>
+                    {isPaidUser && (
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-3 w-3 shrink-0 text-gray-900 dark:text-gray-100"
+                        aria-hidden="true"
+                      >
+                        <path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
+                        <path d="M5 21h14" />
+                      </svg>
+                    )}
+                    <span className="truncate max-w-[52px] sm:max-w-[72px]">{user.name}</span>
                     <span className="text-[10px]">▾</span>
                   </button>
                   {showUserMenu && (
                     <div className="absolute right-0 mt-1 w-40 bg-white dark:bg-[#40414f] border border-gray-200 dark:border-[#565869] rounded-md shadow-lg py-1 z-30">
                       <button
                         type="button"
-                        onClick={() => {
-                          setShowAuthDialog(true);
-                          setShowUserMenu(false);
-                        }}
+                        onClick={handleOpenAccountCenter}
                         className="w-full text-left px-3 py-2 text-xs text-gray-900 dark:text-[#ececf1] hover:bg-gray-100 dark:hover:bg-[#565869]"
                       >
                         {text.account}
@@ -726,6 +1413,9 @@ const AIGeneratorPlatform: React.FC = () => {
               onClearAllDocumentFormats={handleClearAllDocumentFormats}
               onGenerate={handleGenerate}
               generationDisabledReason={generationDisabledReason}
+              featureUnavailableReason={featureUnavailableReason}
+              isGuest={!user}
+              guestQuota={guestQuota}
             />
           </div>
 
@@ -754,19 +1444,15 @@ const AIGeneratorPlatform: React.FC = () => {
               className="absolute top-2 right-2 z-10 h-7 w-7 rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-700 dark:text-gray-200 text-sm border border-gray-200 dark:border-gray-700"
               aria-label={text.modalClose}
             >
-              脳
+              ×
             </button>
             <AuthSystem
               currentLanguage={currentLanguage}
-              authMode={authMode}
-              setAuthMode={setAuthMode}
-              authForm={authForm}
-              setAuthForm={setAuthForm}
-              showPassword={showPassword}
-              setShowPassword={setShowPassword}
               isDomesticVersion={isDomesticVersion}
               user={user ? { name: user.name, email: user.email } : null}
-              onSubmit={handleAuthSubmit}
+              onLogin={handleOpenLogin}
+              onSignup={handleOpenSignup}
+              onResetPassword={handleOpenResetPassword}
               onLogout={handleLogout}
             />
           </div>
@@ -788,7 +1474,7 @@ const AIGeneratorPlatform: React.FC = () => {
               className="absolute top-2 right-2 z-10 h-7 w-7 rounded-full bg-white/90 dark:bg-gray-800/90 text-gray-700 dark:text-gray-200 text-sm border border-gray-200 dark:border-gray-700"
               aria-label={text.modalClose}
             >
-              脳
+              ×
             </button>
             <PaymentSystem
               currentLanguage={currentLanguage}

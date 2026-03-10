@@ -18,6 +18,12 @@ interface ContentTypeInfo {
   category: "generate" | "edit" | "detect";
 }
 
+interface GuestQuotaView {
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
 interface AIOperationsProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
@@ -38,6 +44,9 @@ interface AIOperationsProps {
   onClearAllDocumentFormats: () => void;
   onGenerate: () => void;
   generationDisabledReason?: string | null;
+  featureUnavailableReason?: string | null;
+  isGuest?: boolean;
+  guestQuota?: GuestQuotaView | null;
 }
 
 const AIOperations: React.FC<AIOperationsProps> = ({
@@ -60,6 +69,9 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   onClearAllDocumentFormats,
   onGenerate,
   generationDisabledReason,
+  featureUnavailableReason,
+  isGuest = false,
+  guestQuota = null,
 }) => {
   const currentType = contentTypes[activeTab];
   const [activeCategory, setActiveCategory] = useState<
@@ -102,6 +114,8 @@ const AIOperations: React.FC<AIOperationsProps> = ({
 
   const isDetectMode = activeCategory === "detect";
   const isEditMode = activeCategory === "edit";
+  const isGuestUnsupportedUsage =
+    isGuest && (activeCategory !== "generate" || activeTab !== "text");
   const requiresFileUpload = isDetectMode || isEditMode;
   const isDocumentGeneration = activeCategory === "generate" && activeTab === "text";
   const areAllDocumentFormatsSelected =
@@ -134,13 +148,20 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   const detectingText = currentLanguage === "zh" ? "检测中..." : "Detecting...";
   const editButtonText = currentLanguage === "zh" ? "上传并编辑" : "Upload & Edit";
   const editingText = currentLanguage === "zh" ? "编辑中..." : "Editing...";
-  const canGenerate = isDetectMode
-    ? Boolean(selectedFile)
-    : isEditMode
-      ? Boolean(selectedFile) && prompt.trim().length > 0
-      : prompt.trim().length > 0 &&
-        (!isDocumentGeneration || selectedDocumentFormats.length > 0) &&
-        !generationDisabledReason;
+  const canGenerate = featureUnavailableReason
+    ? false
+    : isGuestUnsupportedUsage
+    ? false
+    : isDetectMode
+      ? Boolean(selectedFile)
+      : isEditMode
+        ? Boolean(selectedFile) && prompt.trim().length > 0
+        : prompt.trim().length > 0 &&
+          (!isDocumentGeneration ||
+            (isGuest
+              ? selectedDocumentFormats.length === 1
+              : selectedDocumentFormats.length > 0)) &&
+          !generationDisabledReason;
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -266,6 +287,13 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         <button
           type="button"
           onClick={() => handleCategorySwitch("edit")}
+          title={
+            isGuest
+              ? currentLanguage === "zh"
+                ? "游客可浏览，登录后可使用 AI 编辑"
+                : "Guests can browse, sign in to use AI Editing"
+              : undefined
+          }
           className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
             activeCategory === "edit"
               ? "bg-blue-600 text-white shadow-sm"
@@ -277,6 +305,13 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         <button
           type="button"
           onClick={() => handleCategorySwitch("detect")}
+          title={
+            isGuest
+              ? currentLanguage === "zh"
+                ? "游客可浏览，登录后可使用 AI 检测"
+                : "Guests can browse, sign in to use AI Detection"
+              : undefined
+          }
           className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
             activeCategory === "detect"
               ? "bg-blue-600 text-white shadow-sm"
@@ -288,7 +323,8 @@ const AIOperations: React.FC<AIOperationsProps> = ({
       </div>
 
       <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-        {visibleContentTypes.map(([key, type]) => (
+        {visibleContentTypes.map(([key, type]) => {
+          return (
           <button
             key={key}
             type="button"
@@ -301,36 +337,43 @@ const AIOperations: React.FC<AIOperationsProps> = ({
           >
             {type.icon} {type.label}
           </button>
-        ))}
+          );
+        })}
       </div>
 
       {isDocumentGeneration && (
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/30 p-3 sm:p-4 space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-              {currentLanguage === "zh"
-                ? "选择需要生成的文档格式"
-                : "Choose document formats before generating"}
+              {isGuest
+                ? currentLanguage === "zh"
+                  ? "游客模式：每次仅支持一个文档格式"
+                  : "Guest mode: only one document format per request"
+                : currentLanguage === "zh"
+                  ? "选择需要生成的文档格式"
+                  : "Choose document formats before generating"}
             </p>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={onSelectAllDocumentFormats}
-                disabled={areAllDocumentFormatsSelected}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
-              >
-                {currentLanguage === "zh" ? "全选" : "Select all"}
-              </button>
-              <button
-                type="button"
-                onClick={onClearAllDocumentFormats}
-                disabled={selectedDocumentFormats.length === 0}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
-              >
-                {currentLanguage === "zh" ? "取消全选" : "Clear all"}
-              </button>
-            </div>
+            {!isGuest && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={onSelectAllDocumentFormats}
+                  disabled={areAllDocumentFormatsSelected}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
+                >
+                  {currentLanguage === "zh" ? "全选" : "Select all"}
+                </button>
+                <button
+                  type="button"
+                  onClick={onClearAllDocumentFormats}
+                  disabled={selectedDocumentFormats.length === 0}
+                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
+                >
+                  {currentLanguage === "zh" ? "取消全选" : "Clear all"}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -353,11 +396,27 @@ const AIOperations: React.FC<AIOperationsProps> = ({
             })}
           </div>
 
+          {isGuest && guestQuota && (
+            <p className="text-xs text-gray-600 dark:text-gray-300">
+              {currentLanguage === "zh"
+                ? `游客本月文档额度：${guestQuota.remaining}/${guestQuota.limit}`
+                : `Guest monthly docs quota: ${guestQuota.remaining}/${guestQuota.limit}`}
+            </p>
+          )}
+
           {selectedDocumentFormats.length === 0 && (
             <p className="text-xs text-red-600 dark:text-red-400">
               {currentLanguage === "zh"
                 ? "请至少选择一种文档格式。"
                 : "Please select at least one document format."}
+            </p>
+          )}
+
+          {isGuest && selectedDocumentFormats.length !== 1 && (
+            <p className="text-xs text-red-600 dark:text-red-400">
+              {currentLanguage === "zh"
+                ? "游客模式下每次必须且仅能选择一种文档格式。"
+                : "Guest mode requires exactly one document format."}
             </p>
           )}
         </div>
@@ -384,9 +443,16 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         />
       )}
 
-      {activeCategory === "generate" && generationDisabledReason && (
+      {featureUnavailableReason && (
         <p className="text-sm text-amber-600 dark:text-amber-400">
-          {generationDisabledReason}
+          {featureUnavailableReason}
+        </p>
+      )}
+      {isGuestUnsupportedUsage && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          {currentLanguage === "zh"
+            ? "当前仅可浏览，游客仅支持文档生成。请登录后使用该功能。"
+            : "Browse only. Guest mode supports doc generation only. Please sign in to use this feature."}
         </p>
       )}
 

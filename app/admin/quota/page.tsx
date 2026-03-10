@@ -8,6 +8,10 @@ import {
   type AddonPackageRow,
   type SubscriptionPlanRow,
 } from "@/actions/admin-quota";
+import {
+  getAdminAppDisplayName,
+  updateAdminAppDisplayName,
+} from "@/actions/admin-branding";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,14 +20,16 @@ import { Input } from "@/components/ui/input";
 import { Loader2, RefreshCw } from "lucide-react";
 
 function getSourceLabel() {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "en").toLowerCase();
+  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
   return language.startsWith("zh") ? "国内版（cn）" : "国际版（global）";
 }
 
 export default function AdminQuotaPage() {
   const [plans, setPlans] = useState<SubscriptionPlanRow[]>([]);
   const [addons, setAddons] = useState<AddonPackageRow[]>([]);
+  const [appDisplayName, setAppDisplayName] = useState("");
   const [loadingConfig, setLoadingConfig] = useState(true);
+  const [savingDisplayName, setSavingDisplayName] = useState(false);
   const [savingPlan, setSavingPlan] = useState<string | null>(null);
   const [savingAddon, setSavingAddon] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +40,13 @@ export default function AdminQuotaPage() {
   async function loadConfig() {
     setLoadingConfig(true);
     try {
-      const result = await getQuotaConfig();
-      setPlans(result.plans || []);
-      setAddons(result.addons || []);
+      const [quotaResult, brandingResult] = await Promise.all([
+        getQuotaConfig(),
+        getAdminAppDisplayName(),
+      ]);
+      setPlans(quotaResult.plans || []);
+      setAddons(quotaResult.addons || []);
+      setAppDisplayName(brandingResult.appDisplayName || "");
     } catch {
       setError("加载套餐与加油包配置失败");
     } finally {
@@ -52,6 +62,27 @@ export default function AdminQuotaPage() {
     setError(null);
     setSuccess(null);
     await loadConfig();
+  }
+
+  async function handleSaveDisplayName(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setSavingDisplayName(true);
+    setError(null);
+    setSuccess(null);
+
+    const formData = new FormData(e.currentTarget);
+    const result = await updateAdminAppDisplayName(formData);
+
+    if (!result.success) {
+      setError(result.error || "更新项目名称失败");
+    } else {
+      const nextDisplayName = result.data?.appDisplayName || appDisplayName.trim();
+      setAppDisplayName(nextDisplayName);
+      setSuccess(`项目名称已更新为 ${nextDisplayName}`);
+      await loadConfig();
+    }
+
+    setSavingDisplayName(false);
   }
 
   async function handleSavePlan(planCode: string, e: FormEvent<HTMLFormElement>) {
@@ -122,6 +153,38 @@ export default function AdminQuotaPage() {
           <AlertDescription>{success}</AlertDescription>
         </Alert>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">名称更改</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <form
+            onSubmit={(e) => void handleSaveDisplayName(e)}
+            className="flex flex-col gap-3 md:flex-row md:items-center"
+          >
+            <Input
+              name="app_display_name"
+              value={appDisplayName}
+              onChange={(e) => setAppDisplayName(e.target.value)}
+              placeholder="请输入项目名称"
+              className="md:max-w-md"
+              maxLength={64}
+            />
+            <Button
+              type="submit"
+              variant="outline"
+              disabled={savingDisplayName || !appDisplayName.trim()}
+            >
+              {savingDisplayName && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              一键改名
+            </Button>
+          </form>
+          <p className="mt-2 text-xs text-muted-foreground">
+            保存后将同步更新前台标题、后台标题与浏览器页面标题。
+          </p>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>

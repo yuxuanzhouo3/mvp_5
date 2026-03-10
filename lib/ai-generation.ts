@@ -138,7 +138,7 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
   },
   {
     id: "ui-demo",
-    label: "UI Demo",
+    label: "Coming Soon",
     provider: "demo",
     mode: "demo",
     tabs: [
@@ -152,10 +152,10 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
       "detect_video",
     ],
     region: "demo",
-    optionLabelZh: "演示模式",
-    optionLabelEn: "Demo Mode",
-    autoLabelZh: "演示模式",
-    autoLabelEn: "Demo Mode",
+    optionLabelZh: "开发中",
+    optionLabelEn: "Coming Soon",
+    autoLabelZh: "开发中",
+    autoLabelEn: "Coming Soon",
   },
 ] as const;
 

@@ -60,6 +60,44 @@ export type DailyRevenueStat = {
 export type DailyStats = DailyUserStat;
 export type RevenueStats = DailyRevenueStat;
 
+type StatsUserRow = {
+  source?: string | null;
+  id?: string | null;
+  created_at?: string | null;
+  current_plan_code?: string | null;
+};
+
+type StatsOrderRow = {
+  source?: string | null;
+  user_id?: string | null;
+  amount?: number | string | null;
+  payment_status?: string | null;
+  created_at?: string | null;
+  paid_at?: string | null;
+  currency?: string | null;
+};
+
+type StatsSubscriptionRow = {
+  source?: string | null;
+  plan_code?: string | null;
+  status?: string | null;
+  current_period_end?: string | null;
+};
+
+type StatsSessionRow = {
+  source?: string | null;
+  user_id?: string | null;
+  os?: string | null;
+  device_type?: string | null;
+  started_at?: string | null;
+};
+
+type StatsTaskRow = {
+  source?: string | null;
+  user_id?: string | null;
+  created_at?: string | null;
+};
+
 function getDateThresholds() {
   const now = new Date();
   const todayStart = new Date(now);
@@ -144,11 +182,14 @@ export async function getDashboardStats(
     return null;
   }
 
-  const users = withinSourceScope(usersRows.data || [], sourceScope);
-  const orders = withinSourceScope(ordersRows.data || [], sourceScope);
-  const subscriptions = withinSourceScope(subsRows.data || [], sourceScope);
-  const sessions = withinSourceScope(sessionsRows.data || [], sourceScope);
-  const tasks = withinSourceScope(tasksRows.data || [], sourceScope);
+  const users = withinSourceScope((usersRows.data || []) as StatsUserRow[], sourceScope);
+  const orders = withinSourceScope((ordersRows.data || []) as StatsOrderRow[], sourceScope);
+  const subscriptions = withinSourceScope(
+    (subsRows.data || []) as StatsSubscriptionRow[],
+    sourceScope,
+  );
+  const sessions = withinSourceScope((sessionsRows.data || []) as StatsSessionRow[], sourceScope);
+  const tasks = withinSourceScope((tasksRows.data || []) as StatsTaskRow[], sourceScope);
 
   const userToday = users.filter((u) => (u.created_at || "") >= todayIso).length;
   const userWeek = users.filter((u) => (u.created_at || "") >= weekIso).length;
@@ -317,8 +358,11 @@ export async function getDailyActiveUsers(
     return [];
   }
 
-  const sessionRows = withinSourceScope(sessionsResult.data || [], sourceScope);
-  const taskRows = withinSourceScope(tasksResult.data || [], sourceScope);
+  const sessionRows = withinSourceScope(
+    (sessionsResult.data || []) as StatsSessionRow[],
+    sourceScope,
+  );
+  const taskRows = withinSourceScope((tasksResult.data || []) as StatsTaskRow[], sourceScope);
   const dateMap = new Map<string, { activeUsers: Set<string>; taskCount: number }>();
 
   for (const row of sessionRows) {
@@ -346,7 +390,7 @@ export async function getDailyActiveUsers(
     item.taskCount += 1;
   }
 
-  const userRows = withinSourceScope(usersResult.data || [], sourceScope);
+  const userRows = withinSourceScope((usersResult.data || []) as StatsUserRow[], sourceScope);
   const newUserCountByDate = new Map<string, number>();
   for (const row of userRows) {
     if (!row.created_at) continue;
@@ -391,7 +435,7 @@ export async function getDailyRevenue(
     return [];
   }
 
-  const rows = withinSourceScope(data || [], sourceScope);
+  const rows = withinSourceScope((data || []) as StatsOrderRow[], sourceScope);
   const dateMap = new Map<
     string,
     { amount: number; orderCount: number; payingUsers: Set<string> }

@@ -1,14 +1,45 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/context/LanguageContext";
+import { getCloudbaseConfigError } from "@/lib/cloudbase/client";
+import { createClient as createSupabaseClient } from "@/lib/supabase/client";
+import {
+  extractDomesticAuthErrorMessage,
+  loginWithDomesticEmailPassword,
+  resetDomesticPasswordWithCode,
+  sendDomesticEmailCode,
+  signUpWithDomesticEmailCode,
+  type DomesticAuthScene,
+  type DomesticVerificationInfo,
+} from "@/lib/cloudbase/domestic-email-auth";
 
 type Mode = "login" | "signup" | "reset";
 
 interface AuthPageProps {
   mode: Mode;
+}
+
+function sanitizeNextPath(next: string | null) {
+  if (!next) {
+    return "/";
+  }
+  if (!next.startsWith("/") || next.startsWith("//")) {
+    return "/";
+  }
+  return next;
+}
+
+function mapSupabaseSignUpErrorMessage(rawMessage: string, isZh: boolean) {
+  const normalized = rawMessage.trim().toLowerCase();
+  if (normalized.includes("database error saving new user")) {
+    return isZh
+      ? "注册失败：该邮箱存在历史数据冲突。请稍后重试；若持续失败，请联系管理员执行数据库修复迁移。"
+      : "Sign-up failed due to historical data conflict for this email. Please try again later.";
+  }
+  return rawMessage;
 }
 
 function UserIcon({ className }: { className?: string }) {
@@ -117,7 +148,11 @@ export function AuthPage({ mode }: AuthPageProps) {
   const searchParams = useSearchParams();
   const { currentLanguage, isDomesticVersion } = useLanguage();
   const isZh = currentLanguage === "zh";
-  const next = searchParams.get("next") || searchParams.get("redirect") || "/";
+  const next = sanitizeNextPath(searchParams.get("next") || searchParams.get("redirect"));
+  const supabase = useMemo(
+    () => (isDomesticVersion ? null : createSupabaseClient()),
+    [isDomesticVersion],
+  );
 
   const [form, setForm] = useState({
     name: "",
@@ -133,6 +168,56 @@ export function AuthPage({ mode }: AuthPageProps) {
   const [showPrivacyDialog, setShowPrivacyDialog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [verificationInfo, setVerificationInfo] = useState<DomesticVerificationInfo | null>(null);
+  const [verificationScene, setVerificationScene] = useState<DomesticAuthScene | null>(null);
+
+  const currentDomesticScene: DomesticAuthScene =
+    mode === "signup" ? "signup" : mode === "reset" ? "reset" : "login";
+  const cloudbaseConfigError = useMemo(() => {
+    return isDomesticVersion ? getCloudbaseConfigError() : null;
+  }, [isDomesticVersion]);
+
+  const pushEmailDeliveryLog = useCallback(
+    async (input: {
+      action:
+        | "signup_verification_email_request"
+        | "signup_verification_email_resend"
+        | "password_reset_email_request";
+      status: "accepted" | "failed";
+      email?: string | null;
+      detail?: string | null;
+    }) => {
+      if (isDomesticVersion) {
+        return;
+      }
+
+      const requestId =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+
+      try {
+        await fetch("/api/auth/email-delivery-log", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          keepalive: true,
+          cache: "no-store",
+          body: JSON.stringify({
+            action: input.action,
+            status: input.status,
+            email: input.email?.trim().toLowerCase() || null,
+            detail: input.detail || null,
+            requestId,
+          }),
+        });
+      } catch (error) {
+        console.warn("[AuthPage] pushEmailDeliveryLog failed:", error);
+      }
+    },
+    [isDomesticVersion],
+  );
 
   useEffect(() => {
     if (countdown <= 0) {
@@ -161,16 +246,86 @@ export function AuthPage({ mode }: AuthPageProps) {
   }, [mode, isZh, isDomesticVersion]);
 
   const handleChange = (key: "name" | "email" | "password" | "verificationCode", value: string) => {
+    if (key === "email") {
+      setVerificationInfo(null);
+      setVerificationScene(null);
+      setCountdown(0);
+    }
     setForm((previous) => ({ ...previous, [key]: value }));
   };
 
-  const handleSendCode = () => {
+  const buildConfirmRedirectUrl = () => {
+    const confirmRedirectUrl = new URL("/auth/confirm", window.location.origin);
+    confirmRedirectUrl.searchParams.set("next", next);
+    return confirmRedirectUrl.toString();
+  };
+
+  const resendVerificationEmailAutomatically = useCallback(
+    async (email: string) => {
+      if (isDomesticVersion || !supabase) {
+        return;
+      }
+
+      const normalizedEmail = email.trim();
+      const confirmRedirectUrl = new URL("/auth/confirm", window.location.origin);
+      confirmRedirectUrl.searchParams.set("next", next);
+      const { error: resendError } = await supabase.auth.resend({
+        type: "signup",
+        email: normalizedEmail,
+        options: {
+          emailRedirectTo: confirmRedirectUrl.toString(),
+        },
+      });
+
+      if (resendError) {
+        await pushEmailDeliveryLog({
+          action: "signup_verification_email_resend",
+          status: "failed",
+          email: normalizedEmail,
+          detail: resendError.message,
+        });
+        throw resendError;
+      }
+
+      await pushEmailDeliveryLog({
+        action: "signup_verification_email_resend",
+        status: "accepted",
+        email: normalizedEmail,
+      });
+    },
+    [isDomesticVersion, pushEmailDeliveryLog, supabase, next],
+  );
+
+  const handleSendCode = async () => {
     setError(null);
     setSuccess(null);
-    if (!form.email) {
+
+    if (!form.email.trim()) {
       setError(isZh ? "请先输入邮箱地址" : "Please enter email first");
       return;
     }
+
+    if (isDomesticVersion) {
+      if (cloudbaseConfigError) {
+        setError(cloudbaseConfigError);
+        return;
+      }
+
+      setSendingCode(true);
+      try {
+        const info = await sendDomesticEmailCode(form.email, currentDomesticScene);
+        setVerificationInfo(info);
+        setVerificationScene(currentDomesticScene);
+        setCountdown(60);
+        setSuccess(isZh ? "验证码已发送" : "Verification code sent");
+      } catch (sendError) {
+        setError(extractDomesticAuthErrorMessage(sendError, isZh ? "发送验证码失败" : "Failed to send code"));
+      } finally {
+        setSendingCode(false);
+      }
+      return;
+    }
+
     setSendingCode(true);
     setTimeout(() => {
       setSendingCode(false);
@@ -179,37 +334,83 @@ export function AuthPage({ mode }: AuthPageProps) {
     }, 900);
   };
 
-  const handleThirdPartyLogin = () => {
+  const handleThirdPartyLogin = async () => {
     setError(null);
     setSuccess(null);
+    if (isDomesticVersion) {
+      setError(isZh ? "微信登录暂未接入，请使用邮箱和密码登录" : "WeChat login is not ready. Please use email and password.");
+      return;
+    }
+
+    if (!supabase) {
+      setError(
+        isZh
+          ? "Supabase 配置缺失，暂时无法使用 Google 登录。"
+          : "Supabase is not configured. Google sign-in is unavailable.",
+      );
+      return;
+    }
+
     setIsLoading(true);
-    setTimeout(() => {
+
+    try {
+      const oauthStartUrl = new URL("/auth/google", window.location.origin);
+      if (next && next !== "/") {
+        oauthStartUrl.searchParams.set("next", next);
+      }
+      window.location.href = oauthStartUrl.toString();
+    } catch (oauthError) {
+      setError(
+        extractDomesticAuthErrorMessage(
+          oauthError,
+          isZh ? "Google 登录失败，请稍后重试。" : "Google sign-in failed. Please try again.",
+        ),
+      );
       setIsLoading(false);
-      router.push(next);
-    }, 1000);
+    }
   };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
     setSuccess(null);
+
+    if (isDomesticVersion && cloudbaseConfigError) {
+      setError(cloudbaseConfigError);
+      return;
+    }
+
+    const requireVerificationCode = isDomesticVersion && (mode === "signup" || mode === "reset");
+    if (requireVerificationCode && !form.verificationCode.trim()) {
+      setError(isZh ? "请输入验证码" : "Please enter verification code");
+      return;
+    }
+
+    if (
+      requireVerificationCode &&
+      (!verificationInfo ||
+        !verificationInfo.verification_id ||
+        verificationScene !== currentDomesticScene)
+    ) {
+      setError(isZh ? "请先发送验证码后再提交" : "Please send verification code first");
+      return;
+    }
 
     if (mode === "signup") {
       if (form.password.length < 6) {
         setError(isZh ? "密码至少需要6个字符" : "Password must be at least 6 characters");
         return;
       }
-      if (isDomesticVersion && !form.verificationCode) {
-        setError(isZh ? "请输入验证码" : "Please enter verification code");
+    }
+
+    if (mode === "login" && isDomesticVersion) {
+      if (!form.password) {
+        setError(isZh ? "请输入密码" : "Please enter password");
         return;
       }
     }
 
     if (mode === "reset" && isDomesticVersion) {
-      if (!form.verificationCode) {
-        setError(isZh ? "请输入验证码" : "Please enter verification code");
-        return;
-      }
       if (!form.password) {
         setError(isZh ? "请输入新密码" : "Please enter new password");
         return;
@@ -222,33 +423,189 @@ export function AuthPage({ mode }: AuthPageProps) {
 
     setIsLoading(true);
 
-    setTimeout(() => {
-      setIsLoading(false);
-      if (mode === "login") {
-        router.push(next);
-        return;
-      }
-      if (mode === "signup") {
-        router.push(`/auth/login?next=${encodeURIComponent(next)}`);
-        return;
-      }
-      setSuccess(
-        isDomesticVersion
-          ? isZh
+    try {
+      if (isDomesticVersion) {
+        if (mode === "login") {
+          await loginWithDomesticEmailPassword({
+            email: form.email,
+            password: form.password,
+          });
+          setSuccess(isZh ? "登录成功，正在跳转" : "Login successful, redirecting");
+          router.push(next);
+          return;
+        }
+
+        const verifiedInfo = verificationInfo as DomesticVerificationInfo;
+        if (mode === "signup") {
+          await signUpWithDomesticEmailCode({
+            email: form.email,
+            password: form.password,
+            name: form.name,
+            code: form.verificationCode,
+            verificationInfo: verifiedInfo,
+          });
+          setSuccess(isZh ? "注册成功，正在跳转登录" : "Sign up successful, redirecting to login");
+          window.setTimeout(() => {
+            router.push(`/auth/login?next=${encodeURIComponent(next)}`);
+          }, 1200);
+          return;
+        }
+
+        await resetDomesticPasswordWithCode({
+          email: form.email,
+          newPassword: form.password,
+          code: form.verificationCode,
+          verificationInfo: verifiedInfo,
+        });
+        setSuccess(
+          isZh
             ? "密码重置成功，正在跳转登录"
-            : "Password reset successful, redirecting to login"
-          : isZh
-            ? "重置链接已发送，请查收邮箱"
-            : "Reset link sent. Please check your email",
+            : "Password reset successful, redirecting to login",
+        );
+        window.setTimeout(() => router.push("/auth/login"), 1200);
+        return;
+      }
+
+      if (!supabase) {
+        throw new Error(
+          isZh
+            ? "Supabase 配置缺失，暂时无法完成该操作。"
+            : "Supabase is not configured.",
+        );
+      }
+
+      if (mode === "login") {
+        const { data, error: signInError } =
+          await supabase.auth.signInWithPassword({
+            email: form.email.trim(),
+            password: form.password,
+          });
+
+        if (signInError) {
+          throw signInError;
+        }
+
+        if (!data.user?.email_confirmed_at) {
+          await supabase.auth.signOut();
+          await resendVerificationEmailAutomatically(form.email.trim());
+          setSuccess(
+            isZh
+              ? "该邮箱尚未完成验证，系统已自动重新发送验证邮件，请查收邮箱。"
+              : "This email is not verified. A new verification email has been sent automatically.",
+          );
+          return;
+        }
+
+        setSuccess(isZh ? "登录成功，正在跳转" : "Login successful, redirecting");
+        window.location.href = next;
+        return;
+      }
+
+      if (mode === "signup") {
+        const normalizedEmail = form.email.trim();
+
+        const { data, error: signUpError } = await supabase.auth.signUp({
+          email: normalizedEmail,
+          password: form.password,
+          options: {
+            data: {
+              full_name: form.name.trim(),
+            },
+            emailRedirectTo: buildConfirmRedirectUrl(),
+          },
+        });
+
+        if (signUpError) {
+          const mappedMessage = mapSupabaseSignUpErrorMessage(
+            signUpError.message || "",
+            isZh,
+          );
+          await pushEmailDeliveryLog({
+            action: "signup_verification_email_request",
+            status: "failed",
+            email: normalizedEmail,
+            detail: mappedMessage,
+          });
+          throw new Error(mappedMessage);
+        }
+
+        if (data.user && (!data.user.identities || data.user.identities.length === 0)) {
+          await pushEmailDeliveryLog({
+            action: "signup_verification_email_request",
+            status: "accepted",
+            email: normalizedEmail,
+            detail: "existing_unverified_user_auto_resend",
+          });
+          await resendVerificationEmailAutomatically(normalizedEmail);
+          await supabase.auth.signOut();
+          setSuccess(
+            isZh
+              ? "该邮箱尚未完成验证，系统已自动重新发送验证邮件，请查收邮箱。"
+              : "This email is not verified yet. A new verification email has been sent automatically.",
+          );
+          window.setTimeout(() => {
+            router.push(`/auth/login?next=${encodeURIComponent(next)}`);
+          }, 1200);
+          return;
+        }
+
+        await pushEmailDeliveryLog({
+          action: "signup_verification_email_request",
+          status: "accepted",
+          email: normalizedEmail,
+        });
+        await supabase.auth.signOut();
+        setSuccess(
+          isZh
+            ? "注册成功，请查收邮件完成验证。"
+            : "Sign-up successful. Please verify your email.",
+        );
+        window.setTimeout(() => {
+          router.push(`/auth/login?next=${encodeURIComponent(next)}`);
+        }, 1200);
+        return;
+      }
+
+      const resetRedirectUrl = new URL("/auth/update-password", window.location.origin);
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+        form.email.trim(),
+        {
+          redirectTo: resetRedirectUrl.toString(),
+        },
       );
-      setTimeout(() => router.push("/auth/login"), 1200);
-    }, 1000);
+      if (resetError) {
+        await pushEmailDeliveryLog({
+          action: "password_reset_email_request",
+          status: "failed",
+          email: form.email.trim(),
+          detail: resetError.message,
+        });
+        throw resetError;
+      }
+      await pushEmailDeliveryLog({
+        action: "password_reset_email_request",
+        status: "accepted",
+        email: form.email.trim(),
+      });
+      setSuccess(
+        isZh
+          ? "重置链接已发送，请查收邮箱。"
+          : "Password reset link sent. Please check your email.",
+      );
+      window.setTimeout(() => router.push("/auth/login"), 1200);
+    } catch (submitError) {
+      setError(extractDomesticAuthErrorMessage(submitError, isZh ? "操作失败" : "Operation failed"));
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const showThirdPartyButton = mode === "login";
   const showNameField = mode === "signup";
   const showVerificationCode = isDomesticVersion && (mode === "signup" || mode === "reset");
-  const showPasswordField = mode === "login" || mode === "signup" || (mode === "reset" && isDomesticVersion);
+  const showPasswordField = isDomesticVersion
+    ? mode === "login" || mode === "signup" || mode === "reset"
+    : mode === "login" || mode === "signup";
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-6 sm:py-8">
@@ -472,8 +829,8 @@ export function AuthPage({ mode }: AuthPageProps) {
 
             {error ? (
               <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50 rounded-lg p-3">
-                {error}
-              </div>
+            {error}
+          </div>
             ) : null}
 
             {success ? (
@@ -550,8 +907,8 @@ export function AuthPage({ mode }: AuthPageProps) {
             <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 bg-white/50 dark:bg-slate-800/50 max-h-[55vh]">
               <p className="text-sm text-gray-600 dark:text-gray-300 leading-7">
                 {isZh
-                  ? "本页面为前端演示版本。登录、注册、找回密码流程仅用于展示交互样式，实际生产环境请接入真实鉴权与隐私政策内容。"
-                  : "This page is a UI demo. Authentication flows are for interaction preview only. Please integrate real authentication and privacy policy content for production."}
+                  ? "本页面用于真实账户鉴权，请确保您已阅读并同意隐私政策后继续。"
+                  : "This page is used for live account authentication. Please read and agree to the privacy policy before continuing."}
               </p>
             </div>
 

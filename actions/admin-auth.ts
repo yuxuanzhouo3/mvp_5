@@ -2,7 +2,8 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getAdminSourceScope } from "@/lib/admin/source-scope";
+import { getRoutedAdminDbClient } from "@/lib/server/database-routing";
 import {
   createAdminSession,
   destroyAdminSession,
@@ -29,11 +30,12 @@ export async function adminLogin(formData: FormData): Promise<LoginResult> {
     return { success: false, error: "请输入用户名和密码" };
   }
 
-  if (!supabaseAdmin) {
+  const db = await getRoutedAdminDbClient(getAdminSourceScope());
+  if (!db) {
     return { success: false, error: "后台数据库未配置" };
   }
 
-  const { data: admin, error } = await supabaseAdmin
+  const { data: admin, error } = await db
     .from("admin_users")
     .select("id, username, password_hash, role, status")
     .eq("username", username)
@@ -52,7 +54,7 @@ export async function adminLogin(formData: FormData): Promise<LoginResult> {
     return { success: false, error: "用户名或密码错误" };
   }
 
-  await supabaseAdmin
+  await db
     .from("admin_users")
     .update({ last_login_at: new Date().toISOString() })
     .eq("id", admin.id);
@@ -107,11 +109,12 @@ export async function changeAdminPassword(formData: FormData): Promise<ActionRes
     return { success: false, error: "两次输入的新密码不一致" };
   }
 
-  if (!supabaseAdmin) {
+  const db = await getRoutedAdminDbClient(getAdminSourceScope());
+  if (!db) {
     return { success: false, error: "后台数据库未配置" };
   }
 
-  const { data: admin, error } = await supabaseAdmin
+  const { data: admin, error } = await db
     .from("admin_users")
     .select("id, password_hash")
     .eq("id", session.userId)
@@ -127,7 +130,7 @@ export async function changeAdminPassword(formData: FormData): Promise<ActionRes
   }
 
   const newHash = await hashPassword(newPassword);
-  const { error: updateError } = await supabaseAdmin
+  const { error: updateError } = await db
     .from("admin_users")
     .update({ password_hash: newHash })
     .eq("id", admin.id);
@@ -139,4 +142,3 @@ export async function changeAdminPassword(formData: FormData): Promise<ActionRes
   revalidatePath("/admin");
   return { success: true };
 }
-

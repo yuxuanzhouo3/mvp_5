@@ -1,7 +1,7 @@
 export type AdminSourceScope = "cn" | "global";
 
 export function getAdminSourceScope(): AdminSourceScope {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "en")
+  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
     .trim()
     .toLowerCase();
 
@@ -18,4 +18,3 @@ export function getAdminSourceLabel(source: AdminSourceScope) {
 export function normalizeSource(value: string | null | undefined): AdminSourceScope {
   return value === "cn" ? "cn" : "global";
 }
-

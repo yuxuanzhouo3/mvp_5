@@ -47,7 +47,7 @@ function toNumericValue(value: unknown) {
 }
 
 function getFixedSource(): "global" | "cn" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "en").toLowerCase();
+  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
   return language.startsWith("zh") ? "cn" : "global";
 }
 

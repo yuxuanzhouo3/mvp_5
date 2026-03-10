@@ -142,7 +142,7 @@ async function uploadReleaseFileIfNeeded(
     return null;
   }
 
-  const { data } = db.storage.from("release-packages").getPublicUrl(objectPath);
+  const { data } = await db.storage.from("release-packages").getPublicUrl(objectPath);
   return {
     url: data?.publicUrl || null,
     size: file.size || null,

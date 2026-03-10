@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { adminLogout } from "@/actions/admin-auth";
 
 type AdminSidebarProps = {
+  appDisplayName: string;
   username: string;
   sourceScope: "cn" | "global";
   sourceLabel: string;
@@ -21,12 +22,14 @@ const NAV_ITEMS = [
 ];
 
 function SidebarContent({
+  appDisplayName,
   pathname,
   username,
   sourceScope,
   sourceLabel,
   onNavigate,
 }: {
+  appDisplayName: string;
   pathname: string;
   username: string;
   sourceScope: "cn" | "global";
@@ -37,7 +40,7 @@ function SidebarContent({
     <>
       <div className="border-b border-slate-200 px-5 py-5">
         <Link href="/admin/stats" onClick={onNavigate} className="block">
-          <div className="text-lg font-semibold text-slate-900">MornStudio管理后台</div>
+          <div className="text-lg font-semibold text-slate-900">{appDisplayName}管理后台</div>
           <div className="mt-1 text-xs text-slate-500">
             当前环境：{sourceLabel}（{sourceScope}）
           </div>
@@ -82,6 +85,7 @@ function SidebarContent({
 }
 
 export default function AdminSidebar({
+  appDisplayName,
   username,
   sourceScope,
   sourceLabel,
@@ -100,7 +104,7 @@ export default function AdminSidebar({
     <>
       <div className="fixed left-0 right-0 top-0 z-50 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 md:hidden">
         <Link href="/admin/stats" className="text-base font-semibold text-slate-900">
-          MornStudio管理后台
+          {appDisplayName}管理后台
         </Link>
         <button
           type="button"
@@ -124,6 +128,7 @@ export default function AdminSidebar({
         }`}
       >
         <SidebarContent
+          appDisplayName={appDisplayName}
           pathname={pathname}
           username={username}
           sourceScope={sourceScope}
@@ -152,6 +157,7 @@ export default function AdminSidebar({
 
       <aside className="hidden border-r border-slate-200 bg-white md:fixed md:left-0 md:top-0 md:flex md:h-screen md:w-64 md:flex-col">
         <SidebarContent
+          appDisplayName={appDisplayName}
           pathname={pathname}
           username={username}
           sourceScope={sourceScope}
