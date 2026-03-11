@@ -18,6 +18,10 @@ function sanitizeNextPath(next: string | null) {
   return next;
 }
 
+function redirectWithFreshRequest(path: string) {
+  window.location.replace(path);
+}
+
 function Spinner() {
   return (
     <svg className="h-8 w-8 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -118,7 +122,7 @@ function AuthCallbackClientContent() {
             "",
             window.location.pathname + window.location.search,
           );
-          router.replace(nextPath);
+          redirectWithFreshRequest(nextPath);
           return;
         }
 
@@ -149,7 +153,7 @@ function AuthCallbackClientContent() {
               sessionScope: "auth",
             });
           }
-          router.replace(nextPath);
+          redirectWithFreshRequest(nextPath);
           return;
         }
 
@@ -162,7 +166,7 @@ function AuthCallbackClientContent() {
         }
 
         if (session) {
-          router.replace(nextPath);
+          redirectWithFreshRequest(nextPath);
           return;
         }
 

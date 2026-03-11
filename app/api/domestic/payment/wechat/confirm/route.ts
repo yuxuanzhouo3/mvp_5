@@ -6,6 +6,7 @@ import {
   readDomesticOrderByProviderOrderId,
   requireDomesticLoginUser,
   requireDomesticRuntimeDb,
+  settleDomesticAddonPayment,
   settleDomesticSubscriptionPayment,
   toHttpError,
 } from "@/lib/payment/domestic-payment";
@@ -13,10 +14,14 @@ import { createWechatProviderFromEnv } from "@/lib/payment/providers/wechat-prov
 
 function isAmountMatched(expectedAmount: number, paidFen: number | null) {
   if (paidFen === null) {
-    return true;
+    return false;
   }
   const paidAmount = Number((paidFen / 100).toFixed(2));
   return Math.abs(expectedAmount - paidAmount) <= 0.01;
+}
+
+function isAddonOrder(orderType: unknown) {
+  return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
 export async function POST(request: NextRequest) {
@@ -74,27 +79,43 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const settled = await settleDomesticSubscriptionPayment({
-      db,
-      order,
-      provider: "wechat_pay",
-      providerOrderId: outTradeNo,
-      providerTransactionId: status.transactionId,
-      providerPayload: {
-        trade_state: status.tradeState,
-        transaction_id: status.transactionId,
-        amount_in_fen: status.amountInFen,
-        success_time: status.successTime,
-      },
-    });
+    const providerPayload = {
+      trade_state: status.tradeState,
+      transaction_id: status.transactionId,
+      amount_in_fen: status.amountInFen,
+      success_time: status.successTime,
+    };
+    const settled = isAddonOrder(order.order_type)
+      ? await settleDomesticAddonPayment({
+          db,
+          order,
+          provider: "wechat_pay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.transactionId,
+          providerPayload,
+        })
+      : await settleDomesticSubscriptionPayment({
+          db,
+          order,
+          provider: "wechat_pay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.transactionId,
+          providerPayload,
+        });
 
     return NextResponse.json({
       success: true,
       status: "COMPLETED",
       already_paid: settled.alreadyPaid,
-      plan_code: settled.planCode,
-      plan_expires_at: settled.planExpiresAt || null,
-      paid_at: settled.paidAt,
+      productType: isAddonOrder(order.order_type) ? "ADDON" : "SUBSCRIPTION",
+      plan_code: "planCode" in settled ? settled.planCode : null,
+      plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
+      subscription_status:
+        "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
+      effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
+      addon_code: "addonCode" in settled ? settled.addonCode : null,
+      granted_at: "grantedAt" in settled ? settled.grantedAt : null,
+      paid_at: "paidAt" in settled ? settled.paidAt : null,
     });
   } catch (error) {
     const httpError = toHttpError(error);

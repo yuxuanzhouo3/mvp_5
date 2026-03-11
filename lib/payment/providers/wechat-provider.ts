@@ -7,6 +7,8 @@ type WechatV3Config = {
   privateKey: string;
   serialNo: string;
   notifyUrl: string;
+  platformPublicKey?: string;
+  platformSerialNo?: string;
 };
 
 type CreateNativeOrderParams = {
@@ -32,6 +34,20 @@ function formatPrivateKey(input: string) {
   const cleaned = normalized.replace(/\s+/g, "");
   const lines = cleaned.match(/.{1,64}/g) || [];
   return `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----`;
+}
+
+function formatPublicVerifierKey(input: string) {
+  const normalized = input.replace(/\\n/g, "\n").trim();
+  if (
+    normalized.includes("BEGIN PUBLIC KEY") ||
+    normalized.includes("BEGIN CERTIFICATE")
+  ) {
+    return normalized;
+  }
+
+  const cleaned = normalized.replace(/\s+/g, "");
+  const lines = cleaned.match(/.{1,64}/g) || [];
+  return `-----BEGIN PUBLIC KEY-----\n${lines.join("\n")}\n-----END PUBLIC KEY-----`;
 }
 
 function assertWechatConfig(config: WechatV3Config) {
@@ -64,6 +80,10 @@ export class WechatPayProvider {
     this.config = {
       ...config,
       privateKey: formatPrivateKey(config.privateKey),
+      platformPublicKey: config.platformPublicKey
+        ? formatPublicVerifierKey(config.platformPublicKey)
+        : undefined,
+      platformSerialNo: config.platformSerialNo?.trim() || undefined,
     };
   }
 
@@ -123,6 +143,54 @@ export class WechatPayProvider {
           ? response.success_time.trim()
           : null,
     };
+  }
+
+  canVerifyWebhookSignature() {
+    return Boolean(this.config.platformPublicKey);
+  }
+
+  verifyWebhookSignature(input: {
+    body: string;
+    signature: string;
+    timestamp: string;
+    nonce: string;
+    serial?: string | null;
+  }) {
+    const signature = input.signature.trim();
+    const timestamp = input.timestamp.trim();
+    const nonce = input.nonce.trim();
+    const serial = input.serial?.trim() || "";
+    const verifierKey = this.config.platformPublicKey?.trim() || "";
+    const expectedSerial = this.config.platformSerialNo?.trim() || "";
+
+    if (!verifierKey || !signature || !timestamp || !nonce) {
+      return false;
+    }
+
+    const timestampNumber = Number(timestamp);
+    if (!Number.isFinite(timestampNumber)) {
+      return false;
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSeconds - timestampNumber) > 300) {
+      return false;
+    }
+
+    if (expectedSerial && serial && expectedSerial !== serial) {
+      return false;
+    }
+
+    const message = `${timestamp}\n${nonce}\n${input.body}\n`;
+
+    try {
+      return crypto
+        .createVerify("RSA-SHA256")
+        .update(message, "utf8")
+        .verify(verifierKey, signature, "base64");
+    } catch {
+      return false;
+    }
   }
 
   private buildAuthorizationHeader(
@@ -218,5 +286,15 @@ export function createWechatProviderFromEnv() {
     privateKey: process.env.WECHAT_PAY_PRIVATE_KEY || "",
     serialNo: process.env.WECHAT_PAY_SERIAL_NO || "",
     notifyUrl: `${appUrl}/api/domestic/payment/webhook/wechat`,
+    platformPublicKey:
+      process.env.WECHAT_PAY_PLATFORM_PUBLIC_KEY ||
+      process.env.WECHAT_PAY_PUBLIC_KEY ||
+      process.env.WECHAT_PAY_PLATFORM_CERT ||
+      process.env.WECHAT_PAY_PLATFORM_CERTIFICATE ||
+      "",
+    platformSerialNo:
+      process.env.WECHAT_PAY_PLATFORM_SERIAL_NO ||
+      process.env.WECHAT_PAY_PUBLIC_KEY_SERIAL_NO ||
+      "",
   });
 }

@@ -6,6 +6,7 @@ import {
   readGlobalOrderByProviderOrderId,
   requireGlobalLoginUser,
   requireGlobalRuntimeDb,
+  settleGlobalAddonPayment,
   settleGlobalSubscriptionPayment,
   toHttpError,
 } from "@/lib/payment/global-payment";
@@ -13,6 +14,10 @@ import { capturePayPalOrder } from "@/lib/payment/providers/paypal-provider";
 
 function isAmountMatched(expectedAmount: number, paidAmount: number) {
   return Math.abs(expectedAmount - paidAmount) <= 0.01;
+}
+
+function isAddonOrder(orderType: unknown) {
+  return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
 export async function POST(request: NextRequest) {
@@ -51,21 +56,35 @@ export async function POST(request: NextRequest) {
     }
 
     if ((order.payment_status || "").toLowerCase() === "paid") {
-      const settled = await settleGlobalSubscriptionPayment({
-        db,
-        order,
-        provider: "paypal",
-        providerOrderId: orderId,
-        providerTransactionId: order.provider_transaction_id || null,
-      });
+      const settled = isAddonOrder(order.order_type)
+        ? await settleGlobalAddonPayment({
+            db,
+            order,
+            provider: "paypal",
+            providerOrderId: orderId,
+            providerTransactionId: order.provider_transaction_id || null,
+          })
+        : await settleGlobalSubscriptionPayment({
+            db,
+            order,
+            provider: "paypal",
+            providerOrderId: orderId,
+            providerTransactionId: order.provider_transaction_id || null,
+          });
 
       return NextResponse.json({
         success: true,
         status: "COMPLETED",
         already_paid: settled.alreadyPaid,
-        plan_code: settled.planCode,
-        plan_expires_at: settled.planExpiresAt || null,
-        paid_at: settled.paidAt,
+        productType: isAddonOrder(order.order_type) ? "ADDON" : "SUBSCRIPTION",
+        plan_code: "planCode" in settled ? settled.planCode : null,
+        plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
+        subscription_status:
+          "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
+        effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
+        addon_code: "addonCode" in settled ? settled.addonCode : null,
+        granted_at: "grantedAt" in settled ? settled.grantedAt : null,
+        paid_at: "paidAt" in settled ? settled.paidAt : null,
       });
     }
 
@@ -86,22 +105,37 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const settled = await settleGlobalSubscriptionPayment({
-      db,
-      order,
-      provider: "paypal",
-      providerOrderId: orderId,
-      providerTransactionId: captureResult.captureId,
-      providerPayload: captureResult.raw,
-    });
+    const settled = isAddonOrder(order.order_type)
+      ? await settleGlobalAddonPayment({
+          db,
+          order,
+          provider: "paypal",
+          providerOrderId: orderId,
+          providerTransactionId: captureResult.captureId,
+          providerPayload: captureResult.raw,
+        })
+      : await settleGlobalSubscriptionPayment({
+          db,
+          order,
+          provider: "paypal",
+          providerOrderId: orderId,
+          providerTransactionId: captureResult.captureId,
+          providerPayload: captureResult.raw,
+        });
 
     return NextResponse.json({
       success: true,
       status: "COMPLETED",
       already_paid: settled.alreadyPaid,
-      plan_code: settled.planCode,
-      plan_expires_at: settled.planExpiresAt || null,
-      paid_at: settled.paidAt,
+      productType: isAddonOrder(order.order_type) ? "ADDON" : "SUBSCRIPTION",
+      plan_code: "planCode" in settled ? settled.planCode : null,
+      plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
+      subscription_status:
+        "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
+      effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
+      addon_code: "addonCode" in settled ? settled.addonCode : null,
+      granted_at: "grantedAt" in settled ? settled.grantedAt : null,
+      paid_at: "paidAt" in settled ? settled.paidAt : null,
     });
   } catch (error) {
     const httpError = toHttpError(error);

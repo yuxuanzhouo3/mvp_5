@@ -14,6 +14,7 @@ import PaymentSystem, {
   type BillingPeriod,
   type PaymentMethod,
   type PlanKey,
+  type PurchaseSelection,
 } from "./PaymentSystem";
 import { Badge } from "./ui/badge";
 import { useLanguage } from "@/context/LanguageContext";
@@ -41,6 +42,7 @@ import {
   pickPlanDefinition,
   resolveEffectivePlan,
   type QuotaSummary,
+  type QuotaType,
   type UserPlan,
 } from "@/lib/user-status";
 
@@ -116,6 +118,20 @@ type DomesticProfileApiUser = {
   quota_summary?: QuotaSummary | null;
 };
 
+type GlobalProfileApiUser = {
+  id?: string | null;
+  source?: "global";
+  email?: string | null;
+  display_name?: string | null;
+  raw_plan?: string | null;
+  effective_plan?: string | null;
+  plan_expires_at?: string | null;
+  is_plan_active?: boolean;
+  plan_display_name_cn?: string | null;
+  plan_display_name_en?: string | null;
+  quota_summary?: QuotaSummary | null;
+};
+
 type GuestQuotaState = {
   monthKey: string;
   limit: number;
@@ -157,6 +173,87 @@ function parseGuestQuotaPayload(payload: unknown): GuestQuotaState | null {
     limit,
     used,
     remaining,
+  };
+}
+
+function normalizeDisplayNameCandidate(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isLikelyAccountIdentifier(value: string) {
+  if (!value) {
+    return false;
+  }
+
+  if (value.includes("@")) {
+    return true;
+  }
+
+  if (/^\d{6,}$/.test(value)) {
+    return true;
+  }
+
+  if (/^(user|uid|account|账号)[_-]?\d+$/i.test(value)) {
+    return true;
+  }
+
+  return false;
+}
+
+function pickPreferredDisplayName(candidates: unknown[], fallback: string) {
+  const normalized = candidates
+    .map((candidate) => normalizeDisplayNameCandidate(candidate))
+    .filter(Boolean);
+
+  const preferred = normalized.find(
+    (candidate) => !isLikelyAccountIdentifier(candidate),
+  );
+
+  return preferred || normalized[0] || fallback;
+}
+
+function resolveQuotaTypeByTab(tab: GenerationTab): QuotaType {
+  if (tab.endsWith("image")) {
+    return "image";
+  }
+  if (tab.endsWith("video")) {
+    return "video";
+  }
+  if (tab.endsWith("audio")) {
+    return "audio";
+  }
+  return "document";
+}
+
+function consumeQuotaSummaryLocally(
+  quotaSummary: QuotaSummary,
+  quotaType: QuotaType,
+): QuotaSummary {
+  const currentQuota = quotaSummary?.[quotaType];
+  if (!currentQuota) {
+    return quotaSummary;
+  }
+
+  const nextUsedAmount = Math.max(0, currentQuota.usedAmount + 1);
+  const nextRemainingAmount = Math.max(0, currentQuota.remainingAmount - 1);
+  const baseCapacity = Math.max(
+    0,
+    currentQuota.baseLimit + currentQuota.adminAdjustment,
+  );
+  const overflowUsed = Math.max(0, nextUsedAmount - baseCapacity);
+  const nextAddonRemaining = Math.min(
+    nextRemainingAmount,
+    Math.max(0, currentQuota.addonLimit - overflowUsed),
+  );
+
+  return {
+    ...quotaSummary,
+    [quotaType]: {
+      ...currentQuota,
+      usedAmount: nextUsedAmount,
+      remainingAmount: nextRemainingAmount,
+      addonRemaining: nextAddonRemaining,
+    },
   };
 }
 
@@ -254,6 +351,37 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
 
       try {
         const auth = getCloudbaseAuth();
+        let loginState: {
+          user?: CloudbaseLoginUser;
+          data?: { user?: CloudbaseLoginUser };
+        } | null = null;
+        try {
+          loginState = (await auth.getLoginState()) as {
+            user?: CloudbaseLoginUser;
+            data?: { user?: CloudbaseLoginUser };
+          } | null;
+        } catch (error) {
+          console.warn("[AIGeneratorPlatform] getLoginState failed:", error);
+        }
+
+        const loginUser = loginState?.user || loginState?.data?.user || null;
+
+        let profile: CloudbaseLoginUser | null = null;
+        try {
+          profile = (await auth.getUserInfo()) as CloudbaseLoginUser;
+        } catch (error) {
+          console.warn("[AIGeneratorPlatform] getUserInfo failed:", error);
+        }
+
+        const authEmail = (profile?.email || loginUser?.email || "")
+          .trim()
+          .toLowerCase();
+        const fallbackName = authEmail
+          ? authEmail.split("@")[0]
+          : currentLanguage === "zh"
+            ? "用户"
+            : "User";
+
         let accessToken = "";
         try {
           const tokenResult = await auth.getAccessToken();
@@ -301,13 +429,18 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
                 const profileEmail = String(profileUser?.email || "")
                   .trim()
                   .toLowerCase();
-                const fallbackName = profileEmail
-                  ? profileEmail.split("@")[0]
-                  : currentLanguage === "zh"
-                    ? "用户"
-                    : "User";
-                const displayName =
-                  String(profileUser?.display_name || "").trim() || fallbackName;
+                const displayName = pickPreferredDisplayName(
+                  [
+                    profileUser?.display_name,
+                    profile?.name,
+                    loginUser?.name,
+                    profile?.username,
+                    loginUser?.username,
+                  ],
+                  profileEmail
+                    ? profileEmail.split("@")[0]
+                    : fallbackName,
+                );
                 const quotaSummary =
                   profileUser?.quota_summary &&
                   typeof profileUser.quota_summary === "object"
@@ -350,28 +483,6 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           }
         }
 
-        let loginState: {
-          user?: CloudbaseLoginUser;
-          data?: { user?: CloudbaseLoginUser };
-        } | null = null;
-        try {
-          loginState = (await auth.getLoginState()) as {
-            user?: CloudbaseLoginUser;
-            data?: { user?: CloudbaseLoginUser };
-          } | null;
-        } catch (error) {
-          console.warn("[AIGeneratorPlatform] getLoginState failed:", error);
-        }
-
-        const loginUser = loginState?.user || loginState?.data?.user || null;
-
-        let profile: CloudbaseLoginUser | null = null;
-        try {
-          profile = (await auth.getUserInfo()) as CloudbaseLoginUser;
-        } catch (error) {
-          console.warn("[AIGeneratorPlatform] getUserInfo failed:", error);
-        }
-
         const userId = (
           profile?.uid ||
           profile?.id ||
@@ -396,15 +507,6 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           return;
         }
         domesticHydrateRetryRef.current = 0;
-
-        const authEmail = (profile?.email || loginUser?.email || "")
-          .trim()
-          .toLowerCase();
-        const fallbackName = authEmail
-          ? authEmail.split("@")[0]
-          : currentLanguage === "zh"
-            ? "用户"
-            : "User";
 
         const mysql = getCloudbaseApp().mysql();
         const [appUserResult, planRowsResult] = (await Promise.all([
@@ -515,14 +617,16 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         const quotaSummary = buildQuotaSummary(planDefinition, quotaBalanceRows);
         const dbEmail = String(appUserRow?.email || "").trim().toLowerCase();
         const email = dbEmail || authEmail || "demo@mornstudio.ai";
-        const nameCandidate =
-          appUserRow?.display_name ||
-          profile?.name ||
-          profile?.username ||
-          loginUser?.name ||
-          loginUser?.username ||
-          fallbackName;
-        const displayName = String(nameCandidate || "").trim() || fallbackName;
+        const displayName = pickPreferredDisplayName(
+          [
+            appUserRow?.display_name,
+            profile?.name,
+            loginUser?.name,
+            profile?.username,
+            loginUser?.username,
+          ],
+          fallbackName,
+        );
         const planDisplayName =
           currentLanguage === "zh"
             ? planDefinition.displayNameCn
@@ -600,6 +704,102 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         }
 
         const metadata = (authUser.user_metadata || {}) as Record<string, unknown>;
+        const metadataFullName =
+          typeof metadata.full_name === "string" ? metadata.full_name : null;
+        const metadataDisplayName =
+          typeof metadata.display_name === "string"
+            ? metadata.display_name
+            : null;
+        const metadataName =
+          typeof metadata.name === "string" ? metadata.name : null;
+
+        try {
+          const profileResponse = await fetch("/api/user/profile", {
+            method: "GET",
+            cache: "no-store",
+            credentials: "include",
+          });
+
+          if (profileResponse.ok) {
+            const payload = (await profileResponse.json()) as {
+              success?: boolean;
+              user?: GlobalProfileApiUser | null;
+            };
+            const profileUser = payload?.success ? payload.user : null;
+            const profileUserId = String(profileUser?.id || "").trim();
+
+            if (profileUserId) {
+              const rawPlan = mapPlanCodeToUserPlan(profileUser?.raw_plan);
+              const effectivePlan = mapPlanCodeToUserPlan(
+                profileUser?.effective_plan || profileUser?.raw_plan,
+              );
+              const planExp =
+                typeof profileUser?.plan_expires_at === "string" &&
+                profileUser.plan_expires_at.trim()
+                  ? profileUser.plan_expires_at.trim()
+                  : null;
+              const resolvedPlanState = resolveEffectivePlan(effectivePlan, planExp);
+              const isPlanActive =
+                typeof profileUser?.is_plan_active === "boolean"
+                  ? profileUser.is_plan_active
+                  : resolvedPlanState.isPlanActive;
+              const stablePlan = isPlanActive ? effectivePlan : "free";
+              const fallbackPlan = pickPlanDefinition([], stablePlan);
+              const profileEmail = String(profileUser?.email || "")
+                .trim()
+                .toLowerCase();
+              const fallbackName = profileEmail
+                ? profileEmail.split("@")[0]
+                : currentLanguage === "zh"
+                  ? "用户"
+                  : "User";
+              const displayName = pickPreferredDisplayName(
+                [
+                  profileUser?.display_name,
+                  metadataFullName,
+                  metadataDisplayName,
+                  metadataName,
+                ],
+                fallbackName,
+              );
+              const quotaSummary =
+                profileUser?.quota_summary &&
+                typeof profileUser.quota_summary === "object"
+                  ? (profileUser.quota_summary as QuotaSummary)
+                    : buildQuotaSummary(fallbackPlan, []);
+              const planDisplayName =
+                currentLanguage === "zh"
+                  ? String(
+                      profileUser?.plan_display_name_cn || fallbackPlan.displayNameCn,
+                    )
+                  : String(
+                      profileUser?.plan_display_name_en || fallbackPlan.displayNameEn,
+                    );
+
+              if (!cancelled) {
+                setUser({
+                  id: profileUserId,
+                  source: "global",
+                  name: displayName,
+                  email: profileEmail || "user@global",
+                  rawPlan,
+                  plan: stablePlan,
+                  planExp,
+                  isPlanActive,
+                  planDisplayName,
+                  quotaSummary,
+                });
+              }
+              return;
+            }
+          }
+        } catch (error) {
+          console.warn(
+            "[AIGeneratorPlatform] hydrate global user via api failed:",
+            error,
+          );
+        }
+
         const metadataPlanCode =
           (typeof metadata.current_plan_code === "string"
             ? metadata.current_plan_code
@@ -703,15 +903,15 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           : currentLanguage === "zh"
             ? "用户"
             : "User";
-        const nameCandidate =
-          appUserRow?.display_name ||
-          (typeof metadata.full_name === "string" ? metadata.full_name : null) ||
-          (typeof metadata.display_name === "string"
-            ? metadata.display_name
-            : null) ||
-          (typeof metadata.name === "string" ? metadata.name : null) ||
-          fallbackName;
-        const displayName = String(nameCandidate || "").trim() || fallbackName;
+        const displayName = pickPreferredDisplayName(
+          [
+            appUserRow?.display_name,
+            metadataFullName,
+            metadataDisplayName,
+            metadataName,
+          ],
+          fallbackName,
+        );
 
         if (!cancelled) {
           setUser({
@@ -1129,6 +1329,24 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
       }
 
       setGenerations((previous) => [payload as GenerationItem, ...previous]);
+      if (user) {
+        const consumedQuotaType = resolveQuotaTypeByTab(activeTab as GenerationTab);
+        setUser((previous) => {
+          if (!previous) {
+            return previous;
+          }
+
+          return {
+            ...previous,
+            quotaSummary: consumeQuotaSummaryLocally(
+              previous.quotaSummary,
+              consumedQuotaType,
+            ),
+          };
+        });
+
+        window.dispatchEvent(new CustomEvent("quota:refresh"));
+      }
       setPrompt("");
     } catch (error) {
       const modelId =
@@ -1223,15 +1441,32 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     setShowUserMenu(false);
   };
 
-  const handleSubscribe = async (paymentMethod: PaymentMethod) => {
+  const handleSubscribe = async (
+    paymentMethod: PaymentMethod,
+    selection: PurchaseSelection,
+  ) => {
     if (!user) {
       setShowAuthDialog(true);
       return;
     }
 
-    if (selectedPlan === "free") {
+    if (
+      selection.productType === "subscription" &&
+      selection.planCode === "free"
+    ) {
       return;
     }
+
+    const requestBody =
+      selection.productType === "subscription"
+        ? {
+            planName: selection.planCode,
+            billingPeriod: selection.billingPeriod,
+          }
+        : {
+            productType: "ADDON",
+            addonPackageId: selection.addonCode,
+          };
 
     if (isDomesticVersion) {
       if (paymentMethod !== "alipay" && paymentMethod !== "wechat") {
@@ -1266,10 +1501,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             "x-cloudbase-access-token": accessToken,
           },
           credentials: "include",
-          body: JSON.stringify({
-            planName: selectedPlan,
-            billingPeriod,
-          }),
+          body: JSON.stringify(requestBody),
         });
 
         const payload = (await response.json()) as {
@@ -1284,6 +1516,10 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           url?: string;
           providerOrderId?: string;
           approvalUrl?: string;
+          productType?: "ADDON" | "SUBSCRIPTION";
+          addonCode?: string;
+          planCode?: string;
+          billingPeriod?: BillingPeriod;
         };
 
         if (!response.ok || !payload.success) {
@@ -1346,8 +1582,22 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             out_trade_no: outTradeNo,
             code_url: codeUrl,
             amount: Number(payload.amount || 0),
-            planName: selectedPlan,
-            billingPeriod,
+            productType:
+              selection.productType === "addon" ? "ADDON" : "SUBSCRIPTION",
+            itemName:
+              selection.productType === "addon"
+                ? selection.addonDisplayName
+                : selection.displayName,
+            addonCode:
+              selection.productType === "addon" ? selection.addonCode : null,
+            planName:
+              selection.productType === "subscription"
+                ? selection.planCode
+                : null,
+            billingPeriod:
+              selection.productType === "subscription"
+                ? selection.billingPeriod
+                : null,
           }),
         );
 
@@ -1387,10 +1637,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           "Content-Type": "application/json",
         },
         credentials: "include",
-        body: JSON.stringify({
-          planName: selectedPlan,
-          billingPeriod,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const payload = (await response.json()) as {
@@ -1400,6 +1647,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         url?: string;
         providerOrderId?: string;
         approvalUrl?: string;
+        productType?: "ADDON" | "SUBSCRIPTION";
+        addonCode?: string;
       };
 
       if (!response.ok || !payload.success) {
@@ -1700,6 +1949,12 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
                           </div>
 
                           <div className="pt-2 border-t border-dashed border-gray-200 dark:border-gray-700 space-y-1 text-xs">
+                            <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
+                              <span>{addonText} {currentLanguage === "zh" ? "文档" : "Docs"}</span>
+                              <span className="font-semibold text-gray-900 dark:text-gray-100">
+                                {documentQuota?.addonRemaining || 0}
+                              </span>
+                            </div>
                             <div className="flex items-center justify-between text-gray-600 dark:text-gray-300">
                               <span>{addonText} {currentLanguage === "zh" ? "图片" : "Images"}</span>
                               <span className="font-semibold text-gray-900 dark:text-gray-100">

@@ -105,6 +105,8 @@ export async function POST(request: NextRequest) {
       already_paid: settled.alreadyPaid,
       plan_code: settled.planCode,
       plan_expires_at: settled.planExpiresAt || null,
+      subscription_status: settled.effectiveStatus || null,
+      effective_at: settled.effectiveAt || null,
       paid_at: settled.paidAt,
     });
   } catch (error) {

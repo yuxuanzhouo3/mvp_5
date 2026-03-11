@@ -6,6 +6,7 @@ import {
   readGlobalOrderByProviderOrderId,
   requireGlobalLoginUser,
   requireGlobalRuntimeDb,
+  settleGlobalAddonPayment,
   settleGlobalSubscriptionPayment,
   toHttpError,
 } from "@/lib/payment/global-payment";
@@ -18,6 +19,10 @@ function isAmountMatched(expectedAmount: number, paidAmountInCents: number | nul
 
   const paidAmount = Number((paidAmountInCents / 100).toFixed(2));
   return Math.abs(expectedAmount - paidAmount) <= 0.01;
+}
+
+function isAddonOrder(orderType: unknown) {
+  return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
 export async function POST(request: NextRequest) {
@@ -72,28 +77,44 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const settled = await settleGlobalSubscriptionPayment({
-      db,
-      order,
-      provider: "stripe",
-      providerOrderId: sessionId,
-      providerTransactionId: session.paymentIntentId,
-      providerPayload: {
-        payment_status: session.paymentStatus,
-        amount_total: session.amountTotal,
-        currency: session.currency,
-        payment_intent: session.paymentIntentId,
-        metadata: session.metadata,
-      },
-    });
+    const providerPayload = {
+      payment_status: session.paymentStatus,
+      amount_total: session.amountTotal,
+      currency: session.currency,
+      payment_intent: session.paymentIntentId,
+      metadata: session.metadata,
+    };
+    const settled = isAddonOrder(order.order_type)
+      ? await settleGlobalAddonPayment({
+          db,
+          order,
+          provider: "stripe",
+          providerOrderId: sessionId,
+          providerTransactionId: session.paymentIntentId,
+          providerPayload,
+        })
+      : await settleGlobalSubscriptionPayment({
+          db,
+          order,
+          provider: "stripe",
+          providerOrderId: sessionId,
+          providerTransactionId: session.paymentIntentId,
+          providerPayload,
+        });
 
     return NextResponse.json({
       success: true,
       status: "COMPLETED",
       already_paid: settled.alreadyPaid,
-      plan_code: settled.planCode,
-      plan_expires_at: settled.planExpiresAt || null,
-      paid_at: settled.paidAt,
+      productType: isAddonOrder(order.order_type) ? "ADDON" : "SUBSCRIPTION",
+      plan_code: "planCode" in settled ? settled.planCode : null,
+      plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
+      subscription_status:
+        "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
+      effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
+      addon_code: "addonCode" in settled ? settled.addonCode : null,
+      granted_at: "grantedAt" in settled ? settled.grantedAt : null,
+      paid_at: "paidAt" in settled ? settled.paidAt : null,
     });
   } catch (error) {
     const httpError = toHttpError(error);

@@ -37,6 +37,27 @@ export type GlobalPlanPricing = {
   planLevel: number;
 };
 
+export type GlobalSubscriptionCheckoutQuote = {
+  pricingPlan: GlobalPlanPricing;
+  checkoutPlan: GlobalPlanPricing;
+  extraJson: Record<string, unknown>;
+  isUpgrade: boolean;
+};
+
+export type GlobalAddonCode = "light" | "standard" | "premium";
+
+export type GlobalAddonPricing = {
+  addonCode: GlobalAddonCode;
+  currency: "USD";
+  amount: number;
+  displayNameCn: string;
+  displayNameEn: string;
+  documentQuota: number;
+  imageQuota: number;
+  videoQuota: number;
+  audioQuota: number;
+};
+
 type GlobalPlanDefinition = {
   planCode: GlobalPlanCode;
   displayNameCn: string;
@@ -102,6 +123,25 @@ type SubscriptionPlanRow = {
   is_active?: boolean | null;
 };
 
+type AddonPackageRow = {
+  addon_code?: string | null;
+  display_name_cn?: string | null;
+  display_name_en?: string | null;
+  document_quota?: number | string | null;
+  image_quota?: number | string | null;
+  video_quota?: number | string | null;
+  audio_quota?: number | string | null;
+  is_active?: boolean | null;
+};
+
+type AddonPackagePriceRow = {
+  source?: string | null;
+  addon_code?: string | null;
+  currency?: string | null;
+  amount?: number | string | null;
+  is_active?: boolean | null;
+};
+
 type PaymentTxRow = {
   id?: string | null;
   order_id?: string | null;
@@ -111,6 +151,7 @@ type PaymentTxRow = {
 
 type SubscriptionChangeLogRow = {
   action?: string | null;
+  from_period_end?: string | null;
   to_plan_code?: string | null;
   to_period_end?: string | null;
 };
@@ -119,7 +160,10 @@ type UserSubscriptionRow = {
   id?: string | null;
   user_id?: string | null;
   plan_code?: string | null;
+  billing_period?: string | null;
   status?: string | null;
+  latest_order_id?: string | null;
+  current_period_start?: string | null;
   current_period_end?: string | null;
 };
 
@@ -132,6 +176,27 @@ type UserQuotaAccountRow = {
 type UserQuotaBalanceRow = {
   id?: string | null;
   quota_type?: string | null;
+  base_limit?: number | string | null;
+  addon_limit?: number | string | null;
+  admin_adjustment?: number | string | null;
+  used_amount?: number | string | null;
+  remaining_amount?: number | string | null;
+};
+
+type UserAddonPurchaseRow = {
+  id?: string | null;
+  addon_code?: string | null;
+  status?: string | null;
+  granted_at?: string | null;
+  updated_at?: string | null;
+};
+
+type QuotaSeedDefinition = {
+  planCode: string;
+  monthlyDocumentLimit: number;
+  monthlyImageLimit: number;
+  monthlyVideoLimit: number;
+  monthlyAudioLimit: number;
 };
 
 export class GlobalPaymentError extends Error {
@@ -158,6 +223,26 @@ function toReadableError(error: unknown, fallback: string) {
     }
   }
   return fallback;
+}
+
+function isDuplicateEntryError(error: unknown) {
+  const message = toReadableError(error, "").toLowerCase();
+  return (
+    message.includes("duplicate entry") ||
+    message.includes("duplicate key") ||
+    message.includes("unique constraint") ||
+    message.includes("already exists") ||
+    message.includes("23505")
+  );
+}
+
+const ADDON_SETTLEMENT_POLL_MS = 200;
+const ADDON_SETTLEMENT_POLL_ATTEMPTS = 15;
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function toQueryErrorMessage(result: unknown) {
@@ -241,6 +326,30 @@ function createTextId(prefix: string) {
   return `${prefix}_${randomUUID().replace(/-/g, "")}`;
 }
 
+const DEFAULT_PLAN_QUOTA_LIMITS: Record<string, QuotaSeedDefinition> = {
+  free: {
+    planCode: "free",
+    monthlyDocumentLimit: 120,
+    monthlyImageLimit: 4,
+    monthlyVideoLimit: 1,
+    monthlyAudioLimit: 6,
+  },
+  pro: {
+    planCode: "pro",
+    monthlyDocumentLimit: 2000,
+    monthlyImageLimit: 60,
+    monthlyVideoLimit: 10,
+    monthlyAudioLimit: 60,
+  },
+  enterprise: {
+    planCode: "enterprise",
+    monthlyDocumentLimit: 8000,
+    monthlyImageLimit: 250,
+    monthlyVideoLimit: 25,
+    monthlyAudioLimit: 250,
+  },
+};
+
 async function trackGlobalAnalyticsEvent(input: {
   userId?: string | null;
   eventType: string;
@@ -290,6 +399,16 @@ function compareByDateDesc(left: string | null | undefined, right: string | null
   return rightTime - leftTime;
 }
 
+function compareByDateAsc(left: string | null | undefined, right: string | null | undefined) {
+  const leftTime = left ? new Date(left).getTime() : 0;
+  const rightTime = right ? new Date(right).getTime() : 0;
+  return leftTime - rightTime;
+}
+
+function normalizeSubscriptionStatus(input: unknown) {
+  return normalizeText(input, "").toLowerCase();
+}
+
 export function isGlobalRuntime() {
   return resolveBackendFromLanguage() === "supabase";
 }
@@ -305,6 +424,18 @@ export function resolveGlobalPlanCode(input: unknown): GlobalPlanCode | null {
   }
   if (normalized === "enterprise" || normalized === "ent") {
     return "enterprise";
+  }
+  return null;
+}
+
+export function resolveGlobalAddonCode(input: unknown): GlobalAddonCode | null {
+  if (typeof input !== "string") {
+    return null;
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "light" || normalized === "standard" || normalized === "premium") {
+    return normalized as GlobalAddonCode;
   }
   return null;
 }
@@ -481,6 +612,30 @@ export async function assertGlobalSubscriptionPurchaseAllowed(input: {
   userId: string;
   targetPlanCode: GlobalPlanCode;
 }) {
+  await applyDueGlobalPendingSubscriptions({
+    db: input.db,
+    userId: input.userId,
+    limit: 5,
+  });
+
+  const pendingRows = await queryRows<UserSubscriptionRow>(
+    input.db
+      .from("user_subscriptions")
+      .select("id,user_id,plan_code,status,current_period_start,current_period_end")
+      .eq("user_id", input.userId)
+      .eq("source", GLOBAL_SOURCE)
+      .eq("status", "pending")
+      .limit(5),
+    "读取待生效订阅失败",
+  );
+
+  if (pendingRows.length > 0) {
+    throw new GlobalPaymentError(
+      "已有待生效的订阅变更，请等待当前周期结束后再操作。",
+      400,
+    );
+  }
+
   const rows = await queryRows<AppUserRow>(
     input.db
       .from("app_users")
@@ -515,10 +670,7 @@ export async function assertGlobalSubscriptionPurchaseAllowed(input: {
   ]);
 
   if (targetPlan.planLevel < currentPlan.planLevel) {
-    throw new GlobalPaymentError(
-      "当前为更高等级套餐，降级请在当前周期结束后再操作。",
-      400,
-    );
+    return;
   }
 }
 
@@ -571,6 +723,118 @@ export async function readGlobalPlanPricing(input: {
   } as GlobalPlanPricing;
 }
 
+export async function prepareGlobalSubscriptionCheckout(input: {
+  db: RoutedAdminDbClient;
+  userId: string;
+  planCode: GlobalPlanCode;
+  billingPeriod: GlobalBillingPeriod;
+}) {
+  const pricingPlan = await readGlobalPlanPricing({
+    db: input.db,
+    planCode: input.planCode,
+    billingPeriod: input.billingPeriod,
+  });
+
+  const userRows = await queryRows<AppUserRow>(
+    input.db
+      .from("app_users")
+      .select("id,current_plan_code,plan_expires_at")
+      .eq("id", input.userId)
+      .eq("source", GLOBAL_SOURCE)
+      .limit(1),
+    "读取用户升级价格上下文失败",
+  );
+
+  const userRow = userRows[0];
+  const currentPlanCode = resolveGlobalPlanCode(userRow?.current_plan_code);
+  const currentPlanExpiresAt = normalizeText(userRow?.plan_expires_at, "");
+  const currentPlanExpiresMs = currentPlanExpiresAt
+    ? new Date(currentPlanExpiresAt).getTime()
+    : 0;
+  const remainingDays =
+    currentPlanExpiresMs > Date.now()
+      ? Math.max(
+          0,
+          Math.ceil((currentPlanExpiresMs - Date.now()) / (1000 * 60 * 60 * 24)),
+        )
+      : 0;
+
+  if (
+    !currentPlanCode ||
+    currentPlanCode === input.planCode ||
+    remainingDays <= 0
+  ) {
+    return {
+      pricingPlan,
+      checkoutPlan: pricingPlan,
+      extraJson: {},
+      isUpgrade: false,
+    } satisfies GlobalSubscriptionCheckoutQuote;
+  }
+
+  const [currentPlanMonthly, targetPlanMonthly] = await Promise.all([
+    readGlobalPlanPricing({
+      db: input.db,
+      planCode: currentPlanCode,
+      billingPeriod: "monthly",
+    }),
+    input.billingPeriod === "monthly"
+      ? Promise.resolve(pricingPlan)
+      : readGlobalPlanPricing({
+          db: input.db,
+          planCode: input.planCode,
+          billingPeriod: "monthly",
+        }),
+  ]);
+
+  if (pricingPlan.planLevel <= currentPlanMonthly.planLevel) {
+    return {
+      pricingPlan,
+      checkoutPlan: pricingPlan,
+      extraJson: {},
+      isUpgrade: false,
+    } satisfies GlobalSubscriptionCheckoutQuote;
+  }
+
+  const targetDays = getGlobalDurationDays(input.billingPeriod);
+  const currentDailyPrice = currentPlanMonthly.amount / 30;
+  const targetDailyPrice = Math.max(0.01, targetPlanMonthly.amount / 30);
+  const remainingValue = Number((remainingDays * currentDailyPrice).toFixed(2));
+  const freeUpgrade = remainingValue >= pricingPlan.amount;
+  const subscriptionDurationDays = freeUpgrade
+    ? Math.max(1, Math.floor(remainingValue / targetDailyPrice))
+    : targetDays;
+  const chargedAmount = freeUpgrade
+    ? 0.01
+    : Math.max(0.01, Number((pricingPlan.amount - remainingValue).toFixed(2)));
+
+  return {
+    pricingPlan,
+    checkoutPlan: {
+      ...pricingPlan,
+      amount: Number(chargedAmount.toFixed(2)),
+      originalAmount: pricingPlan.amount,
+    },
+    extraJson: {
+      subscription_duration_days: subscriptionDurationDays,
+      upgrade_charge_context: {
+        mode: "remaining_value",
+        current_plan_code: currentPlanCode,
+        current_plan_expires_at: currentPlanExpiresAt || null,
+        remaining_days: remainingDays,
+        remaining_value: remainingValue,
+        target_billing_period: input.billingPeriod,
+        target_price_amount: pricingPlan.amount,
+        current_monthly_amount: currentPlanMonthly.amount,
+        target_monthly_amount: targetPlanMonthly.amount,
+        charged_amount: Number(chargedAmount.toFixed(2)),
+        free_upgrade: freeUpgrade,
+      },
+    },
+    isUpgrade: true,
+  } satisfies GlobalSubscriptionCheckoutQuote;
+}
+
 async function readGlobalPlanDefinition(input: {
   db: RoutedAdminDbClient;
   planCode: GlobalPlanCode;
@@ -603,12 +867,298 @@ async function readGlobalPlanDefinition(input: {
   };
 }
 
+async function readQuotaSeedDefinitionByCode(input: {
+  db: RoutedAdminDbClient;
+  planCode: string;
+}) {
+  const normalizedPlanCode = normalizeText(input.planCode, "free").toLowerCase();
+  const fallback =
+    DEFAULT_PLAN_QUOTA_LIMITS[normalizedPlanCode] || DEFAULT_PLAN_QUOTA_LIMITS.free;
+
+  const rows = await queryRows<SubscriptionPlanRow>(
+    input.db
+      .from("subscription_plans")
+      .select(
+        "plan_code,display_name_cn,display_name_en,plan_level,monthly_document_limit,monthly_image_limit,monthly_video_limit,monthly_audio_limit,is_active",
+      )
+      .eq("plan_code", normalizedPlanCode)
+      .limit(2),
+    "读取额度种子套餐配置失败",
+  );
+
+  const activePlan = rows.find((item) => item.is_active !== false) || rows[0];
+  if (!activePlan) {
+    return fallback;
+  }
+
+  return {
+    planCode: normalizeText(activePlan.plan_code, fallback.planCode),
+    monthlyDocumentLimit: toSafeInt(
+      activePlan.monthly_document_limit,
+      fallback.monthlyDocumentLimit,
+    ),
+    monthlyImageLimit: toSafeInt(activePlan.monthly_image_limit, fallback.monthlyImageLimit),
+    monthlyVideoLimit: toSafeInt(activePlan.monthly_video_limit, fallback.monthlyVideoLimit),
+    monthlyAudioLimit: toSafeInt(activePlan.monthly_audio_limit, fallback.monthlyAudioLimit),
+  } satisfies QuotaSeedDefinition;
+}
+
+async function readCurrentGlobalQuotaSeed(input: {
+  db: RoutedAdminDbClient;
+  userId: string;
+}) {
+  const rows = await queryRows<AppUserRow>(
+    input.db
+      .from("app_users")
+      .select("id,current_plan_code,plan_expires_at")
+      .eq("id", input.userId)
+      .eq("source", GLOBAL_SOURCE)
+      .limit(1),
+    "读取用户当前套餐失败",
+  );
+
+  const row = rows[0];
+  const currentPlanCode = normalizeText(row?.current_plan_code, "free").toLowerCase();
+  const planExpiresAt = normalizeText(row?.plan_expires_at, "");
+  const planExpiresMs = planExpiresAt ? new Date(planExpiresAt).getTime() : 0;
+  const effectivePlanCode =
+    (currentPlanCode === "pro" || currentPlanCode === "enterprise") &&
+    planExpiresMs > Date.now()
+      ? currentPlanCode
+      : "free";
+
+  return readQuotaSeedDefinitionByCode({
+    db: input.db,
+    planCode: effectivePlanCode,
+  });
+}
+
+export async function applyDueGlobalPendingSubscriptions(input: {
+  db: RoutedAdminDbClient;
+  userId?: string;
+  now?: Date;
+  limit?: number;
+}) {
+  const now = input.now || new Date();
+  const nowIso = now.toISOString();
+  const limit = input.limit ?? (input.userId ? 10 : 200);
+
+  let pendingQuery = input.db
+    .from("user_subscriptions")
+    .select(
+      "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end",
+    )
+    .eq("source", GLOBAL_SOURCE)
+    .eq("status", "pending");
+
+  if (input.userId) {
+    pendingQuery = pendingQuery.eq("user_id", input.userId);
+  }
+
+  const pendingRows = await queryRows<UserSubscriptionRow>(
+    pendingQuery.limit(limit),
+    "读取待生效订阅失败",
+  );
+
+  let appliedCount = 0;
+  let errorCount = 0;
+
+  for (const pendingRow of [...pendingRows].sort((left, right) =>
+    compareByDateAsc(left.current_period_start, right.current_period_start),
+  )) {
+    try {
+      const userId = normalizeText(pendingRow.user_id, "");
+      const planCode = resolveGlobalPlanCode(pendingRow.plan_code);
+      const billingPeriod = resolveGlobalBillingPeriod(pendingRow.billing_period);
+      const periodStartIso = normalizeText(pendingRow.current_period_start, "");
+      const periodEndIso = normalizeText(pendingRow.current_period_end, "");
+      const periodStartMs = periodStartIso ? new Date(periodStartIso).getTime() : 0;
+
+      if (
+        !userId ||
+        !planCode ||
+        normalizeSubscriptionStatus(pendingRow.status) !== "pending" ||
+        !periodEndIso ||
+        !Number.isFinite(periodStartMs) ||
+        periodStartMs > now.getTime()
+      ) {
+        continue;
+      }
+
+      const subscriptionRows = await queryRows<UserSubscriptionRow>(
+        input.db
+          .from("user_subscriptions")
+          .select(
+            "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end",
+          )
+          .eq("user_id", userId)
+          .eq("source", GLOBAL_SOURCE)
+          .limit(20),
+        "读取用户订阅状态失败",
+      );
+
+      const activeRow = [...subscriptionRows]
+        .filter((row) => normalizeSubscriptionStatus(row.status) !== "pending")
+        .sort((left, right) => compareByDateDesc(left.current_period_end, right.current_period_end))[0];
+      const activePeriodEndIso = normalizeText(activeRow?.current_period_end, "");
+      const activePeriodEndMs = activePeriodEndIso
+        ? new Date(activePeriodEndIso).getTime()
+        : 0;
+
+      if (activeRow?.id && activePeriodEndMs > now.getTime()) {
+        continue;
+      }
+
+      if (activeRow?.id) {
+        await executeQuery(
+          input.db
+            .from("user_subscriptions")
+            .update({
+              status: "expired",
+              updated_at: nowIso,
+            })
+            .eq("id", activeRow.id),
+          "更新已过期订阅状态失败",
+        );
+      }
+
+      await executeQuery(
+        input.db
+          .from("user_subscriptions")
+          .update({
+            status: "active",
+            updated_at: nowIso,
+          })
+          .eq("id", pendingRow.id),
+        "激活待生效订阅失败",
+      );
+
+      const planDefinition = await readGlobalPlanDefinition({
+        db: input.db,
+        planCode,
+      });
+      const plan: GlobalPlanPricing = {
+        ...planDefinition,
+        billingPeriod,
+        currency: GLOBAL_CURRENCY,
+        amount: 0,
+        originalAmount: null,
+      };
+
+      await executeQuery(
+        input.db
+          .from("app_users")
+          .update({
+            current_plan_code: planCode,
+            subscription_status: "active",
+            plan_started_at: periodStartIso || nowIso,
+            plan_expires_at: periodEndIso,
+            updated_at: nowIso,
+          })
+          .eq("id", userId)
+          .eq("source", GLOBAL_SOURCE),
+        "激活待生效订阅时更新用户套餐失败",
+      );
+
+      await syncQuotaAccount({
+        db: input.db,
+        userId,
+        plan,
+        now,
+      });
+
+      await executeQuery(
+        input.db.from("subscription_change_logs").insert({
+          id: createTextId("sub_log"),
+          user_id: userId,
+          source: GLOBAL_SOURCE,
+          action: "activate",
+          from_plan_code: normalizeText(activeRow?.plan_code, "free"),
+          to_plan_code: planCode,
+          from_period_end: activeRow?.current_period_end || null,
+          to_period_end: periodEndIso,
+          reason: "global_apply_pending_subscription",
+          operator_type: "system",
+          operator_id: null,
+          related_order_id: normalizeText(pendingRow.latest_order_id, "") || null,
+          created_at: nowIso,
+        }),
+        "写入待生效订阅激活日志失败",
+      );
+
+      appliedCount += 1;
+    } catch (error) {
+      errorCount += 1;
+      if (input.userId) {
+        throw error;
+      }
+      console.error("[GlobalPayment] apply pending subscription failed:", error);
+    }
+  }
+
+  return {
+    appliedCount,
+    errorCount,
+  };
+}
+
+export async function readGlobalAddonPricing(input: {
+  db: RoutedAdminDbClient;
+  addonCode: GlobalAddonCode;
+}) {
+  const [priceRows, addonRows] = await Promise.all([
+    queryRows<AddonPackagePriceRow>(
+      input.db
+        .from("addon_package_prices")
+        .select("source,addon_code,currency,amount,is_active")
+        .eq("source", GLOBAL_SOURCE)
+        .eq("addon_code", input.addonCode)
+        .eq("currency", GLOBAL_CURRENCY)
+        .limit(5),
+      "读取国际版加油包价格失败",
+    ),
+    queryRows<AddonPackageRow>(
+      input.db
+        .from("addon_packages")
+        .select(
+          "addon_code,display_name_cn,display_name_en,document_quota,image_quota,video_quota,audio_quota,is_active",
+        )
+        .eq("addon_code", input.addonCode)
+        .limit(2),
+      "读取国际版加油包配置失败",
+    ),
+  ]);
+
+  const activePrice = priceRows.find((item) => item.is_active !== false);
+  const activeAddon = addonRows.find((item) => item.is_active !== false) || addonRows[0];
+
+  if (!activePrice || !activeAddon) {
+    throw new GlobalPaymentError("未找到可用的国际版加油包配置。", 400);
+  }
+
+  return {
+    addonCode: input.addonCode,
+    currency: GLOBAL_CURRENCY,
+    amount: toSafeAmount(activePrice.amount, 0),
+    displayNameCn: normalizeText(activeAddon.display_name_cn, input.addonCode),
+    displayNameEn: normalizeText(activeAddon.display_name_en, input.addonCode),
+    documentQuota: toSafeInt(activeAddon.document_quota, 0),
+    imageQuota: toSafeInt(activeAddon.image_quota, 0),
+    videoQuota: toSafeInt(activeAddon.video_quota, 0),
+    audioQuota: toSafeInt(activeAddon.audio_quota, 0),
+  } satisfies GlobalAddonPricing;
+}
+
 function buildOrderName(plan: GlobalPlanPricing) {
   const periodText =
     plan.billingPeriod === "yearly"
       ? "Yearly subscription"
       : "Monthly subscription";
   return `${plan.displayNameEn} - ${periodText}`;
+}
+
+function buildAddonOrderName(addon: GlobalAddonPricing) {
+  return `${addon.displayNameEn} - Add-on pack`;
 }
 
 export function generateProviderOrderId(prefix: "WX" | "ALI") {
@@ -628,11 +1178,12 @@ export async function createGlobalSubscriptionOrder(input: {
   userId: string;
   userEmail: string | null;
   plan: GlobalPlanPricing;
+  extraJson?: Record<string, unknown>;
   provider: GlobalPaymentProvider;
   providerOrderId: string;
   clientMeta: GlobalClientMeta;
 }) {
-  const { db, userId, userEmail, plan, provider, providerOrderId, clientMeta } = input;
+  const { db, userId, userEmail, plan, extraJson, provider, providerOrderId, clientMeta } = input;
   const nowIso = new Date().toISOString();
 
   const orderId = createTextId("order");
@@ -667,6 +1218,7 @@ export async function createGlobalSubscriptionOrder(input: {
       country_code: clientMeta.countryCode,
       extra_json: {
         user_email: userEmail,
+        ...(extraJson || {}),
       },
       created_at: nowIso,
       updated_at: nowIso,
@@ -708,6 +1260,103 @@ export async function createGlobalSubscriptionOrder(input: {
       plan_code: plan.planCode,
       billing_period: plan.billingPeriod,
       currency: plan.currency,
+    },
+    ensureSession: true,
+  });
+
+  return {
+    orderId,
+    orderNo,
+  };
+}
+
+export async function createGlobalAddonOrder(input: {
+  db: RoutedAdminDbClient;
+  userId: string;
+  userEmail: string | null;
+  addon: GlobalAddonPricing;
+  provider: GlobalPaymentProvider;
+  providerOrderId: string;
+  clientMeta: GlobalClientMeta;
+}) {
+  const { db, userId, userEmail, addon, provider, providerOrderId, clientMeta } = input;
+  const nowIso = new Date().toISOString();
+
+  const orderId = createTextId("order");
+  const orderNo = generateOrderNo();
+
+  await executeQuery(
+    db.from("orders").insert({
+      id: orderId,
+      order_no: orderNo,
+      user_id: userId,
+      source: GLOBAL_SOURCE,
+      order_type: "addon",
+      product_code: addon.addonCode,
+      product_name: buildAddonOrderName(addon),
+      plan_code: null,
+      billing_period: null,
+      amount: addon.amount,
+      currency: addon.currency,
+      original_amount: null,
+      discount_amount: 0,
+      payment_provider: provider,
+      payment_method: provider,
+      payment_status: "pending",
+      provider_order_id: providerOrderId,
+      idempotency_key: `${GLOBAL_SOURCE}_${provider}_${providerOrderId}`,
+      ip_address: clientMeta.ipAddress,
+      user_agent: clientMeta.userAgent,
+      country_code: clientMeta.countryCode,
+      extra_json: {
+        user_email: userEmail,
+        addon_code: addon.addonCode,
+        product_type: "addon",
+        addon_quotas: {
+          document: addon.documentQuota,
+          image: addon.imageQuota,
+          video: addon.videoQuota,
+          audio: addon.audioQuota,
+        },
+      },
+      created_at: nowIso,
+      updated_at: nowIso,
+    }),
+    "写入加油包订单失败",
+  );
+
+  await executeQuery(
+    db.from("payment_transactions").insert({
+      id: createTextId("paytx"),
+      order_id: orderId,
+      user_id: userId,
+      source: GLOBAL_SOURCE,
+      provider,
+      transaction_type: "charge",
+      amount: addon.amount,
+      currency: addon.currency,
+      status: "pending",
+      provider_order_id: providerOrderId,
+      request_payload_json: {
+        addon_code: addon.addonCode,
+        user_id: userId,
+      },
+      created_at: nowIso,
+      updated_at: nowIso,
+    }),
+    "写入加油包支付流水失败",
+  );
+
+  void trackGlobalAnalyticsEvent({
+    userId,
+    eventType: "payment_initiated",
+    eventName: `${provider}_addon_order_created`,
+    relatedOrderId: orderId,
+    eventValue: addon.amount,
+    eventData: {
+      provider,
+      addon_code: addon.addonCode,
+      currency: addon.currency,
     },
     ensureSession: true,
   });
@@ -818,39 +1467,88 @@ async function upsertSubscription(input: {
   nowIso: string;
 }) {
   type SubscriptionApplyResult = {
-    action: "activate" | "renew" | "upgrade";
+    action: "activate" | "renew" | "upgrade" | "downgrade";
     fromPlanCode: string;
     periodStartIso: string;
     periodEndIso: string;
+    effectiveStatus: "active" | "pending";
+    effectiveAtIso: string;
+    visiblePlanExpiresAtIso: string;
     shouldSyncQuotaNow: boolean;
   };
 
   const rows = await queryRows<UserSubscriptionRow>(
     input.db
       .from("user_subscriptions")
-      .select("id,user_id,plan_code,status,current_period_end")
+      .select(
+        "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end",
+      )
       .eq("user_id", input.userId)
       .eq("source", GLOBAL_SOURCE)
       .limit(20),
     "读取用户订阅失败",
   );
 
-  const latestRow = [...rows].sort((left, right) =>
-    compareByDateDesc(left.current_period_end, right.current_period_end),
-  )[0];
+  const latestActiveRow = [...rows]
+    .filter((row) => normalizeSubscriptionStatus(row.status) !== "pending")
+    .sort((left, right) =>
+      compareByDateDesc(left.current_period_end, right.current_period_end),
+    )[0];
+  const latestPendingRow = [...rows]
+    .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
+    .sort((left, right) =>
+      compareByDateAsc(left.current_period_start, right.current_period_start),
+    )[0];
 
-  const fromPlanCode = normalizeText(latestRow?.plan_code, "free") as string;
+  const fromPlanCode = normalizeText(latestActiveRow?.plan_code, "free") as string;
   const nowMs = new Date(input.nowIso).getTime();
-  const currentPeriodEndIso = normalizeText(latestRow?.current_period_end, "");
+  const currentPeriodEndIso = normalizeText(latestActiveRow?.current_period_end, "");
   const currentPeriodEndMs = currentPeriodEndIso
     ? new Date(currentPeriodEndIso).getTime()
     : 0;
   const currentStillActive = currentPeriodEndMs > nowMs;
   const samePlanRenew = currentStillActive && fromPlanCode === input.planCode;
+  const purchasedDurationDays = Math.max(
+    1,
+    Math.ceil(
+      Math.max(
+        0,
+        new Date(input.planExpiresAtIso).getTime() - new Date(input.nowIso).getTime(),
+      ) /
+        (1000 * 60 * 60 * 24),
+    ) || getGlobalDurationDays(input.billingPeriod),
+  );
+
+  let currentPlanLevel = 0;
+  let targetPlanLevel = 0;
+
+  if (currentStillActive && fromPlanCode !== "free") {
+    const [currentPlan, targetPlan] = await Promise.all([
+      readGlobalPlanDefinition({
+        db: input.db,
+        planCode: fromPlanCode as GlobalPlanCode,
+      }),
+      readGlobalPlanDefinition({
+        db: input.db,
+        planCode: input.planCode,
+      }),
+    ]);
+    currentPlanLevel = currentPlan.planLevel;
+    targetPlanLevel = targetPlan.planLevel;
+  }
+
+  const isDowngrade =
+    currentStillActive &&
+    currentPlanLevel > 0 &&
+    targetPlanLevel > 0 &&
+    targetPlanLevel < currentPlanLevel;
 
   let action: SubscriptionApplyResult["action"] = "activate";
   let periodStartIso = input.nowIso;
   let periodEndIso = input.planExpiresAtIso;
+  let effectiveStatus: SubscriptionApplyResult["effectiveStatus"] = "active";
+  let effectiveAtIso = input.nowIso;
+  let visiblePlanExpiresAtIso = input.planExpiresAtIso;
   let shouldSyncQuotaNow = true;
 
   if (samePlanRenew) {
@@ -858,15 +1556,73 @@ async function upsertSubscription(input: {
     periodStartIso = currentPeriodEndIso;
     periodEndIso = addDays(
       new Date(currentPeriodEndIso),
-      getGlobalDurationDays(input.billingPeriod),
+      purchasedDurationDays,
     ).toISOString();
+    effectiveAtIso = periodStartIso;
+    visiblePlanExpiresAtIso = periodEndIso;
     // 同套餐提前续费仅延长到期时间，不应立即重置当期额度。
     shouldSyncQuotaNow = false;
-  } else if (fromPlanCode !== "free" && fromPlanCode !== input.planCode) {
+  } else if (
+    currentStillActive &&
+    currentPlanLevel > 0 &&
+    targetPlanLevel > currentPlanLevel
+  ) {
     action = "upgrade";
+  } else if (isDowngrade) {
+    action = "downgrade";
+    periodStartIso = currentPeriodEndIso;
+    periodEndIso = addDays(
+      new Date(currentPeriodEndIso),
+      purchasedDurationDays,
+    ).toISOString();
+    effectiveStatus = "pending";
+    effectiveAtIso = currentPeriodEndIso;
+    visiblePlanExpiresAtIso = currentPeriodEndIso;
+    shouldSyncQuotaNow = false;
   }
 
-  if (latestRow?.id) {
+  if (effectiveStatus === "pending") {
+    const pendingPayload = {
+      plan_code: input.planCode,
+      billing_period: input.billingPeriod,
+      status: "pending",
+      provider: input.provider,
+      provider_subscription_id: input.providerOrderId,
+      latest_order_id: input.orderId,
+      current_period_start: periodStartIso,
+      current_period_end: periodEndIso,
+      cancel_at_period_end: false,
+      canceled_at: null,
+      updated_at: input.nowIso,
+      metadata_json: {
+        last_paid_order_id: input.orderId,
+        source: GLOBAL_SOURCE,
+        schedule_mode: "at_period_end",
+      },
+    };
+
+    if (latestPendingRow?.id) {
+      await executeQuery(
+        input.db
+          .from("user_subscriptions")
+          .update(pendingPayload)
+          .eq("id", latestPendingRow.id),
+        "更新待生效订阅失败",
+      );
+    } else {
+      await executeQuery(
+        input.db.from("user_subscriptions").insert({
+          id: createTextId("sub"),
+          user_id: input.userId,
+          source: GLOBAL_SOURCE,
+          start_at: input.nowIso,
+          created_at: input.nowIso,
+          ...pendingPayload,
+        }),
+        "创建待生效订阅失败",
+      );
+    }
+  } else if (latestActiveRow?.id) {
     await executeQuery(
       input.db
         .from("user_subscriptions")
@@ -887,7 +1643,7 @@ async function upsertSubscription(input: {
             source: GLOBAL_SOURCE,
           },
         })
-        .eq("id", latestRow.id),
+        .eq("id", latestActiveRow.id),
       "更新用户订阅失败",
     );
   } else {
@@ -925,7 +1681,7 @@ async function upsertSubscription(input: {
       action,
       from_plan_code: fromPlanCode,
       to_plan_code: input.planCode,
-      from_period_end: latestRow?.current_period_end || null,
+      from_period_end: latestActiveRow?.current_period_end || null,
       to_period_end: periodEndIso,
       reason: `global_payment_${input.provider}`,
       operator_type: "user",
@@ -941,6 +1697,9 @@ async function upsertSubscription(input: {
     fromPlanCode,
     periodStartIso,
     periodEndIso,
+    effectiveStatus,
+    effectiveAtIso,
+    visiblePlanExpiresAtIso,
     shouldSyncQuotaNow,
   } as SubscriptionApplyResult;
 }
@@ -1030,20 +1789,19 @@ async function syncQuotaAccount(input: {
   const existingBalanceRows = await queryRows<UserQuotaBalanceRow>(
     input.db
       .from("user_quota_balances")
-      .select("id,quota_type")
+      .select("id,quota_type,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount")
       .eq("quota_account_id", quotaAccountId)
       .limit(20),
     "读取额度余额失败",
   );
 
-  const balanceMap = new Map<string, string>();
+  const balanceMap = new Map<string, UserQuotaBalanceRow>();
   for (const row of existingBalanceRows) {
     const quotaType = normalizeText(row.quota_type, "");
-    const id = normalizeText(row.id, "");
-    if (!quotaType || !id) {
+    if (!quotaType) {
       continue;
     }
-    balanceMap.set(quotaType, id);
+    balanceMap.set(quotaType, row);
   }
 
   const quotaDefinitions: Array<{ type: string; limit: number }> = [
@@ -1054,18 +1812,45 @@ async function syncQuotaAccount(input: {
   ];
 
   for (const definition of quotaDefinitions) {
-    const existingId = balanceMap.get(definition.type);
+    const existingRow = balanceMap.get(definition.type);
+    const existingId = normalizeText(existingRow?.id, "");
 
     if (existingId) {
+      const currentBaseLimit = toSafeInt(existingRow?.base_limit, 0);
+      const currentAddonLimit = toSafeInt(existingRow?.addon_limit, 0);
+      const currentAdminAdjustment = toSafeInt(existingRow?.admin_adjustment, 0);
+      const currentUsedAmount = toSafeInt(existingRow?.used_amount, 0);
+      const currentTotalLimit = Math.max(
+        0,
+        currentBaseLimit + currentAddonLimit + currentAdminAdjustment,
+      );
+      const currentRemainingAmount =
+        existingRow?.remaining_amount === null || existingRow?.remaining_amount === undefined
+          ? Math.max(0, currentTotalLimit - currentUsedAmount)
+          : toSafeInt(
+              existingRow.remaining_amount,
+              Math.max(0, currentTotalLimit - currentUsedAmount),
+            );
+      const currentBaseCapacity = Math.max(0, currentBaseLimit + currentAdminAdjustment);
+      const overflowUsed = Math.max(0, currentUsedAmount - currentBaseCapacity);
+      const addonCarryover = Math.min(
+        currentRemainingAmount,
+        Math.max(0, currentAddonLimit - overflowUsed),
+      );
+      const nextRemainingAmount = Math.max(
+        0,
+        definition.limit + addonCarryover + currentAdminAdjustment,
+      );
+
       await executeQuery(
         input.db
           .from("user_quota_balances")
           .update({
             base_limit: definition.limit,
-            addon_limit: 0,
-            admin_adjustment: 0,
+            addon_limit: addonCarryover,
+            admin_adjustment: currentAdminAdjustment,
             used_amount: 0,
-            remaining_amount: definition.limit,
+            remaining_amount: nextRemainingAmount,
             updated_at: nowIso,
           })
           .eq("id", existingId),
@@ -1089,6 +1874,131 @@ async function syncQuotaAccount(input: {
       "创建额度余额失败",
     );
   }
+}
+
+async function ensureAddonQuotaBalances(input: {
+  db: RoutedAdminDbClient;
+  userId: string;
+  now: Date;
+}) {
+  const nowIso = input.now.toISOString();
+  const resetAt = addDays(input.now, 30);
+  const cycleStartDate = formatDateOnly(input.now);
+  const cycleEndDate = formatDateOnly(resetAt);
+  const seedPlan = await readCurrentGlobalQuotaSeed({
+    db: input.db,
+    userId: input.userId,
+  });
+
+  const accountRows = await queryRows<UserQuotaAccountRow>(
+    input.db
+      .from("user_quota_accounts")
+      .select("id,status,cycle_end_date")
+      .eq("user_id", input.userId)
+      .eq("source", GLOBAL_SOURCE)
+      .limit(20),
+    "读取加油包额度账户失败",
+  );
+
+  const activeAccount = [...accountRows]
+    .filter((item) => normalizeText(item.status, "") === "active")
+    .sort((left, right) => compareByDateDesc(left.cycle_end_date, right.cycle_end_date))[0];
+
+  let quotaAccountId = normalizeText(activeAccount?.id, "") || createTextId("quota_account");
+  if (!activeAccount?.id) {
+    try {
+      await executeQuery(
+        input.db.from("user_quota_accounts").insert({
+          id: quotaAccountId,
+          user_id: input.userId,
+          source: GLOBAL_SOURCE,
+          plan_code: seedPlan.planCode,
+          status: "active",
+          cycle_type: "monthly",
+          cycle_start_date: cycleStartDate,
+          cycle_end_date: cycleEndDate,
+          next_reset_at: resetAt.toISOString(),
+          created_at: nowIso,
+          updated_at: nowIso,
+        }),
+        "创建加油包额度账户失败",
+      );
+    } catch (error) {
+      if (!isDuplicateEntryError(error)) {
+        throw error;
+      }
+
+      const concurrentRows = await queryRows<UserQuotaAccountRow>(
+        input.db
+          .from("user_quota_accounts")
+          .select("id,status,cycle_end_date")
+          .eq("user_id", input.userId)
+          .eq("source", GLOBAL_SOURCE)
+          .limit(20),
+        "读取并发创建后的加油包额度账户失败",
+      );
+
+      quotaAccountId =
+        [...concurrentRows]
+          .map((row) => normalizeText(row.id, ""))
+          .find((id) => Boolean(id)) || quotaAccountId;
+    }
+  }
+
+  const existingBalanceRows = await queryRows<UserQuotaBalanceRow>(
+    input.db
+      .from("user_quota_balances")
+      .select("id,quota_type,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount")
+      .eq("quota_account_id", quotaAccountId)
+      .limit(20),
+    "读取加油包额度余额失败",
+  );
+
+  const balanceMap = new Map<string, UserQuotaBalanceRow>();
+  for (const row of existingBalanceRows) {
+    const quotaType = normalizeText(row.quota_type, "");
+    if (!quotaType) {
+      continue;
+    }
+    balanceMap.set(quotaType, row);
+  }
+
+  const quotaDefinitions: Array<{ type: string; limit: number }> = [
+    { type: "document", limit: seedPlan.monthlyDocumentLimit },
+    { type: "image", limit: seedPlan.monthlyImageLimit },
+    { type: "video", limit: seedPlan.monthlyVideoLimit },
+    { type: "audio", limit: seedPlan.monthlyAudioLimit },
+  ];
+
+  for (const definition of quotaDefinitions) {
+    if (balanceMap.has(definition.type)) {
+      continue;
+    }
+
+    await executeQuery(
+      input.db.from("user_quota_balances").insert({
+        id: createTextId("quota_balance"),
+        quota_account_id: quotaAccountId,
+        quota_type: definition.type,
+        base_limit: definition.limit,
+        addon_limit: 0,
+        admin_adjustment: 0,
+        used_amount: 0,
+        remaining_amount: definition.limit,
+        updated_at: nowIso,
+      }),
+      "补齐加油包额度余额失败",
+    );
+  }
+
+  return queryRows<UserQuotaBalanceRow>(
+    input.db
+      .from("user_quota_balances")
+      .select("id,quota_type,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount")
+      .eq("quota_account_id", quotaAccountId)
+      .limit(20),
+    "读取补齐后的加油包额度余额失败",
+  );
 }
 
 export async function settleGlobalSubscriptionPayment(input: {
@@ -1117,10 +2027,21 @@ export async function settleGlobalSubscriptionPayment(input: {
 
   if (paymentStatus === "paid" && hasAppliedMarker) {
     const paidAt = normalizeText(input.order.paid_at, "") || null;
+    const effectiveStatus =
+      normalizeText(rawExtraJson.subscription_effective_status, "active") === "pending"
+        ? "pending"
+        : "active";
+    const visiblePlanExpiresAt =
+      normalizeText(rawExtraJson.subscription_visible_plan_expires_at, "") ||
+      normalizeText(rawExtraJson.subscription_period_end, "") ||
+      null;
     return {
       alreadyPaid: true,
       planCode,
+      planExpiresAt: visiblePlanExpiresAt,
       paidAt,
+      effectiveStatus,
+      effectiveAt: normalizeText(rawExtraJson.subscription_effective_at, "") || null,
     };
   }
 
@@ -1130,7 +2051,12 @@ export async function settleGlobalSubscriptionPayment(input: {
     paymentStatus === "paid" && normalizeText(input.order.paid_at, "")
       ? normalizeText(input.order.paid_at, "")
       : nowIso;
-  const defaultPlanExpiresAt = addDays(now, getGlobalDurationDays(billingPeriod));
+  const configuredDurationDays = toSafeInt(rawExtraJson.subscription_duration_days, 0);
+  const effectiveDurationDays =
+    configuredDurationDays > 0
+      ? configuredDurationDays
+      : getGlobalDurationDays(billingPeriod);
+  const defaultPlanExpiresAt = addDays(now, effectiveDurationDays);
   const defaultPlanExpiresAtIso = defaultPlanExpiresAt.toISOString();
 
   const planDefinition = await readGlobalPlanDefinition({
@@ -1226,40 +2152,86 @@ export async function settleGlobalSubscriptionPayment(input: {
   )[0];
 
   if (existedApplyLog) {
+    const orderSubscriptionRows = await queryRows<UserSubscriptionRow>(
+      input.db
+        .from("user_subscriptions")
+        .select(
+          "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end",
+        )
+        .eq("user_id", userId)
+        .eq("source", GLOBAL_SOURCE)
+        .limit(20),
+      "读取订阅幂等状态失败",
+    );
+    const matchedSubscriptionRow =
+      orderSubscriptionRows.find(
+        (row) => normalizeText(row.latest_order_id, "") === orderId,
+      ) ||
+      orderSubscriptionRows.find(
+        (row) =>
+          resolveGlobalPlanCode(row.plan_code) ===
+            (resolveGlobalPlanCode(existedApplyLog.to_plan_code) || planCode) &&
+          normalizeText(row.current_period_end, "") ===
+            normalizeText(existedApplyLog.to_period_end, ""),
+      ) ||
+      null;
+    const activeSubscriptionRow = [...orderSubscriptionRows]
+      .filter((row) => normalizeSubscriptionStatus(row.status) !== "pending")
+      .sort((left, right) =>
+        compareByDateDesc(left.current_period_end, right.current_period_end),
+      )[0];
     const stablePlanCode =
       resolveGlobalPlanCode(existedApplyLog.to_plan_code) || planCode;
     const stablePeriodEnd =
-      normalizeText(existedApplyLog.to_period_end, "") || defaultPlanExpiresAtIso;
+      normalizeText(matchedSubscriptionRow?.current_period_end, "") ||
+      normalizeText(existedApplyLog.to_period_end, "") ||
+      defaultPlanExpiresAtIso;
     const stableAction =
       normalizeText(existedApplyLog.action, "") || "activate";
-    const shouldSyncQuotaNow = stableAction !== "renew";
+    const effectiveStatus =
+      normalizeSubscriptionStatus(matchedSubscriptionRow?.status) === "pending"
+        ? "pending"
+        : "active";
+    const effectiveAtIso =
+      normalizeText(matchedSubscriptionRow?.current_period_start, "") ||
+      (effectiveStatus === "pending"
+        ? normalizeText(activeSubscriptionRow?.current_period_end, "") || nowIso
+        : nowIso);
+    const visiblePlanExpiresAtIso =
+      effectiveStatus === "pending"
+        ? normalizeText(activeSubscriptionRow?.current_period_end, "") || effectiveAtIso
+        : stablePeriodEnd;
+    const shouldSyncQuotaNow =
+      effectiveStatus === "active" && stableAction !== "renew";
 
-    const appUserUpdates: Record<string, unknown> = {
-      current_plan_code: stablePlanCode,
-      subscription_status: "active",
-      plan_expires_at: stablePeriodEnd,
-      updated_at: nowIso,
-    };
-    if (shouldSyncQuotaNow) {
-      appUserUpdates.plan_started_at = nowIso;
-    }
+    if (effectiveStatus === "active") {
+      const appUserUpdates: Record<string, unknown> = {
+        current_plan_code: stablePlanCode,
+        subscription_status: "active",
+        plan_expires_at: stablePeriodEnd,
+        updated_at: nowIso,
+      };
+      if (shouldSyncQuotaNow) {
+        appUserUpdates.plan_started_at = nowIso;
+      }
 
-    await executeQuery(
-      input.db
-        .from("app_users")
-        .update(appUserUpdates)
-        .eq("id", userId)
-        .eq("source", GLOBAL_SOURCE),
-      "同步用户套餐状态失败",
-    );
+      await executeQuery(
+        input.db
+          .from("app_users")
+          .update(appUserUpdates)
+          .eq("id", userId)
+          .eq("source", GLOBAL_SOURCE),
+        "同步用户套餐状态失败",
+      );
 
-    if (shouldSyncQuotaNow) {
-      await syncQuotaAccount({
-        db: input.db,
-        userId,
-        plan,
-        now,
-      });
+      if (shouldSyncQuotaNow) {
+        await syncQuotaAccount({
+          db: input.db,
+          userId,
+          plan,
+          now,
+        });
+      }
     }
 
     await executeQuery(
@@ -1273,7 +2245,10 @@ export async function settleGlobalSubscriptionPayment(input: {
             subscription_applied: true,
             subscription_applied_at: nowIso,
             subscription_action: stableAction,
+            subscription_effective_status: effectiveStatus,
+            subscription_effective_at: effectiveAtIso,
             subscription_period_end: stablePeriodEnd,
+            subscription_visible_plan_expires_at: visiblePlanExpiresAtIso,
           },
         })
         .eq("id", orderId),
@@ -1283,8 +2258,10 @@ export async function settleGlobalSubscriptionPayment(input: {
     return {
       alreadyPaid: true,
       planCode: stablePlanCode,
-      planExpiresAt: stablePeriodEnd,
+      planExpiresAt: visiblePlanExpiresAtIso,
       paidAt: paidAtIso,
+      effectiveStatus,
+      effectiveAt: effectiveAtIso,
     };
   }
 
@@ -1300,33 +2277,35 @@ export async function settleGlobalSubscriptionPayment(input: {
     nowIso,
   });
 
-  const appUserUpdates: Record<string, unknown> = {
-    current_plan_code: planCode,
-    subscription_status: "active",
-    plan_expires_at: subscriptionResult.periodEndIso,
-    updated_at: nowIso,
-  };
+  if (subscriptionResult.effectiveStatus === "active") {
+    const appUserUpdates: Record<string, unknown> = {
+      current_plan_code: planCode,
+      subscription_status: "active",
+      plan_expires_at: subscriptionResult.periodEndIso,
+      updated_at: nowIso,
+    };
 
-  if (subscriptionResult.shouldSyncQuotaNow) {
-    appUserUpdates.plan_started_at = nowIso;
-  }
+    if (subscriptionResult.shouldSyncQuotaNow) {
+      appUserUpdates.plan_started_at = nowIso;
+    }
 
-  await executeQuery(
-    input.db
-      .from("app_users")
-      .update(appUserUpdates)
-      .eq("id", userId)
-      .eq("source", GLOBAL_SOURCE),
-    "更新用户套餐状态失败",
-  );
+    await executeQuery(
+      input.db
+        .from("app_users")
+        .update(appUserUpdates)
+        .eq("id", userId)
+        .eq("source", GLOBAL_SOURCE),
+      "更新用户套餐状态失败",
+    );
 
-  if (subscriptionResult.shouldSyncQuotaNow) {
-    await syncQuotaAccount({
-      db: input.db,
-      userId,
-      plan,
-      now,
-    });
+    if (subscriptionResult.shouldSyncQuotaNow) {
+      await syncQuotaAccount({
+        db: input.db,
+        userId,
+        plan,
+        now,
+      });
+    }
   }
 
   await executeQuery(
@@ -1340,8 +2319,12 @@ export async function settleGlobalSubscriptionPayment(input: {
           subscription_applied: true,
           subscription_applied_at: nowIso,
           subscription_action: subscriptionResult.action,
+          subscription_effective_status: subscriptionResult.effectiveStatus,
+          subscription_effective_at: subscriptionResult.effectiveAtIso,
           subscription_period_start: subscriptionResult.periodStartIso,
           subscription_period_end: subscriptionResult.periodEndIso,
+          subscription_visible_plan_expires_at:
+            subscriptionResult.visiblePlanExpiresAtIso,
         },
       })
       .eq("id", orderId),
@@ -1353,6 +2336,8 @@ export async function settleGlobalSubscriptionPayment(input: {
       ? "subscription_renewed"
       : subscriptionResult.action === "upgrade"
         ? "subscription_upgraded"
+        : subscriptionResult.action === "downgrade"
+          ? "subscription_downgrade_scheduled"
         : "subscription_activated";
 
   void trackGlobalAnalyticsEvent({
@@ -1369,6 +2354,7 @@ export async function settleGlobalSubscriptionPayment(input: {
       billing_period: billingPeriod,
       currency: GLOBAL_CURRENCY,
       action: subscriptionResult.action,
+      effective_status: subscriptionResult.effectiveStatus,
     },
     ensureSession: true,
   });
@@ -1392,8 +2378,410 @@ export async function settleGlobalSubscriptionPayment(input: {
   return {
     alreadyPaid: false,
     planCode,
-    planExpiresAt: subscriptionResult.periodEndIso,
+    planExpiresAt: subscriptionResult.visiblePlanExpiresAtIso,
     paidAt: paidAtIso,
+    effectiveStatus: subscriptionResult.effectiveStatus,
+    effectiveAt: subscriptionResult.effectiveAtIso,
+  };
+}
+
+export async function settleGlobalAddonPayment(input: {
+  db: RoutedAdminDbClient;
+  order: GlobalOrderRow;
+  provider: GlobalPaymentProvider;
+  providerOrderId: string;
+  providerTransactionId?: string | null;
+  providerPayload?: unknown;
+}) {
+  const orderId = normalizeText(input.order.id, "");
+  const userId = normalizeText(input.order.user_id, "");
+  const rawExtraJson =
+    input.order.extra_json && typeof input.order.extra_json === "object"
+      ? (input.order.extra_json as Record<string, unknown>)
+      : {};
+  const addonCode =
+    resolveGlobalAddonCode(input.order.product_code) ||
+    resolveGlobalAddonCode(rawExtraJson.addon_code);
+
+  if (!orderId || !userId || !addonCode) {
+    throw new GlobalPaymentError("加油包订单缺少必要字段，无法确认支付。", 400);
+  }
+
+  const paymentStatus = normalizeText(input.order.payment_status, "pending").toLowerCase();
+  const hasAppliedMarker = rawExtraJson.addon_applied === true;
+  const paidAtIso =
+    paymentStatus === "paid" && normalizeText(input.order.paid_at, "")
+      ? normalizeText(input.order.paid_at, "")
+      : new Date().toISOString();
+
+  const addon = await readGlobalAddonPricing({
+    db: input.db,
+    addonCode,
+  });
+  const grants: Array<{ type: string; amount: number }> = [
+    { type: "document", amount: addon.documentQuota },
+    { type: "image", amount: addon.imageQuota },
+    { type: "video", amount: addon.videoQuota },
+    { type: "audio", amount: addon.audioQuota },
+  ];
+  const expectedGrantTypes = grants
+    .filter((grant) => grant.amount > 0)
+    .map((grant) => grant.type);
+
+  const readPurchaseRow = async () =>
+    (
+      await queryRows<UserAddonPurchaseRow>(
+        input.db
+          .from("user_addon_purchases")
+          .select("id,addon_code,status,granted_at,updated_at")
+          .eq("order_id", orderId)
+          .limit(2),
+        "读取加油包购买记录失败",
+      )
+    )[0] || null;
+
+  const writeAddonAppliedMarker = async (grantedAtIso: string) => {
+    await executeQuery(
+      input.db
+        .from("orders")
+        .update({
+          updated_at: grantedAtIso,
+          extra_json: {
+            ...rawExtraJson,
+            addon_code: addonCode,
+            provider_payload: input.providerPayload || null,
+            addon_applied: true,
+            addon_applied_at: grantedAtIso,
+            addon_grants: {
+              document: addon.documentQuota,
+              image: addon.imageQuota,
+              video: addon.videoQuota,
+              audio: addon.audioQuota,
+            },
+          },
+        })
+        .eq("id", orderId),
+      "写入加油包到账标记失败",
+    );
+  };
+
+  const markPurchasePaid = async (purchaseId: string, grantedAtIso: string) => {
+    await executeQuery(
+      input.db
+        .from("user_addon_purchases")
+        .update({
+          addon_code: addonCode,
+          status: "paid",
+          granted_at: grantedAtIso,
+          expires_at: null,
+          updated_at: grantedAtIso,
+        })
+        .eq("id", purchaseId),
+      "更新加油包购买记录失败",
+    );
+  };
+
+  if (paymentStatus === "paid" && hasAppliedMarker) {
+    return {
+      alreadyPaid: true,
+      addonCode,
+      grantedAt: normalizeText(input.order.paid_at, "") || paidAtIso,
+    };
+  }
+
+  await executeQuery(
+    input.db
+      .from("orders")
+      .update({
+        payment_status: "paid",
+        paid_at: paidAtIso,
+        provider_transaction_id: input.providerTransactionId || null,
+        updated_at: paidAtIso,
+        notes: null,
+        extra_json: {
+          ...rawExtraJson,
+          provider_payload: input.providerPayload || null,
+        },
+      })
+      .eq("id", orderId),
+    "更新加油包订单支付状态失败",
+  );
+
+  const txRows = await queryRows<PaymentTxRow>(
+    input.db
+      .from("payment_transactions")
+      .select("id,order_id,provider,provider_order_id")
+      .eq("order_id", orderId)
+      .eq("provider", input.provider)
+      .eq("provider_order_id", input.providerOrderId)
+      .limit(5),
+    "读取加油包支付流水失败",
+  );
+
+  if (txRows[0]?.id) {
+    await executeQuery(
+      input.db
+        .from("payment_transactions")
+        .update({
+          status: "success",
+          provider_transaction_id: input.providerTransactionId || null,
+          response_payload_json: input.providerPayload || null,
+          processed_at: paidAtIso,
+          updated_at: paidAtIso,
+        })
+        .eq("id", txRows[0].id),
+      "更新加油包支付流水失败",
+    );
+  } else {
+    await executeQuery(
+      input.db.from("payment_transactions").insert({
+        id: createTextId("paytx"),
+        order_id: orderId,
+        user_id: userId,
+        source: GLOBAL_SOURCE,
+        provider: input.provider,
+        transaction_type: "charge",
+        amount: toSafeAmount(input.order.amount, addon.amount),
+        currency: GLOBAL_CURRENCY,
+        status: "success",
+        provider_order_id: input.providerOrderId,
+        provider_transaction_id: input.providerTransactionId || null,
+        response_payload_json: input.providerPayload || null,
+        processed_at: paidAtIso,
+        created_at: paidAtIso,
+        updated_at: paidAtIso,
+      }),
+      "创建加油包支付流水失败",
+    );
+  }
+
+  let purchaseRow = await readPurchaseRow();
+  if (normalizeText(purchaseRow?.status, "").toLowerCase() === "paid") {
+    const grantedAt = normalizeText(purchaseRow?.granted_at, "") || paidAtIso;
+    await writeAddonAppliedMarker(grantedAt);
+    return {
+      alreadyPaid: true,
+      addonCode,
+      grantedAt,
+    };
+  }
+
+  let createdPendingPurchase = false;
+  if (!purchaseRow?.id) {
+    try {
+      await executeQuery(
+        input.db.from("user_addon_purchases").insert({
+          id: createTextId("addon_purchase"),
+          user_id: userId,
+          source: GLOBAL_SOURCE,
+          addon_code: addonCode,
+          order_id: orderId,
+          status: "pending",
+          granted_at: null,
+          expires_at: null,
+          created_at: paidAtIso,
+          updated_at: paidAtIso,
+        }),
+        "创建加油包购买记录失败",
+      );
+      createdPendingPurchase = true;
+    } catch (error) {
+      if (!isDuplicateEntryError(error)) {
+        throw error;
+      }
+    }
+
+    purchaseRow = await readPurchaseRow();
+  }
+
+  if (!purchaseRow?.id) {
+    throw new GlobalPaymentError("加油包购买记录不存在，无法确认支付。", 503);
+  }
+  const purchaseId = normalizeText(purchaseRow.id, "");
+  if (!purchaseId) {
+    throw new GlobalPaymentError("加油包购买记录缺少主键，无法确认支付。", 503);
+  }
+
+  if (!createdPendingPurchase) {
+    for (let attempt = 0; attempt < ADDON_SETTLEMENT_POLL_ATTEMPTS; attempt += 1) {
+      if (normalizeText(purchaseRow?.status, "").toLowerCase() === "paid") {
+        const grantedAt = normalizeText(purchaseRow?.granted_at, "") || paidAtIso;
+        await writeAddonAppliedMarker(grantedAt);
+        return {
+          alreadyPaid: true,
+          addonCode,
+          grantedAt,
+        };
+      }
+
+      await sleep(ADDON_SETTLEMENT_POLL_MS);
+      purchaseRow = await readPurchaseRow();
+      if (!purchaseRow?.id) {
+        break;
+      }
+    }
+  }
+
+  if (normalizeText(purchaseRow?.status, "").toLowerCase() === "paid") {
+    const grantedAt = normalizeText(purchaseRow?.granted_at, "") || paidAtIso;
+    await writeAddonAppliedMarker(grantedAt);
+    return {
+      alreadyPaid: true,
+      addonCode,
+      grantedAt,
+    };
+  }
+
+  const appliedGrantRows = await queryRows<{ quota_type?: string | null }>(
+    input.db
+      .from("user_quota_change_logs")
+      .select("quota_type")
+      .eq("user_id", userId)
+      .eq("source", GLOBAL_SOURCE)
+      .eq("reference_type", "addon_purchase")
+      .eq("reference_id", orderId)
+      .eq("change_kind", "addon_grant")
+      .limit(10),
+    "读取加油包额度日志失败",
+  );
+  const appliedGrantTypes = new Set(
+    appliedGrantRows
+      .map((row) => normalizeText(row.quota_type, ""))
+      .filter((quotaType) => Boolean(quotaType)),
+  );
+
+  if (
+    expectedGrantTypes.length > 0 &&
+    expectedGrantTypes.every((quotaType) => appliedGrantTypes.has(quotaType))
+  ) {
+    const grantedAt = normalizeText(purchaseRow?.granted_at, "") || paidAtIso;
+    await markPurchasePaid(purchaseId, grantedAt);
+    await writeAddonAppliedMarker(grantedAt);
+    return {
+      alreadyPaid: true,
+      addonCode,
+      grantedAt,
+    };
+  }
+
+  const balanceRows = await ensureAddonQuotaBalances({
+    db: input.db,
+    userId,
+    now: new Date(paidAtIso),
+  });
+
+  const balanceMap = new Map<string, UserQuotaBalanceRow>();
+  for (const row of balanceRows) {
+    const quotaType = normalizeText(row.quota_type, "");
+    if (!quotaType) {
+      continue;
+    }
+    balanceMap.set(quotaType, row);
+  }
+
+  for (const grant of grants) {
+    if (grant.amount <= 0 || appliedGrantTypes.has(grant.type)) {
+      continue;
+    }
+
+    const balance = balanceMap.get(grant.type);
+    const balanceId = normalizeText(balance?.id, "");
+    if (!balanceId) {
+      throw new GlobalPaymentError(`加油包额度余额缺失: ${grant.type}`, 503);
+    }
+
+    const currentBaseLimit = toSafeInt(balance?.base_limit, 0);
+    const currentAddonLimit = toSafeInt(balance?.addon_limit, 0);
+    const currentAdminAdjustment = toSafeInt(balance?.admin_adjustment, 0);
+    const currentUsedAmount = toSafeInt(balance?.used_amount, 0);
+    const currentTotalLimit = Math.max(
+      0,
+      currentBaseLimit + currentAddonLimit + currentAdminAdjustment,
+    );
+    const currentRemaining =
+      balance?.remaining_amount === null || balance?.remaining_amount === undefined
+        ? Math.max(0, currentTotalLimit - currentUsedAmount)
+        : toSafeInt(
+            balance.remaining_amount,
+            Math.max(0, currentTotalLimit - currentUsedAmount),
+          );
+    const nextAddonLimit = currentAddonLimit + grant.amount;
+    const nextRemaining = currentRemaining + grant.amount;
+
+    await executeQuery(
+      input.db
+        .from("user_quota_balances")
+        .update({
+          addon_limit: nextAddonLimit,
+          remaining_amount: nextRemaining,
+          updated_at: paidAtIso,
+        })
+        .eq("id", balanceId),
+      "更新加油包额度余额失败",
+    );
+
+    await executeQuery(
+      input.db.from("user_quota_change_logs").insert({
+        id: createTextId("quota_log"),
+        user_id: userId,
+        source: GLOBAL_SOURCE,
+        quota_type: grant.type,
+        change_kind: "addon_grant",
+        delta_amount: grant.amount,
+        before_amount: currentRemaining,
+        after_amount: nextRemaining,
+        reference_type: "addon_purchase",
+        reference_id: orderId,
+        operator_type: "webhook",
+        operator_id: null,
+        note: `addon_${addonCode}_${grant.type}`,
+        created_at: paidAtIso,
+      }),
+      "写入加油包额度变更日志失败",
+    );
+  }
+
+  await markPurchasePaid(purchaseId, paidAtIso);
+  await writeAddonAppliedMarker(paidAtIso);
+
+  void trackGlobalAnalyticsEvent({
+    userId,
+    eventType: "payment_success",
+    eventName: `${input.provider}_payment_success`,
+    relatedOrderId: orderId,
+    eventValue: toSafeAmount(input.order.amount, addon.amount),
+    eventData: {
+      provider: input.provider,
+      provider_order_id: input.providerOrderId,
+      provider_transaction_id: input.providerTransactionId || null,
+      addon_code: addonCode,
+      currency: GLOBAL_CURRENCY,
+      product_type: "addon",
+    },
+    ensureSession: true,
+  });
+
+  void trackGlobalAnalyticsEvent({
+    userId,
+    eventType: "addon_purchased",
+    eventName: `addon_${addonCode}_purchased`,
+    relatedOrderId: orderId,
+    eventValue: toSafeAmount(input.order.amount, addon.amount),
+    eventData: {
+      provider: input.provider,
+      addon_code: addonCode,
+      document_quota: addon.documentQuota,
+      image_quota: addon.imageQuota,
+      video_quota: addon.videoQuota,
+      audio_quota: addon.audioQuota,
+    },
+    ensureSession: true,
+  });
+
+  return {
+    alreadyPaid: false,
+    addonCode,
+    grantedAt: paidAtIso,
   };
 }
 

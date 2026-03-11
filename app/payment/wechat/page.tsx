@@ -10,8 +10,11 @@ type WechatPayOrder = {
   out_trade_no: string;
   code_url: string;
   amount: number;
-  planName: string;
-  billingPeriod: "monthly" | "yearly";
+  productType?: "ADDON" | "SUBSCRIPTION";
+  itemName?: string | null;
+  addonCode?: string | null;
+  planName?: string | null;
+  billingPeriod?: "monthly" | "yearly" | null;
 };
 
 type PaymentStatus = "pending" | "success" | "failed" | "expired";
@@ -193,14 +196,20 @@ export default function WechatPaymentPage() {
     );
   }
 
-  const planLabel =
-    order.planName === "enterprise"
+  const isAddonOrder = order.productType === "ADDON";
+  const itemLabel =
+    order.itemName ||
+    (isAddonOrder
       ? isZh
-        ? "企业版"
-        : "Enterprise"
-      : isZh
-        ? "专业版"
-        : "Pro";
+        ? "加油包"
+        : "Add-on Pack"
+      : order.planName === "enterprise"
+        ? isZh
+          ? "企业版"
+          : "Enterprise"
+        : isZh
+          ? "专业版"
+          : "Pro");
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-green-50/40 dark:from-[#0f1115] dark:via-[#111827] dark:to-[#0f172a] px-4 py-8 flex items-center justify-center">
@@ -216,7 +225,14 @@ export default function WechatPaymentPage() {
 
         <div className="text-center space-y-1">
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            {isZh ? "订阅套餐" : "Plan"}: {planLabel}
+            {isAddonOrder
+              ? isZh
+                ? "购买商品"
+                : "Item"
+              : isZh
+                ? "订阅套餐"
+                : "Plan"}
+            : {itemLabel}
           </p>
           <p className="text-2xl font-bold text-green-600">¥{Number(order.amount || 0).toFixed(2)}</p>
         </div>

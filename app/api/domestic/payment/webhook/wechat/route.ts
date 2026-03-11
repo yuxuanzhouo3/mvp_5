@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   readDomesticOrderByProviderOrderId,
   requireDomesticRuntimeDb,
+  settleDomesticAddonPayment,
   settleDomesticSubscriptionPayment,
 } from "@/lib/payment/domestic-payment";
 import { createWechatProviderFromEnv } from "@/lib/payment/providers/wechat-provider";
@@ -82,16 +83,25 @@ function wechatFail(message: string, status = 400) {
 
 function isAmountMatched(expectedAmount: number, paidFen: number | null) {
   if (paidFen === null) {
-    return true;
+    return false;
   }
   const paidAmount = Number((paidFen / 100).toFixed(2));
   return Math.abs(expectedAmount - paidAmount) <= 0.01;
+}
+
+function isAddonOrder(orderType: unknown) {
+  return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
 export async function POST(request: NextRequest) {
   let outTradeNo = "";
   try {
     const bodyText = await request.text();
+    const signature = request.headers.get("Wechatpay-Signature")?.trim() || "";
+    const timestamp = request.headers.get("Wechatpay-Timestamp")?.trim() || "";
+    const nonce = request.headers.get("Wechatpay-Nonce")?.trim() || "";
+    const serial = request.headers.get("Wechatpay-Serial")?.trim() || "";
+    const wechatProvider = createWechatProviderFromEnv();
     const payload = (bodyText
       ? (JSON.parse(bodyText) as WechatWebhookPayload)
       : {}) as WechatWebhookPayload;
@@ -102,10 +112,36 @@ export async function POST(request: NextRequest) {
       length: bodyText.length,
       eventType: eventType || null,
       eventId: payload.id || null,
+      hasSignature: Boolean(signature),
+      hasTimestamp: Boolean(timestamp),
+      hasNonce: Boolean(nonce),
+      serial: serial || null,
     });
 
     if (eventType !== "TRANSACTION.SUCCESS") {
       return wechatSuccess();
+    }
+
+    if (wechatProvider.canVerifyWebhookSignature()) {
+      const isValidSignature = wechatProvider.verifyWebhookSignature({
+        body: bodyText,
+        signature,
+        timestamp,
+        nonce,
+        serial,
+      });
+
+      if (!isValidSignature) {
+        console.error("[Wechat Webhook] signature verify failed", {
+          outTradeNo: outTradeNo || null,
+          serial: serial || null,
+        });
+        return wechatFail("Invalid signature", 401);
+      }
+    } else {
+      console.warn(
+        "[Wechat Webhook] signature verification skipped because platform public key is not configured",
+      );
     }
 
     const paymentData = decryptWechatResource(payload.resource || {});
@@ -129,7 +165,6 @@ export async function POST(request: NextRequest) {
     }
 
     // 二次向微信查询，避免仅依赖回调内容直接结算
-    const wechatProvider = createWechatProviderFromEnv();
     const status = await wechatProvider.queryOrderByOutTradeNo(outTradeNo);
     if (status.tradeState !== "SUCCESS") {
       console.warn("[Wechat Webhook] payment not completed in provider query", {
@@ -149,29 +184,41 @@ export async function POST(request: NextRequest) {
       return wechatFail("Amount mismatch", 400);
     }
 
-    const settled = await settleDomesticSubscriptionPayment({
-      db,
-      order,
-      provider: "wechat_pay",
-      providerOrderId: outTradeNo,
-      providerTransactionId: status.transactionId,
-      providerPayload: {
-        webhook_event_type: eventType,
-        webhook_payload_id: payload.id || null,
-        webhook_trade_state: String(paymentData.trade_state || ""),
-        webhook_transaction_id: String(paymentData.transaction_id || ""),
-        query_trade_state: status.tradeState,
-        query_transaction_id: status.transactionId,
-        query_amount_in_fen: status.amountInFen,
-        query_success_time: status.successTime,
-      },
-    });
+    const providerPayload = {
+      webhook_event_type: eventType,
+      webhook_payload_id: payload.id || null,
+      webhook_trade_state: String(paymentData.trade_state || ""),
+      webhook_transaction_id: String(paymentData.transaction_id || ""),
+      query_trade_state: status.tradeState,
+      query_transaction_id: status.transactionId,
+      query_amount_in_fen: status.amountInFen,
+      query_success_time: status.successTime,
+    };
+    const settled = isAddonOrder(order.order_type)
+      ? await settleDomesticAddonPayment({
+          db,
+          order,
+          provider: "wechat_pay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.transactionId,
+          providerPayload,
+        })
+      : await settleDomesticSubscriptionPayment({
+          db,
+          order,
+          provider: "wechat_pay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.transactionId,
+          providerPayload,
+        });
 
     console.info("[Wechat Webhook] settled", {
       outTradeNo,
       alreadyPaid: settled.alreadyPaid,
-      planCode: settled.planCode,
-      planExpiresAt: settled.planExpiresAt || null,
+      productType: isAddonOrder(order.order_type) ? "addon" : "subscription",
+      planCode: "planCode" in settled ? settled.planCode : null,
+      addonCode: "addonCode" in settled ? settled.addonCode : null,
+      planExpiresAt: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
     });
     return wechatSuccess();
   } catch (error) {

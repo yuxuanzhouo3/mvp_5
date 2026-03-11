@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   readDomesticOrderByProviderOrderId,
   requireDomesticRuntimeDb,
+  settleDomesticAddonPayment,
   settleDomesticSubscriptionPayment,
 } from "@/lib/payment/domestic-payment";
 import { createAlipayProviderFromEnv } from "@/lib/payment/providers/alipay-provider";
@@ -61,6 +62,10 @@ function pickAmountForValidation(input: {
     return input.buyerPayAmount;
   }
   return input.totalAmount || input.buyerPayAmount || null;
+}
+
+function isAddonOrder(orderType: unknown) {
+  return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
 export async function POST(request: NextRequest) {
@@ -157,29 +162,41 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const settled = await settleDomesticSubscriptionPayment({
-      db,
-      order,
-      provider: "alipay",
-      providerOrderId: outTradeNo,
-      providerTransactionId: status.tradeNo,
-      providerPayload: {
-        webhook_trade_status: parsed.tradeStatus,
-        webhook_trade_no: parsed.tradeNo,
-        webhook_total_amount: parsed.totalAmount,
-        webhook_buyer_pay_amount: parsed.buyerPayAmount,
-        query_trade_status: status.tradeStatus,
-        query_trade_no: status.tradeNo,
-        query_total_amount: status.totalAmount,
-        query_buyer_pay_amount: status.buyerPayAmount,
-      },
-    });
+    const providerPayload = {
+      webhook_trade_status: parsed.tradeStatus,
+      webhook_trade_no: parsed.tradeNo,
+      webhook_total_amount: parsed.totalAmount,
+      webhook_buyer_pay_amount: parsed.buyerPayAmount,
+      query_trade_status: status.tradeStatus,
+      query_trade_no: status.tradeNo,
+      query_total_amount: status.totalAmount,
+      query_buyer_pay_amount: status.buyerPayAmount,
+    };
+    const settled = isAddonOrder(order.order_type)
+      ? await settleDomesticAddonPayment({
+          db,
+          order,
+          provider: "alipay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.tradeNo,
+          providerPayload,
+        })
+      : await settleDomesticSubscriptionPayment({
+          db,
+          order,
+          provider: "alipay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.tradeNo,
+          providerPayload,
+        });
 
     console.info("[Alipay Webhook] settled", {
       outTradeNo,
       alreadyPaid: settled.alreadyPaid,
-      planCode: settled.planCode,
-      planExpiresAt: settled.planExpiresAt || null,
+      productType: isAddonOrder(order.order_type) ? "addon" : "subscription",
+      planCode: "planCode" in settled ? settled.planCode : null,
+      addonCode: "addonCode" in settled ? settled.addonCode : null,
+      planExpiresAt: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
     });
   } catch (error) {
     console.error("[Alipay Webhook] process failed", {

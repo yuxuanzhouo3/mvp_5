@@ -10,11 +10,11 @@ import {
   resolveEffectivePlan,
 } from "@/lib/user-status";
 import {
-  applyDueDomesticPendingSubscriptions,
-  ensureDomesticAppUser,
-  requireDomesticLoginUser,
-  requireDomesticRuntimeDb,
-} from "@/lib/payment/domestic-payment";
+  applyDueGlobalPendingSubscriptions,
+  ensureGlobalAppUser,
+  requireGlobalLoginUser,
+  requireGlobalRuntimeDb,
+} from "@/lib/payment/global-payment";
 
 type QueryResult<T> = {
   data?: T[] | T | null;
@@ -84,15 +84,15 @@ async function queryRows<T>(query: Promise<QueryResult<T>>, context: string) {
 
 export async function GET(request: NextRequest) {
   try {
-    const user = await requireDomesticLoginUser(request);
-    const db = await requireDomesticRuntimeDb();
+    const user = await requireGlobalLoginUser(request);
+    const db = await requireGlobalRuntimeDb();
 
-    await ensureDomesticAppUser({
+    await ensureGlobalAppUser({
       db,
       userId: user.userId,
       email: user.email,
     });
-    await applyDueDomesticPendingSubscriptions({
+    await applyDueGlobalPendingSubscriptions({
       db,
       userId: user.userId,
       limit: 5,
@@ -105,7 +105,7 @@ export async function GET(request: NextRequest) {
             .from("app_users")
             .select("id,source,email,email_normalized,display_name,current_plan_code,plan_expires_at")
             .eq("id", user.userId)
-            .eq("source", "cn")
+            .eq("source", "global")
             .limit(1),
           "读取用户信息失败",
         )
@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
             db
               .from("app_users")
               .select("id,source,email,email_normalized,display_name,current_plan_code,plan_expires_at")
-              .eq("source", "cn")
+              .eq("source", "global")
               .eq("email_normalized", normalizedEmail)
               .limit(1),
             "按邮箱读取用户信息失败",
@@ -144,7 +144,7 @@ export async function GET(request: NextRequest) {
           .from("user_quota_accounts")
           .select("id,cycle_end_date")
           .eq("user_id", resolvedUserId)
-          .eq("source", "cn")
+          .eq("source", "global")
           .eq("status", "active")
           .limit(20),
         "读取额度账户失败",
@@ -187,13 +187,13 @@ export async function GET(request: NextRequest) {
       null;
     const displayName =
       normalizeText(appUserRow?.display_name, "") ||
-      (email ? email.split("@")[0] : "用户");
+      (email ? email.split("@")[0] : "User");
 
     return NextResponse.json({
       success: true,
       user: {
         id: resolvedUserId,
-        source: "cn",
+        source: "global",
         email,
         display_name: displayName,
         raw_plan: rawPlan,

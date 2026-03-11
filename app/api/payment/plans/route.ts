@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 
 type PlanCode = "free" | "pro" | "enterprise";
 type BillingPeriod = "monthly" | "yearly";
+type AddonCode = "light" | "standard" | "premium";
 type RuntimeSource = "cn" | "global";
 
 type SubscriptionPlanRow = {
@@ -31,6 +32,25 @@ type PlanPriceRow = {
   is_active?: boolean | null;
 };
 
+type AddonPackageRow = {
+  addon_code?: string | null;
+  display_name_cn?: string | null;
+  display_name_en?: string | null;
+  document_quota?: number | string | null;
+  image_quota?: number | string | null;
+  video_quota?: number | string | null;
+  audio_quota?: number | string | null;
+  is_active?: boolean | null;
+};
+
+type AddonPackagePriceRow = {
+  source?: string | null;
+  addon_code?: string | null;
+  currency?: string | null;
+  amount?: number | string | null;
+  is_active?: boolean | null;
+};
+
 type PlanResponseItem = {
   planCode: PlanCode;
   displayNameCn: string;
@@ -50,21 +70,37 @@ type PlanResponseItem = {
   };
 };
 
+type AddonResponseItem = {
+  addonCode: AddonCode;
+  displayNameCn: string;
+  displayNameEn: string;
+  quotas: {
+    documentQuota: number;
+    imageQuota: number;
+    videoQuota: number;
+    audioQuota: number;
+  };
+  price: number;
+};
+
 type PlansApiPayload = {
   source: RuntimeSource;
   currency: "CNY" | "USD";
   fallback: boolean;
   plans: PlanResponseItem[];
+  addons: AddonResponseItem[];
   fetchedAt: string;
 };
 
 const PLAN_ORDER: PlanCode[] = ["free", "pro", "enterprise"];
+const ADDON_ORDER: AddonCode[] = ["light", "standard", "premium"];
 
 const FALLBACK_DATA: Record<
   RuntimeSource,
   {
     currency: "CNY" | "USD";
     plans: PlanResponseItem[];
+    addons: AddonResponseItem[];
   }
 > = {
   cn: {
@@ -123,6 +159,44 @@ const FALLBACK_DATA: Record<
           monthlyOriginal: null,
           yearlyOriginal: null,
         },
+      },
+    ],
+    addons: [
+      {
+        addonCode: "light",
+        displayNameCn: "轻量加油包",
+        displayNameEn: "Light Pack",
+        quotas: {
+          documentQuota: 1200,
+          imageQuota: 25,
+          videoQuota: 4,
+          audioQuota: 25,
+        },
+        price: 19.9,
+      },
+      {
+        addonCode: "standard",
+        displayNameCn: "标准加油包",
+        displayNameEn: "Standard Pack",
+        quotas: {
+          documentQuota: 3500,
+          imageQuota: 70,
+          videoQuota: 10,
+          audioQuota: 70,
+        },
+        price: 49.9,
+      },
+      {
+        addonCode: "premium",
+        displayNameCn: "旗舰加油包",
+        displayNameEn: "Premium Pack",
+        quotas: {
+          documentQuota: 8000,
+          imageQuota: 180,
+          videoQuota: 25,
+          audioQuota: 180,
+        },
+        price: 99.9,
       },
     ],
   },
@@ -184,6 +258,44 @@ const FALLBACK_DATA: Record<
         },
       },
     ],
+    addons: [
+      {
+        addonCode: "light",
+        displayNameCn: "轻量加油包",
+        displayNameEn: "Light Pack",
+        quotas: {
+          documentQuota: 1200,
+          imageQuota: 25,
+          videoQuota: 4,
+          audioQuota: 25,
+        },
+        price: 2.99,
+      },
+      {
+        addonCode: "standard",
+        displayNameCn: "标准加油包",
+        displayNameEn: "Standard Pack",
+        quotas: {
+          documentQuota: 3500,
+          imageQuota: 70,
+          videoQuota: 10,
+          audioQuota: 70,
+        },
+        price: 6.99,
+      },
+      {
+        addonCode: "premium",
+        displayNameCn: "旗舰加油包",
+        displayNameEn: "Premium Pack",
+        quotas: {
+          documentQuota: 8000,
+          imageQuota: 180,
+          videoQuota: 25,
+          audioQuota: 180,
+        },
+        price: 13.99,
+      },
+    ],
   },
 };
 
@@ -237,6 +349,14 @@ function normalizePlanCode(input: unknown): PlanCode | null {
   return PLAN_ORDER.includes(code as PlanCode) ? (code as PlanCode) : null;
 }
 
+function normalizeAddonCode(input: unknown): AddonCode | null {
+  if (typeof input !== "string") {
+    return null;
+  }
+  const code = input.trim().toLowerCase();
+  return ADDON_ORDER.includes(code as AddonCode) ? (code as AddonCode) : null;
+}
+
 function normalizeBillingPeriod(input: unknown): BillingPeriod | null {
   if (typeof input !== "string") {
     return null;
@@ -258,6 +378,7 @@ function buildFallbackPayload(source: RuntimeSource): PlansApiPayload {
     currency: fallback.currency,
     fallback: true,
     plans: fallback.plans,
+    addons: fallback.addons,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -266,6 +387,8 @@ function buildMergedPayload(input: {
   source: RuntimeSource;
   plans: SubscriptionPlanRow[];
   prices: PlanPriceRow[];
+  addons: AddonPackageRow[];
+  addonPrices: AddonPackagePriceRow[];
 }): PlansApiPayload {
   const fallback = FALLBACK_DATA[input.source];
   const currency = fallback.currency;
@@ -302,10 +425,39 @@ function buildMergedPayload(input: {
     priceRowMap.set(`${planCode}:${billingPeriod}`, row);
   }
 
+  const addonRowMap = new Map<AddonCode, AddonPackageRow>();
+  for (const row of input.addons) {
+    if (row?.is_active === false) {
+      continue;
+    }
+    const addonCode = normalizeAddonCode(row.addon_code);
+    if (!addonCode) {
+      continue;
+    }
+    addonRowMap.set(addonCode, row);
+  }
+
+  const addonPriceMap = new Map<AddonCode, AddonPackagePriceRow>();
+  for (const row of input.addonPrices) {
+    if (row?.is_active === false) {
+      continue;
+    }
+    if ((row.source || "").trim().toLowerCase() !== input.source) {
+      continue;
+    }
+    if ((row.currency || "").trim().toUpperCase() !== currency) {
+      continue;
+    }
+    const addonCode = normalizeAddonCode(row.addon_code);
+    if (!addonCode) {
+      continue;
+    }
+    addonPriceMap.set(addonCode, row);
+  }
+
   const plans: PlanResponseItem[] = PLAN_ORDER.map((planCode) => {
     const fallbackPlan = fallback.plans.find((item) => item.planCode === planCode);
     const rawPlan = planRowMap.get(planCode);
-
     const monthlyRow = priceRowMap.get(`${planCode}:monthly`);
     const yearlyRow = priceRowMap.get(`${planCode}:yearly`);
 
@@ -339,17 +491,10 @@ function buildMergedPayload(input: {
         ),
       },
       prices: {
-        monthly: toSafeAmount(
-          monthlyRow?.amount,
-          fallbackPlan?.prices.monthly || 0,
-        ),
-        yearly: toSafeAmount(
-          yearlyRow?.amount,
-          fallbackPlan?.prices.yearly || 0,
-        ),
+        monthly: toSafeAmount(monthlyRow?.amount, fallbackPlan?.prices.monthly || 0),
+        yearly: toSafeAmount(yearlyRow?.amount, fallbackPlan?.prices.yearly || 0),
         monthlyOriginal:
-          monthlyRow?.original_amount === null ||
-          monthlyRow?.original_amount === undefined
+          monthlyRow?.original_amount === null || monthlyRow?.original_amount === undefined
             ? fallbackPlan?.prices.monthlyOriginal || null
             : toSafeAmount(
                 monthlyRow.original_amount,
@@ -366,11 +511,40 @@ function buildMergedPayload(input: {
     };
   });
 
+  const addons: AddonResponseItem[] = ADDON_ORDER.map((addonCode) => {
+    const fallbackAddon = fallback.addons.find((item) => item.addonCode === addonCode);
+    const rawAddon = addonRowMap.get(addonCode);
+    const rawPrice = addonPriceMap.get(addonCode);
+
+    return {
+      addonCode,
+      displayNameCn:
+        String(rawAddon?.display_name_cn || fallbackAddon?.displayNameCn || "").trim() ||
+        fallbackAddon?.displayNameCn ||
+        addonCode,
+      displayNameEn:
+        String(rawAddon?.display_name_en || fallbackAddon?.displayNameEn || "").trim() ||
+        fallbackAddon?.displayNameEn ||
+        addonCode,
+      quotas: {
+        documentQuota: toSafeInt(
+          rawAddon?.document_quota,
+          fallbackAddon?.quotas.documentQuota || 0,
+        ),
+        imageQuota: toSafeInt(rawAddon?.image_quota, fallbackAddon?.quotas.imageQuota || 0),
+        videoQuota: toSafeInt(rawAddon?.video_quota, fallbackAddon?.quotas.videoQuota || 0),
+        audioQuota: toSafeInt(rawAddon?.audio_quota, fallbackAddon?.quotas.audioQuota || 0),
+      },
+      price: toSafeAmount(rawPrice?.amount, fallbackAddon?.price || 0),
+    };
+  });
+
   return {
     source: input.source,
     currency,
     fallback: false,
     plans,
+    addons,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -385,7 +559,8 @@ export async function GET() {
       return Response.json(fallbackPayload);
     }
 
-    const [plansResult, pricesResult] = await Promise.all([
+    const currency = source === "cn" ? "CNY" : "USD";
+    const [plansResult, pricesResult, addonsResult, addonPricesResult] = await Promise.all([
       db
         .from("subscription_plans")
         .select(
@@ -398,18 +573,34 @@ export async function GET() {
           "source,plan_code,billing_period,currency,amount,original_amount,is_active",
         )
         .eq("source", source)
-        .eq("currency", source === "cn" ? "CNY" : "USD")
+        .eq("currency", currency)
+        .limit(20),
+      db
+        .from("addon_packages")
+        .select(
+          "addon_code,display_name_cn,display_name_en,document_quota,image_quota,video_quota,audio_quota,is_active",
+        )
+        .limit(20),
+      db
+        .from("addon_package_prices")
+        .select("source,addon_code,currency,amount,is_active")
+        .eq("source", source)
+        .eq("currency", currency)
         .limit(20),
     ]);
 
     const plansError = toQueryErrorMessage(plansResult);
     const pricesError = toQueryErrorMessage(pricesResult);
+    const addonsError = toQueryErrorMessage(addonsResult);
+    const addonPricesError = toQueryErrorMessage(addonPricesResult);
 
-    if (plansError || pricesError) {
-      console.error("[PaymentPlans] 查询套餐配置失败:", {
+    if (plansError || pricesError || addonsError || addonPricesError) {
+      console.error("[PaymentPlans] 查询商品配置失败:", {
         source,
         plansError,
         pricesError,
+        addonsError,
+        addonPricesError,
       });
       return Response.json(fallbackPayload);
     }
@@ -418,11 +609,13 @@ export async function GET() {
       source,
       plans: toQueryRows<SubscriptionPlanRow>(plansResult),
       prices: toQueryRows<PlanPriceRow>(pricesResult),
+      addons: toQueryRows<AddonPackageRow>(addonsResult),
+      addonPrices: toQueryRows<AddonPackagePriceRow>(addonPricesResult),
     });
 
     return Response.json(payload);
   } catch (error) {
-    console.error("[PaymentPlans] 加载套餐配置异常:", error);
+    console.error("[PaymentPlans] 加载商品配置异常:", error);
     return Response.json(fallbackPayload);
   }
 }

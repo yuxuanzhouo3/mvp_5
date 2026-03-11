@@ -8,8 +8,8 @@ import {
   ensureDomesticAppUser,
   getDomesticClientMeta,
   markDomesticOrderFailed,
+  prepareDomesticSubscriptionCheckout,
   readDomesticOrderByProviderOrderId,
-  readDomesticPlanPricing,
   requireDomesticLoginUser,
   requireDomesticRuntimeDb,
   resolveDomesticBillingPeriod,
@@ -88,11 +88,13 @@ export async function POST(request: NextRequest) {
       targetPlanCode: planCode,
     });
 
-    const plan = await readDomesticPlanPricing({
+    const subscriptionQuote = await prepareDomesticSubscriptionCheckout({
       db,
+      userId: user.userId,
       planCode,
       billingPeriod,
     });
+    const plan = subscriptionQuote.checkoutPlan;
 
     if (plan.amount <= 0) {
       return NextResponse.json(
@@ -135,6 +137,7 @@ export async function POST(request: NextRequest) {
       userId: user.userId,
       userEmail: user.email,
       plan,
+      extraJson: subscriptionQuote.extraJson,
       provider: "stripe",
       providerOrderId: stripeSession.id,
       clientMeta: getDomesticClientMeta(request),

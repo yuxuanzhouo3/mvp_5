@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { geoRouter } from "@/lib/core/geo-router";
 import { RegionType } from "@/lib/utils/ip-detection";
+import { updateSupabaseSession } from "@/lib/supabase/middleware";
 
 const FAIL_CLOSED =
   (process.env.GEO_FAIL_CLOSED || "true").toLowerCase() === "true";
@@ -27,7 +28,7 @@ export async function middleware(request: NextRequest) {
       }
     }
 
-    const adminResponse = NextResponse.next();
+    const adminResponse = NextResponse.next({ request });
     adminResponse.headers.set("x-pathname", pathname);
     return adminResponse;
   }
@@ -58,12 +59,12 @@ export async function middleware(request: NextRequest) {
       const debugResult = getDebugGeoResult(debugParam);
 
       if (debugResult) {
-        const response = NextResponse.next();
+        const response = NextResponse.next({ request });
         response.headers.set("X-User-Region", debugResult.region);
         response.headers.set("X-User-Country", debugResult.countryCode);
         response.headers.set("X-User-Currency", debugResult.currency);
         response.headers.set("X-Debug-Mode", debugParam);
-        return response;
+        return updateSupabaseSession(request, response);
       }
     }
 
@@ -85,9 +86,9 @@ export async function middleware(request: NextRequest) {
           }
         );
       }
-      const res = NextResponse.next();
+      const res = NextResponse.next({ request });
       res.headers.set("X-Geo-Error", "true");
-      return res;
+      return updateSupabaseSession(request, res);
     }
 
     const geoResult = await geoRouter.detect(clientIP);
@@ -112,7 +113,7 @@ export async function middleware(request: NextRequest) {
     }
 
     // 添加地理信息头
-    const response = NextResponse.next();
+    const response = NextResponse.next({ request });
     response.headers.set("X-User-Region", geoResult.region);
     response.headers.set("X-User-Country", geoResult.countryCode);
     response.headers.set("X-User-Currency", geoResult.currency);
@@ -121,7 +122,7 @@ export async function middleware(request: NextRequest) {
       response.headers.set("X-Debug-Mode", debugParam);
     }
 
-    return response;
+    return updateSupabaseSession(request, response);
   } catch (error) {
     console.error("[Middleware] Geo routing error:", error);
 
@@ -139,9 +140,9 @@ export async function middleware(request: NextRequest) {
       );
     }
 
-    const response = NextResponse.next();
+    const response = NextResponse.next({ request });
     response.headers.set("X-Geo-Error", "true");
-    return response;
+    return updateSupabaseSession(request, response);
   }
 }
 

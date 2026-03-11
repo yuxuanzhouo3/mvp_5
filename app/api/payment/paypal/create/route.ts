@@ -4,14 +4,17 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import {
   assertGlobalSubscriptionPurchaseAllowed,
+  createGlobalAddonOrder,
   createGlobalSubscriptionOrder,
   ensureGlobalAppUser,
   getGlobalClientMeta,
   markGlobalOrderFailed,
+  prepareGlobalSubscriptionCheckout,
+  readGlobalAddonPricing,
   readGlobalOrderByProviderOrderId,
-  readGlobalPlanPricing,
   requireGlobalLoginUser,
   requireGlobalRuntimeDb,
+  resolveGlobalAddonCode,
   resolveGlobalBillingPeriod,
   resolveGlobalPlanCode,
   toHttpError,
@@ -24,7 +27,15 @@ import {
 type CreateRequestBody = {
   planName?: unknown;
   billingPeriod?: unknown;
+  productType?: unknown;
+  addonPackageId?: unknown;
 };
+
+function resolveProductType(input: unknown) {
+  return typeof input === "string" && input.trim().toUpperCase() === "ADDON"
+    ? "ADDON"
+    : "SUBSCRIPTION";
+}
 
 function resolveOrigin(request: NextRequest) {
   const envBase =
@@ -53,15 +64,7 @@ function resolveOrigin(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as CreateRequestBody;
-    const planCode = resolveGlobalPlanCode(body.planName);
-    if (!planCode) {
-      return NextResponse.json(
-        { success: false, error: "Only Pro and Enterprise subscriptions are supported." },
-        { status: 400 },
-      );
-    }
-
-    const billingPeriod = resolveGlobalBillingPeriod(body.billingPeriod);
+    const productType = resolveProductType(body.productType);
     const user = await requireGlobalLoginUser(request);
     const db = await requireGlobalRuntimeDb();
 
@@ -70,37 +73,100 @@ export async function POST(request: NextRequest) {
       userId: user.userId,
       email: user.email,
     });
-    await assertGlobalSubscriptionPurchaseAllowed({
-      db,
-      userId: user.userId,
-      targetPlanCode: planCode,
-    });
-
-    const plan = await readGlobalPlanPricing({
-      db,
-      planCode,
-      billingPeriod,
-    });
-
-    if (plan.amount <= 0) {
-      return NextResponse.json(
-        { success: false, error: "Invalid plan amount. Please contact support." },
-        { status: 400 },
-      );
-    }
 
     const origin = resolveOrigin(request);
-    const payPalOrder = await createPayPalOrder({
-      amount: plan.amount,
-      currency: plan.currency,
-      returnUrl: `${origin}/payment/success?provider=paypal`,
-      cancelUrl: `${origin}/`,
-      customId: `${user.userId}|${planCode}|${billingPeriod}`,
-      description:
-        billingPeriod === "yearly"
-          ? `${plan.displayNameEn} yearly subscription`
-          : `${plan.displayNameEn} monthly subscription`,
-    });
+    let payPalOrder: Awaited<ReturnType<typeof createPayPalOrder>>;
+    let amount = 0;
+    let currency: "USD" = "USD";
+    let planCode: string | null = null;
+    let billingPeriod: string | null = null;
+    let addonCode: string | null = null;
+    let addonPlan: Awaited<ReturnType<typeof readGlobalAddonPricing>> | null = null;
+    let subscriptionQuote: Awaited<
+      ReturnType<typeof prepareGlobalSubscriptionCheckout>
+    > | null = null;
+
+    if (productType === "ADDON") {
+      const resolvedAddonCode = resolveGlobalAddonCode(body.addonPackageId);
+      if (!resolvedAddonCode) {
+        return NextResponse.json(
+          { success: false, error: "Unsupported add-on package." },
+          { status: 400 },
+        );
+      }
+
+      addonPlan = await readGlobalAddonPricing({
+        db,
+        addonCode: resolvedAddonCode,
+      });
+
+      if (addonPlan.amount <= 0) {
+        return NextResponse.json(
+          { success: false, error: "Invalid add-on amount. Please contact support." },
+          { status: 400 },
+        );
+      }
+
+      amount = addonPlan.amount;
+      currency = addonPlan.currency;
+      addonCode = addonPlan.addonCode;
+
+      payPalOrder = await createPayPalOrder({
+        amount: addonPlan.amount,
+        currency: addonPlan.currency,
+        returnUrl: `${origin}/payment/success?provider=paypal`,
+        cancelUrl: `${origin}/`,
+        customId: `${user.userId}|addon|${addonPlan.addonCode}`,
+        description: `${addonPlan.displayNameEn} add-on pack`,
+      });
+    } else {
+      const resolvedPlanCode = resolveGlobalPlanCode(body.planName);
+      if (!resolvedPlanCode) {
+        return NextResponse.json(
+          { success: false, error: "Only Pro and Enterprise subscriptions are supported." },
+          { status: 400 },
+        );
+      }
+
+      const resolvedBillingPeriod = resolveGlobalBillingPeriod(body.billingPeriod);
+      await assertGlobalSubscriptionPurchaseAllowed({
+        db,
+        userId: user.userId,
+        targetPlanCode: resolvedPlanCode,
+      });
+
+      subscriptionQuote = await prepareGlobalSubscriptionCheckout({
+        db,
+        userId: user.userId,
+        planCode: resolvedPlanCode,
+        billingPeriod: resolvedBillingPeriod,
+      });
+      const plan = subscriptionQuote.checkoutPlan;
+
+      if (plan.amount <= 0) {
+        return NextResponse.json(
+          { success: false, error: "Invalid plan amount. Please contact support." },
+          { status: 400 },
+        );
+      }
+
+      amount = plan.amount;
+      currency = plan.currency;
+      planCode = plan.planCode;
+      billingPeriod = resolvedBillingPeriod;
+
+      payPalOrder = await createPayPalOrder({
+        amount: plan.amount,
+        currency: plan.currency,
+        returnUrl: `${origin}/payment/success?provider=paypal`,
+        cancelUrl: `${origin}/`,
+        customId: `${user.userId}|subscription|${plan.planCode}|${resolvedBillingPeriod}`,
+        description:
+          resolvedBillingPeriod === "yearly"
+            ? `${plan.displayNameEn} yearly subscription`
+            : `${plan.displayNameEn} monthly subscription`,
+      });
+    }
 
     if (!payPalOrder.orderId || !payPalOrder.approvalUrl) {
       return NextResponse.json(
@@ -109,15 +175,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const order = await createGlobalSubscriptionOrder({
-      db,
-      userId: user.userId,
-      userEmail: user.email,
-      plan,
-      provider: "paypal",
-      providerOrderId: payPalOrder.orderId,
-      clientMeta: getGlobalClientMeta(request),
-    }).catch(async (orderError) => {
+    const createOrder =
+      productType === "ADDON"
+        ? createGlobalAddonOrder({
+            db,
+            userId: user.userId,
+            userEmail: user.email,
+            addon: addonPlan!,
+            provider: "paypal",
+            providerOrderId: payPalOrder.orderId,
+            clientMeta: getGlobalClientMeta(request),
+          })
+        : createGlobalSubscriptionOrder({
+            db,
+            userId: user.userId,
+            userEmail: user.email,
+            plan: subscriptionQuote!.checkoutPlan,
+            extraJson: subscriptionQuote!.extraJson,
+            provider: "paypal",
+            providerOrderId: payPalOrder.orderId,
+            clientMeta: getGlobalClientMeta(request),
+          });
+
+    const order = await createOrder.catch(async (orderError) => {
       const reason =
         orderError instanceof Error ? orderError.message : "创建本地订单失败";
 
@@ -161,10 +241,12 @@ export async function POST(request: NextRequest) {
       orderId: order.orderId,
       providerOrderId: payPalOrder.orderId,
       approvalUrl: payPalOrder.approvalUrl,
-      amount: plan.amount,
-      currency: plan.currency,
+      amount,
+      currency,
+      productType,
       planCode,
       billingPeriod,
+      addonCode,
     });
   } catch (error) {
     const httpError = toHttpError(error);

@@ -6,6 +6,7 @@ import {
   readDomesticOrderByProviderOrderId,
   requireDomesticLoginUser,
   requireDomesticRuntimeDb,
+  settleDomesticAddonPayment,
   settleDomesticSubscriptionPayment,
   toHttpError,
 } from "@/lib/payment/domestic-payment";
@@ -43,6 +44,10 @@ function pickAmountForValidation(input: {
     return input.buyerPayAmount;
   }
   return input.totalAmount || input.buyerPayAmount || null;
+}
+
+function isAddonOrder(orderType: unknown) {
+  return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
 export async function POST(request: NextRequest) {
@@ -120,27 +125,43 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const settled = await settleDomesticSubscriptionPayment({
-      db,
-      order,
-      provider: "alipay",
-      providerOrderId: outTradeNo,
-      providerTransactionId: status.tradeNo,
-      providerPayload: {
-        trade_status: status.tradeStatus,
-        trade_no: status.tradeNo,
-        total_amount: status.totalAmount,
-        buyer_pay_amount: status.buyerPayAmount,
-      },
-    });
+    const providerPayload = {
+      trade_status: status.tradeStatus,
+      trade_no: status.tradeNo,
+      total_amount: status.totalAmount,
+      buyer_pay_amount: status.buyerPayAmount,
+    };
+    const settled = isAddonOrder(order.order_type)
+      ? await settleDomesticAddonPayment({
+          db,
+          order,
+          provider: "alipay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.tradeNo,
+          providerPayload,
+        })
+      : await settleDomesticSubscriptionPayment({
+          db,
+          order,
+          provider: "alipay",
+          providerOrderId: outTradeNo,
+          providerTransactionId: status.tradeNo,
+          providerPayload,
+        });
 
     return NextResponse.json({
       success: true,
       status: "COMPLETED",
       already_paid: settled.alreadyPaid,
-      plan_code: settled.planCode,
-      plan_expires_at: settled.planExpiresAt || null,
-      paid_at: settled.paidAt,
+      productType: isAddonOrder(order.order_type) ? "ADDON" : "SUBSCRIPTION",
+      plan_code: "planCode" in settled ? settled.planCode : null,
+      plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
+      subscription_status:
+        "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
+      effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
+      addon_code: "addonCode" in settled ? settled.addonCode : null,
+      granted_at: "grantedAt" in settled ? settled.grantedAt : null,
+      paid_at: "paidAt" in settled ? settled.paidAt : null,
     });
   } catch (error) {
     const httpError = toHttpError(error);

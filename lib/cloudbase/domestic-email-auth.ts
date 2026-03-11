@@ -90,6 +90,42 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function normalizeDisplayNameCandidate(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isLikelyAccountIdentifier(value: string) {
+  if (!value) {
+    return false;
+  }
+
+  if (value.includes("@")) {
+    return true;
+  }
+
+  if (/^\d{6,}$/.test(value)) {
+    return true;
+  }
+
+  if (/^(user|uid|account|账号)[_-]?\d+$/i.test(value)) {
+    return true;
+  }
+
+  return false;
+}
+
+function pickPreferredDisplayName(candidates: unknown[]) {
+  const normalized = candidates
+    .map((candidate) => normalizeDisplayNameCandidate(candidate))
+    .filter(Boolean);
+
+  const preferred = normalized.find(
+    (candidate) => !isLikelyAccountIdentifier(candidate),
+  );
+
+  return preferred || normalized[0] || null;
+}
+
 function createId(prefix: string) {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -140,15 +176,14 @@ function extractUserName(loginState: unknown, userInfo: unknown) {
     data?: { user?: { user_metadata?: { name?: string; username?: string } } };
   } | null)?.data?.user?.user_metadata;
   const infoUser = userInfo as { name?: string; username?: string } | null;
-  return (
-    infoUser?.name ||
-    infoUser?.username ||
-    stateUser?.name ||
-    stateUser?.username ||
-    stateDataUser?.name ||
-    stateDataUser?.username ||
-    null
-  );
+  return pickPreferredDisplayName([
+    infoUser?.name,
+    stateUser?.name,
+    stateDataUser?.name,
+    infoUser?.username,
+    stateUser?.username,
+    stateDataUser?.username,
+  ]);
 }
 
 function getUserAgent() {
@@ -246,18 +281,24 @@ async function syncDomesticUserProfile(profile: DomesticUserProfile) {
   const now = toSqlTimestamp();
   const normalizedEmail = normalizeEmail(profile.email);
   const userAgent = getUserAgent();
+  const defaultDisplayName =
+    normalizedEmail.split("@")[0]?.trim() || "用户";
 
-  const rowsById = await executeQuery<{ id: string }>(
-    mysql.from("app_users").select("id").eq("id", profile.userId).limit(1),
+  const rowsById = await executeQuery<{ id: string; display_name?: string | null }>(
+    mysql
+      .from("app_users")
+      .select("id,display_name")
+      .eq("id", profile.userId)
+      .limit(1),
     "查询用户失败",
   );
 
   let appUserId = profile.userId;
   if (rowsById.length === 0) {
-    const rowsByEmail = await executeQuery<{ id: string }>(
+    const rowsByEmail = await executeQuery<{ id: string; display_name?: string | null }>(
       mysql
         .from("app_users")
-        .select("id")
+        .select("id,display_name")
         .eq("source", "cn")
         .eq("email_normalized", normalizedEmail)
         .limit(1),
@@ -266,13 +307,18 @@ async function syncDomesticUserProfile(profile: DomesticUserProfile) {
 
     if (rowsByEmail.length > 0 && rowsByEmail[0]?.id) {
       appUserId = rowsByEmail[0].id;
+      const displayName =
+        pickPreferredDisplayName([
+          profile.displayName,
+          rowsByEmail[0]?.display_name,
+        ]) || defaultDisplayName;
       await executeQuery(
         mysql
           .from("app_users")
           .update({
             email: normalizedEmail,
             email_normalized: normalizedEmail,
-            display_name: profile.displayName,
+            display_name: displayName,
             avatar_url: profile.avatarUrl,
             last_login_at: now,
             is_active: true,
@@ -288,7 +334,8 @@ async function syncDomesticUserProfile(profile: DomesticUserProfile) {
           source: "cn",
           email: normalizedEmail,
           email_normalized: normalizedEmail,
-          display_name: profile.displayName,
+          display_name:
+            pickPreferredDisplayName([profile.displayName]) || defaultDisplayName,
           avatar_url: profile.avatarUrl,
           current_plan_code: "free",
           subscription_status: "inactive",
@@ -301,13 +348,18 @@ async function syncDomesticUserProfile(profile: DomesticUserProfile) {
       );
     }
   } else {
+    const displayName =
+      pickPreferredDisplayName([
+        profile.displayName,
+        rowsById[0]?.display_name,
+      ]) || defaultDisplayName;
     await executeQuery(
       mysql
         .from("app_users")
         .update({
           email: normalizedEmail,
           email_normalized: normalizedEmail,
-          display_name: profile.displayName,
+          display_name: displayName,
           avatar_url: profile.avatarUrl,
           last_login_at: now,
           is_active: true,

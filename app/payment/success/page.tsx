@@ -27,6 +27,8 @@ function PaymentSuccessContent() {
 
   const [confirming, setConfirming] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
+  const [productType, setProductType] = useState<"ADDON" | "SUBSCRIPTION" | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<"active" | "pending" | null>(null);
 
   useEffect(() => {
     const runConfirm = async () => {
@@ -140,11 +142,20 @@ function PaymentSuccessContent() {
         const payload = (await response.json()) as {
           success?: boolean;
           error?: string;
+          productType?: "ADDON" | "SUBSCRIPTION";
+          subscription_status?: "active" | "pending" | null;
         };
 
         if (!response.ok || !payload.success) {
           throw new Error(payload.error || "确认支付失败");
         }
+
+        setProductType(
+          payload.productType === "ADDON" ? "ADDON" : "SUBSCRIPTION",
+        );
+        setSubscriptionStatus(
+          payload.subscription_status === "pending" ? "pending" : "active",
+        );
 
         sessionStorage.removeItem("alipay_order_id");
         sessionStorage.removeItem("wechat_pay_order");
@@ -182,16 +193,32 @@ function PaymentSuccessContent() {
                 ? isZh
                   ? "支付确认失败"
                   : "Payment Confirmation Failed"
-                : isZh
-                  ? "支付成功"
-                  : "Payment Successful"}
+                : productType === "ADDON"
+                  ? isZh
+                    ? "加油包到账成功"
+                    : "Add-on Delivered"
+                  : subscriptionStatus === "pending"
+                    ? isZh
+                      ? "支付成功，已排队生效"
+                      : "Payment Successful, Activation Queued"
+                    : isZh
+                      ? "支付成功"
+                      : "Payment Successful"}
             </h1>
             <p className="text-sm text-gray-600 dark:text-gray-300">
               {errorMessage
                 ? errorMessage
-                : isZh
-                  ? "订阅已生效，额度已刷新。"
-                  : "Subscription is active and quota is refreshed."}
+                : productType === "ADDON"
+                  ? isZh
+                    ? "加油包额度已到账，账户余额已刷新。"
+                    : "Your add-on quota is available and balance is refreshed."
+                  : subscriptionStatus === "pending"
+                    ? isZh
+                      ? "降级订阅已支付成功，将在当前周期结束后自动生效。"
+                      : "Your downgrade is paid and will activate automatically at the end of the current period."
+                  : isZh
+                    ? "订阅已生效，额度已刷新。"
+                    : "Subscription is active and quota is refreshed."}
             </p>
           </div>
         )}
