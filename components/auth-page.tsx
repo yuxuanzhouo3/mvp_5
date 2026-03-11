@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/context/LanguageContext";
+import { trackAnalyticsClient } from "@/lib/analytics/client";
 import { getCloudbaseConfigError } from "@/lib/cloudbase/client";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
+import { Button } from "@/components/ui/button";
 import {
   extractDomesticAuthErrorMessage,
   loginWithDomesticEmailPassword,
@@ -354,6 +356,18 @@ export function AuthPage({ mode }: AuthPageProps) {
     setIsLoading(true);
 
     try {
+      void trackAnalyticsClient({
+        source: "global",
+        eventType: "auth_oauth_start",
+        eventName: "google_oauth_start",
+        eventData: {
+          provider: "google",
+          mode,
+        },
+        ensureSession: false,
+        sessionScope: "auth",
+      });
+
       const oauthStartUrl = new URL("/auth/google", window.location.origin);
       if (next && next !== "/") {
         oauthStartUrl.searchParams.set("next", next);
@@ -426,9 +440,19 @@ export function AuthPage({ mode }: AuthPageProps) {
     try {
       if (isDomesticVersion) {
         if (mode === "login") {
-          await loginWithDomesticEmailPassword({
+          const profile = await loginWithDomesticEmailPassword({
             email: form.email,
             password: form.password,
+          });
+          void trackAnalyticsClient({
+            source: "cn",
+            userId: profile.userId,
+            eventType: "session_start",
+            eventName: "email_password_login_success",
+            eventData: {
+              method: "email_password",
+            },
+            sessionScope: "auth",
           });
           setSuccess(isZh ? "登录成功，正在跳转" : "Login successful, redirecting");
           router.push(next);
@@ -444,6 +468,16 @@ export function AuthPage({ mode }: AuthPageProps) {
             code: form.verificationCode,
             verificationInfo: verifiedInfo,
           });
+          void trackAnalyticsClient({
+            source: "cn",
+            eventType: "register",
+            eventName: "email_code_signup_success",
+            eventData: {
+              method: "email_code",
+            },
+            ensureSession: false,
+            sessionScope: "auth",
+          });
           setSuccess(isZh ? "注册成功，正在跳转登录" : "Sign up successful, redirecting to login");
           window.setTimeout(() => {
             router.push(`/auth/login?next=${encodeURIComponent(next)}`);
@@ -456,6 +490,16 @@ export function AuthPage({ mode }: AuthPageProps) {
           newPassword: form.password,
           code: form.verificationCode,
           verificationInfo: verifiedInfo,
+        });
+        void trackAnalyticsClient({
+          source: "cn",
+          eventType: "auth_password_reset",
+          eventName: "email_code_password_reset_success",
+          eventData: {
+            method: "email_code",
+          },
+          ensureSession: false,
+          sessionScope: "auth",
         });
         setSuccess(
           isZh
@@ -482,12 +526,50 @@ export function AuthPage({ mode }: AuthPageProps) {
           });
 
         if (signInError) {
+          const errorText = (signInError.message || "").toLowerCase();
+          const isUnverifiedLoginError =
+            errorText.includes("email not confirmed") ||
+            errorText.includes("email not verified") ||
+            errorText.includes("email_not_confirmed");
+
+          if (isUnverifiedLoginError) {
+            await resendVerificationEmailAutomatically(form.email.trim());
+            void trackAnalyticsClient({
+              source: "global",
+              eventType: "auth_login_unverified",
+              eventName: "email_password_login_unverified",
+              eventData: {
+                method: "email_password",
+                from: "signin_error",
+              },
+              ensureSession: false,
+              sessionScope: "auth",
+            });
+            setSuccess(
+              isZh
+                ? "该邮箱尚未完成验证，系统已自动重新发送验证邮件，请查收邮箱。"
+                : "This email is not verified. A new verification email has been sent automatically.",
+            );
+            return;
+          }
+
           throw signInError;
         }
 
         if (!data.user?.email_confirmed_at) {
           await supabase.auth.signOut();
           await resendVerificationEmailAutomatically(form.email.trim());
+          void trackAnalyticsClient({
+            source: "global",
+            userId: data.user?.id || null,
+            eventType: "auth_login_unverified",
+            eventName: "email_password_login_unverified",
+            eventData: {
+              method: "email_password",
+            },
+            ensureSession: false,
+            sessionScope: "auth",
+          });
           setSuccess(
             isZh
               ? "该邮箱尚未完成验证，系统已自动重新发送验证邮件，请查收邮箱。"
@@ -496,6 +578,16 @@ export function AuthPage({ mode }: AuthPageProps) {
           return;
         }
 
+        void trackAnalyticsClient({
+          source: "global",
+          userId: data.user?.id || null,
+          eventType: "session_start",
+          eventName: "email_password_login_success",
+          eventData: {
+            method: "email_password",
+          },
+          sessionScope: "auth",
+        });
         setSuccess(isZh ? "登录成功，正在跳转" : "Login successful, redirecting");
         window.location.href = next;
         return;
@@ -538,6 +630,17 @@ export function AuthPage({ mode }: AuthPageProps) {
           });
           await resendVerificationEmailAutomatically(normalizedEmail);
           await supabase.auth.signOut();
+          void trackAnalyticsClient({
+            source: "global",
+            userId: data.user.id,
+            eventType: "register",
+            eventName: "signup_unverified_user_resend",
+            eventData: {
+              method: "email_password",
+            },
+            ensureSession: false,
+            sessionScope: "auth",
+          });
           setSuccess(
             isZh
               ? "该邮箱尚未完成验证，系统已自动重新发送验证邮件，请查收邮箱。"
@@ -553,6 +656,17 @@ export function AuthPage({ mode }: AuthPageProps) {
           action: "signup_verification_email_request",
           status: "accepted",
           email: normalizedEmail,
+        });
+        void trackAnalyticsClient({
+          source: "global",
+          userId: data.user?.id || null,
+          eventType: "register",
+          eventName: "signup_pending_confirmation",
+          eventData: {
+            method: "email_password",
+          },
+          ensureSession: false,
+          sessionScope: "auth",
         });
         await supabase.auth.signOut();
         setSuccess(
@@ -586,6 +700,16 @@ export function AuthPage({ mode }: AuthPageProps) {
         action: "password_reset_email_request",
         status: "accepted",
         email: form.email.trim(),
+      });
+      void trackAnalyticsClient({
+        source: isDomesticVersion ? "cn" : "global",
+        eventType: "auth_password_reset_request",
+        eventName: "password_reset_email_requested",
+        eventData: {
+          method: isDomesticVersion ? "email_code" : "supabase_email",
+        },
+        ensureSession: false,
+        sessionScope: "auth",
       });
       setSuccess(
         isZh
@@ -634,37 +758,40 @@ export function AuthPage({ mode }: AuthPageProps) {
 
           {showThirdPartyButton && (
             <>
-              <button
-                type="button"
-                className={`w-full h-11 rounded-xl gap-3 mb-4 font-medium flex items-center justify-center ${
-                  isDomesticVersion
-                    ? "bg-[#00c060] hover:bg-[#00a654] text-white"
-                    : "bg-white dark:bg-white/10 border border-gray-200 dark:border-white/15 text-gray-800 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-white/15"
-                }`}
-                onClick={handleThirdPartyLogin}
-                disabled={isLoading || !agreePrivacy}
-              >
-                {isLoading ? (
-                  <SpinnerIcon className="h-5 w-5 animate-spin" />
-                ) : isDomesticVersion ? (
-                  <WechatIcon className="h-5 w-5" />
-                ) : (
-                  <GoogleIcon className="h-5 w-5" />
-                )}
-                <span>
-                  {isLoading
-                    ? isZh
-                      ? "处理中..."
-                      : "Processing..."
-                    : isDomesticVersion
-                      ? isZh
-                        ? "使用微信登录"
-                        : "Sign in with WeChat"
-                      : isZh
-                        ? "使用 Google 登录"
-                        : "Sign in with Google"}
-                </span>
-              </button>
+              {isDomesticVersion ? (
+                <Button
+                  type="button"
+                  className="w-full h-11 rounded-xl gap-3 mb-4 bg-[#00c060] hover:bg-[#00a654] text-white"
+                  onClick={handleThirdPartyLogin}
+                  disabled={isLoading || !agreePrivacy}
+                >
+                  {isLoading ? (
+                    <SpinnerIcon className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <WechatIcon className="h-5 w-5" />
+                  )}
+                  {isZh ? "使用微信登录" : "Sign in with WeChat"}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={`w-full h-11 rounded-xl gap-3 mb-4 border-gray-200 shadow-xs dark:border-gray-700 ${
+                    !agreePrivacy && !isLoading
+                      ? "bg-gray-100 text-gray-400 hover:bg-gray-100 hover:text-gray-400 cursor-not-allowed dark:bg-slate-800/60 dark:text-gray-500 dark:hover:bg-slate-800/60"
+                      : "bg-white text-gray-900 hover:bg-violet-100 hover:text-gray-900 dark:bg-slate-900/40 dark:text-gray-100 dark:hover:bg-violet-500/20 dark:hover:text-gray-100"
+                  }`}
+                  onClick={handleThirdPartyLogin}
+                  disabled={isLoading || !agreePrivacy}
+                >
+                  {isLoading ? (
+                    <SpinnerIcon className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <GoogleIcon className="h-5 w-5" />
+                  )}
+                  {isZh ? "使用 Google 登录" : "Sign in with Google"}
+                </Button>
+              )}
 
               <div className="relative mb-4">
                 <div className="absolute inset-0 flex items-center">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/context/LanguageContext";
@@ -37,7 +37,7 @@ function SpinnerIcon({ className }: { className?: string }) {
   );
 }
 
-export default function UpdatePasswordPage() {
+function UpdatePasswordContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { currentLanguage, isDomesticVersion } = useLanguage();
@@ -292,5 +292,24 @@ export default function UpdatePasswordPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function UpdatePasswordLoadingFallback() {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-3">
+      <SpinnerIcon className="h-8 w-8 animate-spin text-cyan-500" />
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        正在加载重置页面...
+      </p>
+    </div>
+  );
+}
+
+export default function UpdatePasswordPage() {
+  return (
+    <Suspense fallback={<UpdatePasswordLoadingFallback />}>
+      <UpdatePasswordContent />
+    </Suspense>
   );
 }

@@ -4,6 +4,10 @@ import {
   getSupabaseAnonKeyFromEnv,
   getSupabaseUrlFromEnv,
 } from "@/lib/supabase/env";
+import {
+  extractRequestAnalyticsMeta,
+  trackAnalyticsSessionEvent,
+} from "@/lib/analytics/tracker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -109,6 +113,42 @@ export async function GET(request: NextRequest) {
     errorUrl.searchParams.set("error", "exchange_failed");
     errorUrl.searchParams.set("error_description", error.message);
     return NextResponse.redirect(errorUrl);
+  }
+
+  try {
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (!userError && user?.id) {
+      const provider =
+        typeof user.app_metadata?.provider === "string"
+          ? user.app_metadata.provider
+          : "oauth";
+      const createdAtMs = new Date(user.created_at).getTime();
+      const isRecentRegister =
+        Number.isFinite(createdAtMs) &&
+        Date.now() - createdAtMs <= 5 * 60 * 1000;
+      const meta = extractRequestAnalyticsMeta(request);
+
+      await trackAnalyticsSessionEvent({
+        source: "global",
+        userId: user.id,
+        ensureSession: true,
+        eventType: isRecentRegister ? "register" : "session_start",
+        eventName: isRecentRegister
+          ? "oauth_register_success"
+          : "oauth_login_success",
+        eventData: {
+          provider,
+          flow: "oauth_callback",
+        },
+        meta,
+      });
+    }
+  } catch (trackError) {
+    console.warn("[auth/callback] analytics track failed:", trackError);
   }
 
   const successUrl = new URL(next, origin);

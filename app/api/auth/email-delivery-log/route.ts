@@ -48,6 +48,16 @@ function mapRuntimeSource() {
   return resolveBackendFromLanguage() === "cloudbase" ? "cn" : "global";
 }
 
+function formatUtcDateTimeForSql(date: Date) {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mi = String(date.getUTCMinutes()).padStart(2, "0");
+  const ss = String(date.getUTCSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
 export async function POST(req: Request) {
   try {
     const payload = (await req.json()) as Record<string, unknown>;
@@ -74,6 +84,10 @@ export async function POST(req: Request) {
     const requestId = normalizeOptionalText(payload.requestId, 64);
     const detail = normalizeOptionalText(payload.detail, 800);
     const source = mapRuntimeSource();
+    const createdAt =
+      source === "cn"
+        ? formatUtcDateTimeForSql(new Date())
+        : new Date().toISOString();
 
     await db.from("user_security_events").insert({
       id: createSecurityEventId(),
@@ -90,7 +104,7 @@ export async function POST(req: Request) {
         request_id: requestId,
         detail,
       },
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
     });
 
     return Response.json({ logged: true });

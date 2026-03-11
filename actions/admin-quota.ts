@@ -4,10 +4,12 @@ import { revalidatePath } from "next/cache";
 import {
   AdminActionResult,
   createTextId,
+  parseDecimalOr,
   parseIntOr,
   requireAdminContext,
   writeAdminAuditLog,
 } from "@/actions/admin-common";
+import { getRoutedAdminDbClient } from "@/lib/server/database-routing";
 
 const QUOTA_TYPES = ["document", "image", "video", "audio"] as const;
 type QuotaType = (typeof QUOTA_TYPES)[number];
@@ -23,6 +25,18 @@ export type SubscriptionPlanRow = {
   monthly_audio_limit: number;
   is_active: boolean;
   admin_adjustable: boolean;
+  updated_at: string;
+};
+
+export type PlanPriceRow = {
+  id: string;
+  source: "cn" | "global";
+  plan_code: string;
+  billing_period: "monthly" | "yearly";
+  currency: "CNY" | "USD" | string;
+  amount: number;
+  original_amount: number | null;
+  is_active: boolean;
   updated_at: string;
 };
 
@@ -84,6 +98,33 @@ export type QuotaChangeLogRow = {
   created_at: string;
 };
 
+async function readPlanPricesBySource(source: "cn" | "global") {
+  const db = await getRoutedAdminDbClient(source);
+  if (!db) {
+    console.error("[AdminQuota] 读取套餐价格失败: 数据库未连接", { source });
+    return [] as PlanPriceRow[];
+  }
+
+  const currency = source === "cn" ? "CNY" : "USD";
+  const { data, error } = await db
+    .from("plan_prices")
+    .select("*")
+    .eq("source", source)
+    .eq("currency", currency)
+    .order("plan_code", { ascending: true })
+    .order("billing_period", { ascending: true });
+
+  if (error) {
+    console.error("[AdminQuota] 读取套餐价格失败:", {
+      source,
+      message: error.message,
+    });
+    return [] as PlanPriceRow[];
+  }
+
+  return (data || []) as PlanPriceRow[];
+}
+
 function isQuotaType(input: string): input is QuotaType {
   return QUOTA_TYPES.includes(input as QuotaType);
 }
@@ -91,10 +132,14 @@ function isQuotaType(input: string): input is QuotaType {
 export async function getQuotaConfig() {
   const { session, db } = await requireAdminContext();
   if (!session || !db) {
-    return { plans: [] as SubscriptionPlanRow[], addons: [] as AddonPackageRow[] };
+    return {
+      plans: [] as SubscriptionPlanRow[],
+      addons: [] as AddonPackageRow[],
+      prices: [] as PlanPriceRow[],
+    };
   }
 
-  const [{ data: plans }, { data: addons }] = await Promise.all([
+  const [{ data: plans }, { data: addons }, cnPrices, globalPrices] = await Promise.all([
     db
       .from("subscription_plans")
       .select("*")
@@ -103,11 +148,22 @@ export async function getQuotaConfig() {
       .from("addon_packages")
       .select("*")
       .order("sort_order", { ascending: true }),
+    readPlanPricesBySource("cn"),
+    readPlanPricesBySource("global"),
   ]);
+
+  const mergedPrices = [...cnPrices, ...globalPrices];
+  const filteredPrices = mergedPrices.filter(
+    (item) =>
+      (item.plan_code === "pro" || item.plan_code === "enterprise") &&
+      (item.source === "cn" || item.source === "global") &&
+      (item.billing_period === "monthly" || item.billing_period === "yearly"),
+  );
 
   return {
     plans: (plans || []) as SubscriptionPlanRow[],
     addons: (addons || []) as AddonPackageRow[],
+    prices: filteredPrices,
   };
 }
 
@@ -202,6 +258,149 @@ export async function updateAddonPackageLimits(
     afterJson: updates,
     beforeJson: before || null,
   });
+
+  revalidatePath("/admin/quota");
+  return { success: true };
+}
+
+function buildPlanPriceId(input: {
+  source: "cn" | "global";
+  planCode: "pro" | "enterprise";
+  billingPeriod: "monthly" | "yearly";
+}) {
+  const planAlias = input.planCode === "enterprise" ? "ent" : input.planCode;
+  return `price_${input.source}_${planAlias}_${input.billingPeriod}`;
+}
+
+export async function updateSubscriptionPlanPricing(
+  formData: FormData,
+): Promise<AdminActionResult> {
+  const { session } = await requireAdminContext();
+  if (!session) {
+    return { success: false, error: "未授权访问" };
+  }
+
+  const source = String(formData.get("source") || "").trim() as "cn" | "global";
+  const planCode = String(formData.get("plan_code") || "").trim() as
+    | "pro"
+    | "enterprise";
+
+  if (source !== "cn" && source !== "global") {
+    return { success: false, error: "定价来源无效" };
+  }
+  if (planCode !== "pro" && planCode !== "enterprise") {
+    return { success: false, error: "仅支持专业版与企业版定价" };
+  }
+
+  const db = await getRoutedAdminDbClient(source);
+  if (!db) {
+    return {
+      success: false,
+      error: source === "cn" ? "国内版数据库不可用" : "国际版数据库不可用",
+    };
+  }
+
+  const monthlyAmount = Math.max(
+    0,
+    parseDecimalOr(formData.get("monthly_amount") as string, NaN),
+  );
+  const yearlyAmount = Math.max(
+    0,
+    parseDecimalOr(formData.get("yearly_amount") as string, NaN),
+  );
+
+  if (!Number.isFinite(monthlyAmount) || !Number.isFinite(yearlyAmount)) {
+    return { success: false, error: "请输入有效的价格" };
+  }
+
+  const normalizedMonthly = Number(monthlyAmount.toFixed(2));
+  const normalizedYearly = Number(yearlyAmount.toFixed(2));
+  const currency = source === "cn" ? "CNY" : "USD";
+
+  const { data: existingRows } = await db
+    .from("plan_prices")
+    .select("*")
+    .eq("source", source)
+    .eq("plan_code", planCode)
+    .eq("currency", currency);
+
+  const beforeRows = ((existingRows || []) as PlanPriceRow[]).filter(
+    (item) =>
+      item.billing_period === "monthly" || item.billing_period === "yearly",
+  );
+
+  const targetRows: Array<{ billingPeriod: "monthly" | "yearly"; amount: number }> = [
+    { billingPeriod: "monthly", amount: normalizedMonthly },
+    { billingPeriod: "yearly", amount: normalizedYearly },
+  ];
+
+  for (const target of targetRows) {
+    const existed = beforeRows.find(
+      (item) => item.billing_period === target.billingPeriod,
+    );
+
+    if (existed?.id) {
+      const { error } = await db
+        .from("plan_prices")
+        .update({
+          currency,
+          amount: target.amount,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existed.id);
+
+      if (error) {
+        return { success: false, error: "更新套餐定价失败" };
+      }
+      continue;
+    }
+
+    const { error } = await db.from("plan_prices").insert({
+      id: createTextId(
+        buildPlanPriceId({
+          source,
+          planCode,
+          billingPeriod: target.billingPeriod,
+        }),
+      ),
+      source,
+      plan_code: planCode,
+      billing_period: target.billingPeriod,
+      currency,
+      amount: target.amount,
+      original_amount: null,
+      is_active: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      return { success: false, error: "创建套餐定价失败" };
+    }
+  }
+
+  try {
+    await db.from("admin_audit_logs").insert({
+      id: createTextId("audit"),
+      admin_user_id: session.userId,
+      action: "update_plan_pricing",
+      target_type: "plan_prices",
+      target_id: `${source}:${planCode}`,
+      source,
+      before_json: beforeRows,
+      after_json: {
+        source,
+        plan_code: planCode,
+        currency,
+        monthly_amount: normalizedMonthly,
+        yearly_amount: normalizedYearly,
+      },
+      created_at: new Date().toISOString(),
+    });
+  } catch (auditError) {
+    console.warn("[AdminQuota] 写入套餐定价审计日志失败:", auditError);
+  }
 
   revalidatePath("/admin/quota");
   return { success: true };

@@ -5,6 +5,10 @@ import {
   getSupabaseAnonKeyFromEnv,
   getSupabaseUrlFromEnv,
 } from "@/lib/supabase/env";
+import {
+  extractRequestAnalyticsMeta,
+  trackAnalyticsSessionEvent,
+} from "@/lib/analytics/tracker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +41,36 @@ function sanitizeNextPath(next: string | null): string {
   if (!next.startsWith("/")) return "/";
   if (next.startsWith("//")) return "/";
   return next;
+}
+
+async function trackConfirmedUser(
+  request: NextRequest,
+  supabase: ReturnType<typeof createServerClient>,
+) {
+  try {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error || !user?.id) {
+      return;
+    }
+
+    await trackAnalyticsSessionEvent({
+      source: "global",
+      userId: user.id,
+      ensureSession: true,
+      eventType: "register",
+      eventName: "email_confirmed",
+      eventData: {
+        method: "supabase_email",
+      },
+      meta: extractRequestAnalyticsMeta(request),
+    });
+  } catch (trackError) {
+    console.warn("[auth/confirm] analytics track failed:", trackError);
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -98,6 +132,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(errorUrl);
     }
 
+    await trackConfirmedUser(request, supabase);
+
     const successUrl = new URL(next, origin);
     const response = NextResponse.redirect(successUrl);
     for (const { name, value, options } of pendingCookies) {
@@ -116,6 +152,8 @@ export async function GET(request: NextRequest) {
       errorUrl.searchParams.set("error_description", error.message);
       return NextResponse.redirect(errorUrl);
     }
+
+    await trackConfirmedUser(request, supabase);
 
     const successUrl = new URL(next, origin);
     const response = NextResponse.redirect(successUrl);

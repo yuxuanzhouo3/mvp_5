@@ -98,6 +98,15 @@ type StatsTaskRow = {
   created_at?: string | null;
 };
 
+type StatsEventRow = {
+  source?: string | null;
+  user_id?: string | null;
+  event_type?: string | null;
+  created_at?: string | null;
+  device_type?: string | null;
+  os?: string | null;
+};
+
 function getDateThresholds() {
   const now = new Date();
   const todayStart = new Date(now);
@@ -160,7 +169,8 @@ export async function getDashboardStats(
 
   const { todayIso, weekIso, monthIso } = getDateThresholds();
 
-  const [usersRows, ordersRows, subsRows, sessionsRows, tasksRows] = await Promise.all([
+  const [usersRows, ordersRows, subsRows, sessionsRows, tasksRows, eventsRows] =
+    await Promise.all([
     db
       .from("app_users")
       .select("id, source, current_plan_code, created_at", { count: "exact" }),
@@ -176,9 +186,19 @@ export async function getDashboardStats(
     db
       .from("ai_tasks")
       .select("source, user_id, created_at"),
-  ]);
+    db
+      .from("analytics_events")
+      .select("source, user_id, event_type, created_at, device_type, os"),
+    ]);
 
-  if (usersRows.error || ordersRows.error || subsRows.error || sessionsRows.error || tasksRows.error) {
+  if (
+    usersRows.error ||
+    ordersRows.error ||
+    subsRows.error ||
+    sessionsRows.error ||
+    tasksRows.error ||
+    eventsRows.error
+  ) {
     return null;
   }
 
@@ -190,6 +210,7 @@ export async function getDashboardStats(
   );
   const sessions = withinSourceScope((sessionsRows.data || []) as StatsSessionRow[], sourceScope);
   const tasks = withinSourceScope((tasksRows.data || []) as StatsTaskRow[], sourceScope);
+  const events = withinSourceScope((eventsRows.data || []) as StatsEventRow[], sourceScope);
 
   const userToday = users.filter((u) => (u.created_at || "") >= todayIso).length;
   const userWeek = users.filter((u) => (u.created_at || "") >= weekIso).length;
@@ -201,6 +222,9 @@ export async function getDashboardStats(
   const tasksMonth = tasks.filter((t) => (t.created_at || "") >= monthIso);
   const tasksWeek = tasks.filter((t) => (t.created_at || "") >= weekIso);
   const tasksToday = tasks.filter((t) => (t.created_at || "") >= todayIso);
+  const eventsMonth = events.filter((event) => (event.created_at || "") >= monthIso);
+  const eventsWeek = events.filter((event) => (event.created_at || "") >= weekIso);
+  const eventsToday = events.filter((event) => (event.created_at || "") >= todayIso);
 
   const activityTodayUsers = new Set<string>();
   const activityWeekUsers = new Set<string>();
@@ -212,16 +236,25 @@ export async function getDashboardStats(
   for (const row of tasksToday) {
     if (row.user_id) activityTodayUsers.add(row.user_id);
   }
+  for (const row of eventsToday) {
+    if (row.user_id) activityTodayUsers.add(row.user_id);
+  }
   for (const row of sessionsWeek) {
     if (row.user_id) activityWeekUsers.add(row.user_id);
   }
   for (const row of tasksWeek) {
     if (row.user_id) activityWeekUsers.add(row.user_id);
   }
+  for (const row of eventsWeek) {
+    if (row.user_id) activityWeekUsers.add(row.user_id);
+  }
   for (const row of sessionsMonth) {
     if (row.user_id) activityMonthUsers.add(row.user_id);
   }
   for (const row of tasksMonth) {
+    if (row.user_id) activityMonthUsers.add(row.user_id);
+  }
+  for (const row of eventsMonth) {
     if (row.user_id) activityMonthUsers.add(row.user_id);
   }
 
@@ -285,6 +318,12 @@ export async function getDashboardStats(
     byOs[os] = (byOs[os] || 0) + 1;
     byDeviceType[deviceType] = (byDeviceType[deviceType] || 0) + 1;
   }
+  for (const item of eventsMonth) {
+    const os = item.os || "unknown";
+    const deviceType = item.device_type || "unknown";
+    byOs[os] = (byOs[os] || 0) + 1;
+    byDeviceType[deviceType] = (byDeviceType[deviceType] || 0) + 1;
+  }
 
   return {
     users: {
@@ -339,7 +378,8 @@ export async function getDailyActiveUsers(
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (days - 1));
 
-  const [sessionsResult, usersResult, tasksResult] = await Promise.all([
+  const [sessionsResult, usersResult, tasksResult, eventsResult] =
+    await Promise.all([
     db
       .from("analytics_sessions")
       .select("source, user_id, started_at")
@@ -352,9 +392,18 @@ export async function getDailyActiveUsers(
       .from("ai_tasks")
       .select("source, user_id, created_at")
       .gte("created_at", start.toISOString()),
-  ]);
+    db
+      .from("analytics_events")
+      .select("source, user_id, event_type, created_at")
+      .gte("created_at", start.toISOString()),
+    ]);
 
-  if (sessionsResult.error || usersResult.error || tasksResult.error) {
+  if (
+    sessionsResult.error ||
+    usersResult.error ||
+    tasksResult.error ||
+    eventsResult.error
+  ) {
     return [];
   }
 
@@ -363,6 +412,7 @@ export async function getDailyActiveUsers(
     sourceScope,
   );
   const taskRows = withinSourceScope((tasksResult.data || []) as StatsTaskRow[], sourceScope);
+  const eventRows = withinSourceScope((eventsResult.data || []) as StatsEventRow[], sourceScope);
   const dateMap = new Map<string, { activeUsers: Set<string>; taskCount: number }>();
 
   for (const row of sessionRows) {
@@ -388,6 +438,22 @@ export async function getDailyActiveUsers(
       item.activeUsers.add(row.user_id);
     }
     item.taskCount += 1;
+  }
+
+  for (const row of eventRows) {
+    if (!row.created_at) continue;
+    const key = ymd(new Date(row.created_at));
+    if (!dateMap.has(key)) {
+      dateMap.set(key, { activeUsers: new Set<string>(), taskCount: 0 });
+    }
+    const item = dateMap.get(key)!;
+    if (row.user_id) {
+      item.activeUsers.add(row.user_id);
+    }
+
+    if ((row.event_type || "").toLowerCase() === "generate_success") {
+      item.taskCount += 1;
+    }
   }
 
   const userRows = withinSourceScope((usersResult.data || []) as StatsUserRow[], sourceScope);

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/context/LanguageContext";
 import { createClient } from "@/lib/supabase/client";
+import { trackAnalyticsClient } from "@/lib/analytics/client";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ function Spinner() {
   );
 }
 
-export default function AuthCallbackClientPage() {
+function AuthCallbackClientContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { currentLanguage, isDomesticVersion } = useLanguage();
@@ -92,6 +93,26 @@ export default function AuthCallbackClientPage() {
             throw setSessionError;
           }
 
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          if (user?.id) {
+            void trackAnalyticsClient({
+              source: "global",
+              userId: user.id,
+              eventType: "session_start",
+              eventName: "oauth_login_success_client",
+              eventData: {
+                provider:
+                  typeof user.app_metadata?.provider === "string"
+                    ? user.app_metadata.provider
+                    : "oauth",
+                flow: "client_hash_session",
+              },
+              sessionScope: "auth",
+            });
+          }
+
           window.history.replaceState(
             null,
             "",
@@ -107,6 +128,26 @@ export default function AuthCallbackClientPage() {
             await supabase.auth.exchangeCodeForSession(code);
           if (exchangeError) {
             throw exchangeError;
+          }
+
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          if (user?.id) {
+            void trackAnalyticsClient({
+              source: "global",
+              userId: user.id,
+              eventType: "session_start",
+              eventName: "oauth_login_success_client",
+              eventData: {
+                provider:
+                  typeof user.app_metadata?.provider === "string"
+                    ? user.app_metadata.provider
+                    : "oauth",
+                flow: "client_code_exchange",
+              },
+              sessionScope: "auth",
+            });
           }
           router.replace(nextPath);
           return;
@@ -162,5 +203,24 @@ export default function AuthCallbackClientPage() {
           (isZh ? "正在完成登录回调..." : "Completing authentication...")}
       </p>
     </div>
+  );
+}
+
+function AuthCallbackLoadingFallback() {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+      <Spinner />
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        正在准备认证回调...
+      </p>
+    </div>
+  );
+}
+
+export default function AuthCallbackClientPage() {
+  return (
+    <Suspense fallback={<AuthCallbackLoadingFallback />}>
+      <AuthCallbackClientContent />
+    </Suspense>
   );
 }

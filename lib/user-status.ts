@@ -90,6 +90,53 @@ function toNumber(value: unknown, fallback: number) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+export function parseDateTimeMs(value: unknown): number | null {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+
+  const directMs = Date.parse(text);
+  if (Number.isFinite(directMs)) {
+    return directMs;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const dayEndMs = Date.parse(`${text}T23:59:59Z`);
+    return Number.isFinite(dayEndMs) ? dayEndMs : null;
+  }
+
+  const normalized = text.replace(" ", "T");
+  const plainDateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/;
+  if (!plainDateTimePattern.test(normalized)) {
+    return null;
+  }
+
+  const withSeconds =
+    normalized.length === 16 ? `${normalized}:00` : normalized;
+
+  const utcMs = Date.parse(`${withSeconds}Z`);
+  if (Number.isFinite(utcMs)) {
+    return utcMs;
+  }
+
+  const localMs = Date.parse(withSeconds);
+  return Number.isFinite(localMs) ? localMs : null;
+}
+
 export function mapPlanCodeToUserPlan(planCode: unknown): UserPlan {
   if (typeof planCode !== "string") {
     return "free";
@@ -102,8 +149,16 @@ export function mapPlanCodeToUserPlan(planCode: unknown): UserPlan {
 }
 
 export function resolveEffectivePlan(rawPlan: UserPlan, planExp: string | null) {
-  const planExpDate = planExp ? new Date(planExp) : null;
-  const isPlanActive = planExpDate ? planExpDate.getTime() > Date.now() : true;
+  if (!planExp) {
+    return {
+      isPlanActive: true,
+      effectivePlan: rawPlan,
+    } as const;
+  }
+
+  const planExpMs = parseDateTimeMs(planExp);
+  const isPlanActive =
+    planExpMs === null ? true : planExpMs > Date.now();
   return {
     isPlanActive,
     effectivePlan: isPlanActive ? rawPlan : "free",

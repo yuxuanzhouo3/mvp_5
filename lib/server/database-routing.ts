@@ -47,6 +47,70 @@ let cachedCloudbaseClient: RoutedAdminDbClient | null = null;
 let cloudbaseInitPromise: Promise<RoutedAdminDbClient> | null = null;
 let cachedSupabaseClient: RoutedAdminDbClient | null = null;
 
+function formatUtcDateTimeForSql(date: Date) {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mi = String(date.getUTCMinutes()).padStart(2, "0");
+  const ss = String(date.getUTCSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function normalizeCloudbaseValue(value: unknown): unknown {
+  if (value === undefined) {
+    return null;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return formatUtcDateTimeForSql(value);
+  }
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return value;
+}
+
+function normalizeCloudbaseMutationPayload(payload: unknown): unknown {
+  if (Array.isArray(payload)) {
+    return payload.map((item) => normalizeCloudbaseMutationPayload(item));
+  }
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+  return Object.fromEntries(
+    Object.entries(payload as Record<string, unknown>).map(([key, value]) => [
+      key,
+      normalizeCloudbaseValue(value),
+    ]),
+  );
+}
+
+function wrapCloudbaseTableClient(tableClient: any) {
+  return new Proxy(tableClient, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if ((prop === "insert" || prop === "update") && typeof value === "function") {
+        return (payload: unknown, ...rest: unknown[]) =>
+          value.call(target, normalizeCloudbaseMutationPayload(payload), ...rest);
+      }
+      if (typeof value === "function") {
+        return value.bind(target);
+      }
+      return value;
+    },
+  });
+}
+
 function toReadableError(error: unknown, fallback: string) {
   if (error instanceof Error) {
     return error.message || fallback;
@@ -205,7 +269,7 @@ async function getCloudbaseAdminClient(): Promise<RoutedAdminDbClient> {
     const mysql = app.mysql();
     const client: RoutedAdminDbClient = {
       backend: "cloudbase",
-      from: (tableName: string) => mysql.from(tableName),
+      from: (tableName: string) => wrapCloudbaseTableClient(mysql.from(tableName)),
       storage: createCloudbaseStorageClient(app),
     };
     cachedCloudbaseClient = client;

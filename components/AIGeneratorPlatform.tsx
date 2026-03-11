@@ -10,7 +10,11 @@ import OperationsDashboard, {
 } from "./OperationsDashboard";
 import LanguageThemeToggle from "./LanguageThemeToggle";
 import AuthSystem from "./AuthSystem";
-import PaymentSystem, { type BillingPeriod, type PlanKey } from "./PaymentSystem";
+import PaymentSystem, {
+  type BillingPeriod,
+  type PaymentMethod,
+  type PlanKey,
+} from "./PaymentSystem";
 import { Badge } from "./ui/badge";
 import { useLanguage } from "@/context/LanguageContext";
 import {
@@ -29,9 +33,11 @@ import {
 import { getUIText } from "@/lib/ui-text";
 import { getCloudbaseApp, getCloudbaseAuth } from "@/lib/cloudbase/client";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
+import { trackAnalyticsClient } from "@/lib/analytics/client";
 import {
   buildQuotaSummary,
   mapPlanCodeToUserPlan,
+  parseDateTimeMs,
   pickPlanDefinition,
   resolveEffectivePlan,
   type QuotaSummary,
@@ -94,6 +100,20 @@ type UserQuotaBalanceRow = {
   admin_adjustment?: number | null;
   used_amount?: number | null;
   remaining_amount?: number | null;
+};
+
+type DomesticProfileApiUser = {
+  id?: string | null;
+  source?: "cn";
+  email?: string | null;
+  display_name?: string | null;
+  raw_plan?: string | null;
+  effective_plan?: string | null;
+  plan_expires_at?: string | null;
+  is_plan_active?: boolean;
+  plan_display_name_cn?: string | null;
+  plan_display_name_en?: string | null;
+  quota_summary?: QuotaSummary | null;
 };
 
 type GuestQuotaState = {
@@ -214,6 +234,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   } | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const tierQuotaRef = useRef<HTMLDivElement | null>(null);
+  const trackedSessionMarkerRef = useRef<string>("");
+  const domesticHydrateRetryRef = useRef(0);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("morngpt_theme");
@@ -232,17 +254,116 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
 
       try {
         const auth = getCloudbaseAuth();
-        const loginState = (await auth.getLoginState()) as {
+        let accessToken = "";
+        try {
+          const tokenResult = await auth.getAccessToken();
+          accessToken = tokenResult?.accessToken?.trim() || "";
+        } catch (error) {
+          console.warn("[AIGeneratorPlatform] getAccessToken failed:", error);
+        }
+
+        if (accessToken) {
+          try {
+            const profileResponse = await fetch("/api/domestic/user/profile", {
+              method: "GET",
+              headers: {
+                "x-cloudbase-access-token": accessToken,
+              },
+              cache: "no-store",
+            });
+
+            if (profileResponse.ok) {
+              const payload = (await profileResponse.json()) as {
+                success?: boolean;
+                user?: DomesticProfileApiUser | null;
+              };
+              const profileUser = payload?.success ? payload.user : null;
+              const profileUserId = String(profileUser?.id || "").trim();
+
+              if (profileUserId) {
+                const rawPlan = mapPlanCodeToUserPlan(profileUser?.raw_plan);
+                const effectivePlan = mapPlanCodeToUserPlan(
+                  profileUser?.effective_plan || profileUser?.raw_plan,
+                );
+                const planExp =
+                  typeof profileUser?.plan_expires_at === "string" &&
+                  profileUser.plan_expires_at.trim()
+                    ? profileUser.plan_expires_at.trim()
+                    : null;
+                const resolvedPlanState = resolveEffectivePlan(effectivePlan, planExp);
+                const isPlanActive =
+                  typeof profileUser?.is_plan_active === "boolean"
+                    ? profileUser.is_plan_active
+                    : resolvedPlanState.isPlanActive;
+                const stablePlan = isPlanActive ? effectivePlan : "free";
+                const fallbackPlan = pickPlanDefinition([], stablePlan);
+
+                const profileEmail = String(profileUser?.email || "")
+                  .trim()
+                  .toLowerCase();
+                const fallbackName = profileEmail
+                  ? profileEmail.split("@")[0]
+                  : currentLanguage === "zh"
+                    ? "用户"
+                    : "User";
+                const displayName =
+                  String(profileUser?.display_name || "").trim() || fallbackName;
+                const quotaSummary =
+                  profileUser?.quota_summary &&
+                  typeof profileUser.quota_summary === "object"
+                    ? (profileUser.quota_summary as QuotaSummary)
+                    : buildQuotaSummary(fallbackPlan, []);
+                const planDisplayName =
+                  currentLanguage === "zh"
+                    ? String(
+                        profileUser?.plan_display_name_cn ||
+                          fallbackPlan.displayNameCn,
+                      )
+                    : String(
+                        profileUser?.plan_display_name_en ||
+                          fallbackPlan.displayNameEn,
+                      );
+
+                domesticHydrateRetryRef.current = 0;
+                if (!cancelled) {
+                  setUser({
+                    id: profileUserId,
+                    source: "cn",
+                    name: displayName,
+                    email: profileEmail || "demo@mornstudio.ai",
+                    rawPlan,
+                    plan: stablePlan,
+                    planExp,
+                    isPlanActive,
+                    planDisplayName,
+                    quotaSummary,
+                  });
+                }
+                return;
+              }
+            }
+          } catch (error) {
+            console.warn(
+              "[AIGeneratorPlatform] hydrate domestic user via api failed:",
+              error,
+            );
+          }
+        }
+
+        let loginState: {
           user?: CloudbaseLoginUser;
           data?: { user?: CloudbaseLoginUser };
-        } | null;
-        const loginUser = loginState?.user || loginState?.data?.user || null;
-        if (!loginUser) {
-          if (!cancelled) {
-            setUser(null);
-          }
-          return;
+        } | null = null;
+        try {
+          loginState = (await auth.getLoginState()) as {
+            user?: CloudbaseLoginUser;
+            data?: { user?: CloudbaseLoginUser };
+          } | null;
+        } catch (error) {
+          console.warn("[AIGeneratorPlatform] getLoginState failed:", error);
         }
+
+        const loginUser = loginState?.user || loginState?.data?.user || null;
 
         let profile: CloudbaseLoginUser | null = null;
         try {
@@ -254,18 +375,29 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         const userId = (
           profile?.uid ||
           profile?.id ||
-          loginUser.uid ||
-          loginUser.id ||
+          loginUser?.uid ||
+          loginUser?.id ||
           ""
         ).trim();
         if (!userId) {
+          if (!cancelled && domesticHydrateRetryRef.current < 2) {
+            domesticHydrateRetryRef.current += 1;
+            window.setTimeout(() => {
+              if (!cancelled) {
+                void hydrateDomesticUser();
+              }
+            }, 350);
+            return;
+          }
+          domesticHydrateRetryRef.current = 0;
           if (!cancelled) {
             setUser(null);
           }
           return;
         }
+        domesticHydrateRetryRef.current = 0;
 
-        const authEmail = (profile?.email || loginUser.email || "")
+        const authEmail = (profile?.email || loginUser?.email || "")
           .trim()
           .toLowerCase();
         const fallbackName = authEmail
@@ -306,7 +438,24 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           );
         }
 
-        const appUserRow = appUserResult?.data?.[0];
+        let appUserRow = (appUserResult?.data?.[0] || null) as AppUserRow | null;
+        if (!appUserRow && authEmail) {
+          const appUserByEmailResult = (await mysql
+            .from("app_users")
+            .select("id,email,display_name,current_plan_code,plan_expires_at")
+            .eq("source", "cn")
+            .eq("email_normalized", authEmail)
+            .limit(1)) as CloudbaseQueryResult<AppUserRow>;
+          if (appUserByEmailResult?.error) {
+            console.warn(
+              "[AIGeneratorPlatform] fallback fetch app_users by email failed:",
+              appUserByEmailResult.error,
+            );
+          }
+          appUserRow = (appUserByEmailResult?.data?.[0] || null) as AppUserRow | null;
+        }
+
+        const resolvedUserId = String(appUserRow?.id || userId).trim() || userId;
         const rawPlan = mapPlanCodeToUserPlan(appUserRow?.current_plan_code);
         const planExp = appUserRow?.plan_expires_at || null;
         const { effectivePlan, isPlanActive } = resolveEffectivePlan(
@@ -319,7 +468,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         const quotaAccountResult = (await mysql
           .from("user_quota_accounts")
           .select("id,cycle_end_date")
-          .eq("user_id", userId)
+          .eq("user_id", resolvedUserId)
           .eq("source", "cn")
           .eq("status", "active")
           .limit(20)) as CloudbaseQueryResult<UserQuotaAccountRow>;
@@ -339,8 +488,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           .filter((item) => item.id)
           .sort(
             (left, right) =>
-              new Date(right.cycleEndDate || 0).getTime() -
-              new Date(left.cycleEndDate || 0).getTime(),
+              (parseDateTimeMs(right.cycleEndDate) || 0) -
+              (parseDateTimeMs(left.cycleEndDate) || 0),
           )[0];
 
         let quotaBalanceRows: UserQuotaBalanceRow[] = [];
@@ -370,8 +519,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           appUserRow?.display_name ||
           profile?.name ||
           profile?.username ||
-          loginUser.name ||
-          loginUser.username ||
+          loginUser?.name ||
+          loginUser?.username ||
           fallbackName;
         const displayName = String(nameCandidate || "").trim() || fallbackName;
         const planDisplayName =
@@ -379,9 +528,21 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             ? planDefinition.displayNameCn
             : planDefinition.displayNameEn;
 
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[AIGeneratorPlatform][domestic] hydrate user status", {
+            userId: resolvedUserId,
+            rawPlan,
+            planExp,
+            effectivePlan,
+            isPlanActive,
+            quotaAccountId: latestQuotaAccount?.id || null,
+            quotaRows: quotaBalanceRows.length,
+          });
+        }
+
         if (!cancelled) {
           setUser({
-            id: userId,
+            id: resolvedUserId,
             source: "cn",
             name: displayName,
             email,
@@ -438,17 +599,14 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           return;
         }
 
-        const metadata = (authUser.user_metadata ||
-          {}) as Record<string, unknown>;
-        const planCodeCandidate =
+        const metadata = (authUser.user_metadata || {}) as Record<string, unknown>;
+        const metadataPlanCode =
           (typeof metadata.current_plan_code === "string"
             ? metadata.current_plan_code
             : null) ||
           (typeof metadata.plan_code === "string" ? metadata.plan_code : null) ||
-          (typeof metadata.subscription_plan === "string"
-            ? metadata.subscription_plan
-            : null);
-        const planExpCandidate =
+          (typeof metadata.subscription_plan === "string" ? metadata.subscription_plan : null);
+        const metadataPlanExp =
           (typeof metadata.plan_expires_at === "string"
             ? metadata.plan_expires_at
             : null) ||
@@ -456,13 +614,89 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             ? metadata.subscription_expires_at
             : null);
 
-        const rawPlan = mapPlanCodeToUserPlan(planCodeCandidate);
-        const { effectivePlan, isPlanActive } = resolveEffectivePlan(
-          rawPlan,
-          planExpCandidate,
+        const [appUserResult, planRowsResult] = await Promise.all([
+          supabase
+            .from("app_users")
+            .select("id,email,display_name,current_plan_code,plan_expires_at")
+            .eq("id", authUser.id)
+            .eq("source", "global")
+            .limit(1),
+          supabase
+            .from("subscription_plans")
+            .select(
+              "plan_code,display_name_cn,display_name_en,monthly_document_limit,monthly_image_limit,monthly_video_limit,monthly_audio_limit",
+            )
+            .limit(20),
+        ]);
+
+        if (appUserResult.error) {
+          console.warn(
+            "[AIGeneratorPlatform] fetch global app_users failed:",
+            appUserResult.error,
+          );
+        }
+        if (planRowsResult.error) {
+          console.warn(
+            "[AIGeneratorPlatform] fetch global subscription_plans failed:",
+            planRowsResult.error,
+          );
+        }
+
+        const appUserRow = (appUserResult.data?.[0] || null) as AppUserRow | null;
+        const planRows = (planRowsResult.data || []) as SubscriptionPlanRow[];
+        const rawPlan = mapPlanCodeToUserPlan(
+          appUserRow?.current_plan_code || metadataPlanCode,
         );
-        const planDefinition = pickPlanDefinition([], effectivePlan);
-        const quotaSummary = buildQuotaSummary(planDefinition, []);
+        const planExpCandidate =
+          String(appUserRow?.plan_expires_at || "").trim() || metadataPlanExp;
+        const { effectivePlan, isPlanActive } = resolveEffectivePlan(rawPlan, planExpCandidate);
+        const planDefinition = pickPlanDefinition(planRows, effectivePlan);
+
+        const quotaAccountResult = await supabase
+          .from("user_quota_accounts")
+          .select("id,cycle_end_date")
+          .eq("user_id", authUser.id)
+          .eq("source", "global")
+          .eq("status", "active")
+          .limit(20);
+        if (quotaAccountResult.error) {
+          console.warn(
+            "[AIGeneratorPlatform] fetch global user_quota_accounts failed:",
+            quotaAccountResult.error,
+          );
+        }
+
+        const latestQuotaAccount = (quotaAccountResult.data || [])
+          .map((item) => ({
+            id: String(item.id || "").trim(),
+            cycleEndDate: String(item.cycle_end_date || "").trim(),
+          }))
+          .filter((item) => item.id)
+          .sort(
+            (left, right) =>
+              (parseDateTimeMs(right.cycleEndDate) || 0) -
+              (parseDateTimeMs(left.cycleEndDate) || 0),
+          )[0];
+
+        let quotaBalanceRows: UserQuotaBalanceRow[] = [];
+        if (latestQuotaAccount?.id) {
+          const quotaBalanceResult = await supabase
+            .from("user_quota_balances")
+            .select(
+              "quota_type,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount",
+            )
+            .eq("quota_account_id", latestQuotaAccount.id)
+            .limit(20);
+          if (quotaBalanceResult.error) {
+            console.warn(
+              "[AIGeneratorPlatform] fetch global user_quota_balances failed:",
+              quotaBalanceResult.error,
+            );
+          }
+          quotaBalanceRows = (quotaBalanceResult.data || []) as UserQuotaBalanceRow[];
+        }
+
+        const quotaSummary = buildQuotaSummary(planDefinition, quotaBalanceRows);
         const email = String(authUser.email || "").trim().toLowerCase();
         const fallbackName = email
           ? email.split("@")[0]
@@ -470,6 +704,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             ? "用户"
             : "User";
         const nameCandidate =
+          appUserRow?.display_name ||
           (typeof metadata.full_name === "string" ? metadata.full_name : null) ||
           (typeof metadata.display_name === "string"
             ? metadata.display_name
@@ -483,7 +718,10 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             id: authUser.id,
             source: "global",
             name: displayName,
-            email: email || "user@global",
+            email:
+              String(appUserRow?.email || "").trim().toLowerCase() ||
+              email ||
+              "user@global",
             rawPlan,
             plan: effectivePlan,
             planExp: planExpCandidate,
@@ -512,6 +750,16 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     };
 
     void hydrateCurrentUser();
+
+    const paymentConfirmedAt = sessionStorage.getItem(
+      "mornstudio_payment_confirmed_at",
+    );
+    if (paymentConfirmedAt) {
+      sessionStorage.removeItem("mornstudio_payment_confirmed_at");
+      window.setTimeout(() => {
+        void hydrateCurrentUser();
+      }, 800);
+    }
 
     const handleFocus = () => {
       void hydrateCurrentUser();
@@ -611,6 +859,31 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   }, [refreshGuestQuota, user]);
 
   useEffect(() => {
+    if (!user?.id) {
+      trackedSessionMarkerRef.current = "";
+      return;
+    }
+
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const marker = `${user.source}:${user.id}:${dayKey}`;
+    if (trackedSessionMarkerRef.current === marker) {
+      return;
+    }
+    trackedSessionMarkerRef.current = marker;
+
+    void trackAnalyticsClient({
+      source: user.source,
+      userId: user.id,
+      eventType: "session_start",
+      eventName: "workbench_active",
+      eventData: {
+        entry: "ai_workbench",
+      },
+      sessionScope: "workbench",
+    });
+  }, [user]);
+
+  useEffect(() => {
     const handleEsc = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setShowAuthDialog(false);
@@ -641,42 +914,6 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     setIsDarkMode(nextDark);
     localStorage.setItem("morngpt_theme", nextDark ? "dark" : "light");
     document.documentElement.classList.toggle("dark", nextDark);
-  };
-
-  const getPlanExpiry = (period: BillingPeriod) => {
-    const date = new Date();
-    date.setDate(date.getDate() + (period === "annual" ? 365 : 30));
-    return date.toISOString();
-  };
-
-  const buildDemoUser = (input: {
-    userId: string;
-    source: "cn" | "global";
-    name: string;
-    email: string;
-    rawPlan: UserPlan;
-    planExp: string | null;
-  }): DashboardUser => {
-    const { effectivePlan, isPlanActive } = resolveEffectivePlan(
-      input.rawPlan,
-      input.planExp,
-    );
-    const planDefinition = pickPlanDefinition([], effectivePlan);
-    return {
-      id: input.userId,
-      source: input.source,
-      name: input.name,
-      email: input.email,
-      rawPlan: input.rawPlan,
-      plan: effectivePlan,
-      planExp: input.planExp,
-      isPlanActive,
-      planDisplayName:
-        currentLanguage === "zh"
-          ? planDefinition.displayNameCn
-          : planDefinition.displayNameEn,
-      quotaSummary: buildQuotaSummary(planDefinition, []),
-    };
   };
 
   useEffect(() => {
@@ -986,22 +1223,237 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     setShowUserMenu(false);
   };
 
-  const handleSubscribe = () => {
+  const handleSubscribe = async (paymentMethod: PaymentMethod) => {
     if (!user) {
       setShowAuthDialog(true);
       return;
     }
-    setUser(
-      buildDemoUser({
-        userId: user.id,
-        source: user.source,
-        name: user.name,
-        email: user.email,
-        rawPlan: mapPlanCodeToUserPlan(selectedPlan),
-        planExp: getPlanExpiry(billingPeriod),
-      }),
-    );
-    setShowSubscriptionDialog(false);
+
+    if (selectedPlan === "free") {
+      return;
+    }
+
+    if (isDomesticVersion) {
+      if (paymentMethod !== "alipay" && paymentMethod !== "wechat") {
+        window.alert(
+          currentLanguage === "zh"
+            ? "当前支付方式不可用。"
+            : "Selected payment method is unavailable.",
+        );
+        return;
+      }
+
+      try {
+        const tokenResult = await getCloudbaseAuth().getAccessToken();
+        const accessToken = tokenResult?.accessToken?.trim() || "";
+        if (!accessToken) {
+          throw new Error(
+            currentLanguage === "zh"
+              ? "登录状态已失效，请重新登录后再试。"
+              : "Session expired. Please sign in again.",
+          );
+        }
+
+        const endpoint =
+          paymentMethod === "alipay"
+            ? "/api/domestic/payment/alipay/create"
+            : "/api/domestic/payment/wechat/create";
+
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-cloudbase-access-token": accessToken,
+          },
+          credentials: "include",
+          body: JSON.stringify({
+            planName: selectedPlan,
+            billingPeriod,
+          }),
+        });
+
+        const payload = (await response.json()) as {
+          success?: boolean;
+          error?: string;
+          paymentId?: string;
+          out_trade_no?: string;
+          formHtml?: string;
+          code_url?: string;
+          amount?: number;
+          sessionId?: string;
+          url?: string;
+          providerOrderId?: string;
+          approvalUrl?: string;
+        };
+
+        if (!response.ok || !payload.success) {
+          throw new Error(
+            payload.error ||
+              (currentLanguage === "zh" ? "创建支付订单失败。" : "Failed to create payment."),
+          );
+        }
+
+        if (paymentMethod === "alipay") {
+          const formHtml = typeof payload.formHtml === "string" ? payload.formHtml : "";
+          if (!formHtml) {
+            throw new Error(
+              currentLanguage === "zh"
+                ? "支付宝支付表单生成失败。"
+                : "Failed to generate Alipay form.",
+            );
+          }
+
+          if (payload.paymentId) {
+            sessionStorage.setItem("alipay_order_id", payload.paymentId);
+          }
+
+          const wrapper = document.createElement("div");
+          wrapper.style.display = "none";
+          wrapper.innerHTML = formHtml;
+          document.body.appendChild(wrapper);
+          const form = wrapper.querySelector("form");
+          if (!form) {
+            wrapper.remove();
+            throw new Error(
+              currentLanguage === "zh"
+                ? "支付宝支付表单解析失败。"
+                : "Failed to parse Alipay form.",
+            );
+          }
+
+          setShowSubscriptionDialog(false);
+          form.submit();
+          return;
+        }
+
+        const outTradeNo =
+          typeof payload.out_trade_no === "string"
+            ? payload.out_trade_no
+            : "";
+        const codeUrl = typeof payload.code_url === "string" ? payload.code_url : "";
+
+        if (!outTradeNo || !codeUrl) {
+          throw new Error(
+            currentLanguage === "zh"
+              ? "微信支付二维码生成失败。"
+              : "Failed to create WeChat payment QR code.",
+          );
+        }
+
+        sessionStorage.setItem(
+          "wechat_pay_order",
+          JSON.stringify({
+            out_trade_no: outTradeNo,
+            code_url: codeUrl,
+            amount: Number(payload.amount || 0),
+            planName: selectedPlan,
+            billingPeriod,
+          }),
+        );
+
+        setShowSubscriptionDialog(false);
+        router.push("/payment/wechat");
+        return;
+      } catch (error) {
+        console.error("[Subscription] domestic payment failed:", error);
+        window.alert(
+          error instanceof Error
+            ? error.message
+            : currentLanguage === "zh"
+              ? "支付发起失败，请稍后重试。"
+              : "Failed to start payment. Please try again later.",
+        );
+        return;
+      }
+    }
+
+    if (paymentMethod !== "stripe" && paymentMethod !== "paypal") {
+      window.alert(
+        currentLanguage === "zh"
+          ? "当前支付方式不可用。"
+          : "Selected payment method is unavailable.",
+      );
+      return;
+    }
+
+    try {
+      const endpoint =
+        paymentMethod === "stripe"
+          ? "/api/payment/stripe/create"
+          : "/api/payment/paypal/create";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({
+          planName: selectedPlan,
+          billingPeriod,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        success?: boolean;
+        error?: string;
+        sessionId?: string;
+        url?: string;
+        providerOrderId?: string;
+        approvalUrl?: string;
+      };
+
+      if (!response.ok || !payload.success) {
+        throw new Error(
+          payload.error ||
+            (currentLanguage === "zh"
+              ? "创建支付订单失败。"
+              : "Failed to create payment."),
+        );
+      }
+
+      if (paymentMethod === "stripe") {
+        const checkoutUrl = typeof payload.url === "string" ? payload.url : "";
+        const sessionId =
+          typeof payload.sessionId === "string" ? payload.sessionId : "";
+        if (!checkoutUrl || !sessionId) {
+          throw new Error(
+            currentLanguage === "zh"
+              ? "Stripe 支付链接生成失败。"
+              : "Failed to create Stripe checkout URL.",
+          );
+        }
+
+        sessionStorage.setItem("stripe_session_id", sessionId);
+        setShowSubscriptionDialog(false);
+        window.location.href = checkoutUrl;
+        return;
+      }
+
+      const approvalUrl =
+        typeof payload.approvalUrl === "string" ? payload.approvalUrl : "";
+      const providerOrderId =
+        typeof payload.providerOrderId === "string" ? payload.providerOrderId : "";
+      if (!approvalUrl || !providerOrderId) {
+        throw new Error(
+          currentLanguage === "zh"
+            ? "PayPal 支付链接生成失败。"
+            : "Failed to create PayPal approval URL.",
+        );
+      }
+
+      sessionStorage.setItem("paypal_order_id", providerOrderId);
+      setShowSubscriptionDialog(false);
+      window.location.href = approvalUrl;
+    } catch (error) {
+      console.error("[Subscription] global payment failed:", error);
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : currentLanguage === "zh"
+            ? "支付发起失败，请稍后重试。"
+            : "Failed to start payment. Please try again later.",
+      );
+    }
   };
 
   const availableModels = useMemo<Record<string, { name: string }>>(() => {
@@ -1268,7 +1720,17 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
                         {user
                           ? user.planExp
                             ? user.isPlanActive
-                              ? `${text.expiresAt}: ${new Date(user.planExp).toLocaleDateString()}`
+                              ? `${text.expiresAt}: ${
+                                  (() => {
+                                    const expMs = parseDateTimeMs(user.planExp);
+                                    if (expMs === null) {
+                                      return user.planExp;
+                                    }
+                                    return new Date(expMs).toLocaleDateString(
+                                      currentLanguage === "zh" ? "zh-CN" : "en-US",
+                                    );
+                                  })()
+                                }`
                               : currentLanguage === "zh"
                                 ? "已过期"
                                 : "Expired"

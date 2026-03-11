@@ -1,19 +1,39 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, Crown, Loader2, Rocket, Shield, Sparkles, Star } from "lucide-react";
 import { getUIText, type UILanguage } from "@/lib/ui-text";
 
-export type PlanKey = "basic" | "pro" | "enterprise";
-export type BillingPeriod = "monthly" | "annual";
+export type PlanKey = "free" | "pro" | "enterprise";
+export type BillingPeriod = "monthly" | "yearly";
+export type PaymentMethod = "alipay" | "wechat" | "stripe" | "paypal";
 
-interface PlanInfo {
-  key: PlanKey;
-  title: string;
-  monthlyPrice: string;
-  annualPrice: string;
-  features: string[];
-  gradient: string;
-}
+type PaymentPlan = {
+  planCode: PlanKey;
+  displayNameCn: string;
+  displayNameEn: string;
+  planLevel: number;
+  quotas: {
+    monthlyDocumentLimit: number;
+    monthlyImageLimit: number;
+    monthlyVideoLimit: number;
+    monthlyAudioLimit: number;
+  };
+  prices: {
+    monthly: number;
+    yearly: number;
+    monthlyOriginal: number | null;
+    yearlyOriginal: number | null;
+  };
+};
+
+type PaymentPlansPayload = {
+  source: "cn" | "global";
+  currency: "CNY" | "USD";
+  fallback: boolean;
+  plans: PaymentPlan[];
+  fetchedAt: string;
+};
 
 interface PaymentSystemProps {
   currentLanguage: UILanguage;
@@ -22,8 +42,156 @@ interface PaymentSystemProps {
   setSelectedPlan: (plan: PlanKey) => void;
   billingPeriod: BillingPeriod;
   setBillingPeriod: (period: BillingPeriod) => void;
-  onSubscribe: () => void;
+  onSubscribe: (paymentMethod: PaymentMethod) => void;
   isLoggedIn: boolean;
+}
+
+const PLAN_ORDER: PlanKey[] = ["free", "pro", "enterprise"];
+
+function normalizePlanCode(input: unknown): PlanKey | null {
+  if (typeof input !== "string") {
+    return null;
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "free" || normalized === "pro" || normalized === "enterprise") {
+    return normalized;
+  }
+  if (normalized === "basic") {
+    return "free";
+  }
+  return null;
+}
+
+function toSafeNumber(input: unknown, fallback = 0) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function normalizeText(input: unknown, fallback: string) {
+  if (typeof input !== "string") {
+    return fallback;
+  }
+  const normalized = input.trim();
+  return normalized || fallback;
+}
+
+function normalizePlanPayload(input: unknown): PaymentPlan | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const row = input as Record<string, unknown>;
+  const planCode = normalizePlanCode(row.planCode);
+  if (!planCode) {
+    return null;
+  }
+
+  const quotas =
+    row.quotas && typeof row.quotas === "object"
+      ? (row.quotas as Record<string, unknown>)
+      : {};
+  const prices =
+    row.prices && typeof row.prices === "object"
+      ? (row.prices as Record<string, unknown>)
+      : {};
+
+  return {
+    planCode,
+    displayNameCn: normalizeText(row.displayNameCn, "免费版"),
+    displayNameEn: normalizeText(row.displayNameEn, "Free"),
+    planLevel: Math.max(0, Math.trunc(toSafeNumber(row.planLevel, 0))),
+    quotas: {
+      monthlyDocumentLimit: Math.max(
+        0,
+        Math.trunc(toSafeNumber(quotas.monthlyDocumentLimit, 0)),
+      ),
+      monthlyImageLimit: Math.max(
+        0,
+        Math.trunc(toSafeNumber(quotas.monthlyImageLimit, 0)),
+      ),
+      monthlyVideoLimit: Math.max(
+        0,
+        Math.trunc(toSafeNumber(quotas.monthlyVideoLimit, 0)),
+      ),
+      monthlyAudioLimit: Math.max(
+        0,
+        Math.trunc(toSafeNumber(quotas.monthlyAudioLimit, 0)),
+      ),
+    },
+    prices: {
+      monthly: Math.max(0, toSafeNumber(prices.monthly, 0)),
+      yearly: Math.max(0, toSafeNumber(prices.yearly, 0)),
+      monthlyOriginal:
+        prices.monthlyOriginal === null || prices.monthlyOriginal === undefined
+          ? null
+          : Math.max(0, toSafeNumber(prices.monthlyOriginal, 0)),
+      yearlyOriginal:
+        prices.yearlyOriginal === null || prices.yearlyOriginal === undefined
+          ? null
+          : Math.max(0, toSafeNumber(prices.yearlyOriginal, 0)),
+    },
+  };
+}
+
+function getPlanTheme(plan: PlanKey) {
+  if (plan === "free") {
+    return {
+      gradient: "from-emerald-500 to-teal-600",
+      background: "from-emerald-50/75 to-teal-50/65 dark:from-emerald-950/30 dark:to-teal-950/30",
+      border: "border-emerald-200/80 dark:border-emerald-800/60",
+      selectedBorder: "border-emerald-500 dark:border-emerald-400",
+      ring: "ring-emerald-500/30",
+      text: "text-emerald-600 dark:text-emerald-400",
+      icon: <Star className="w-5 h-5" />,
+    };
+  }
+
+  if (plan === "pro") {
+    return {
+      gradient: "from-violet-500 to-indigo-600",
+      background: "from-violet-50/75 to-indigo-50/65 dark:from-violet-950/30 dark:to-indigo-950/30",
+      border: "border-violet-200/80 dark:border-violet-800/60",
+      selectedBorder: "border-violet-500 dark:border-violet-400",
+      ring: "ring-violet-500/30",
+      text: "text-violet-600 dark:text-violet-400",
+      icon: <Rocket className="w-5 h-5" />,
+    };
+  }
+
+  return {
+    gradient: "from-amber-500 to-orange-600",
+    background: "from-amber-50/75 to-orange-50/65 dark:from-amber-950/30 dark:to-orange-950/30",
+    border: "border-amber-200/80 dark:border-amber-800/60",
+    selectedBorder: "border-amber-500 dark:border-amber-400",
+    ring: "ring-amber-500/30",
+    text: "text-amber-600 dark:text-amber-400",
+    icon: <Shield className="w-5 h-5" />,
+  };
+}
+
+function buildFeatureList(plan: PaymentPlan, language: UILanguage) {
+  const videoAudioLimit = Math.max(
+    0,
+    toSafeNumber(plan.quotas.monthlyVideoLimit, 0) +
+      toSafeNumber(plan.quotas.monthlyAudioLimit, 0),
+  );
+
+  if (language === "zh") {
+    return [
+      `每月文档 ${Math.max(0, toSafeNumber(plan.quotas.monthlyDocumentLimit, 0))}`,
+      `每月图片 ${Math.max(0, toSafeNumber(plan.quotas.monthlyImageLimit, 0))}`,
+      `每月视频/音频 ${videoAudioLimit}`,
+    ];
+  }
+
+  return [
+    `${Math.max(0, toSafeNumber(plan.quotas.monthlyDocumentLimit, 0))} monthly docs`,
+    `${Math.max(0, toSafeNumber(plan.quotas.monthlyImageLimit, 0))} monthly images`,
+    `${videoAudioLimit} monthly video/audio`,
+  ];
 }
 
 const PaymentSystem: React.FC<PaymentSystemProps> = ({
@@ -37,186 +205,361 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
   isLoggedIn,
 }) => {
   const text = getUIText(currentLanguage);
+  const [plans, setPlans] = useState<PaymentPlan[]>([]);
+  const [currency, setCurrency] = useState<"CNY" | "USD">(
+    isDomesticVersion ? "CNY" : "USD",
+  );
+  const [isFallbackData, setIsFallbackData] = useState(false);
+  const [loadingPlans, setLoadingPlans] = useState(true);
+  const [agreeTerms, setAgreeTerms] = useState(false);
+  const [selectedPayment, setSelectedPayment] = useState<PaymentMethod>(
+    isDomesticVersion ? "alipay" : "stripe",
+  );
 
-  const plans: PlanInfo[] = [
-    {
-      key: "basic",
-      title: text.basicPlan,
-      monthlyPrice: isDomesticVersion ? "¥29" : "$9",
-      annualPrice: isDomesticVersion ? "¥20" : "$6",
-      features:
-        currentLanguage === "zh"
-          ? ["每日 100 次外部模型", "每月 200 张图片", "每月 60 次视频/音频"]
-          : [
-              "100 daily external calls",
-              "200 monthly images",
-              "60 monthly video/audio tasks",
-            ],
-      gradient: "from-amber-500 to-orange-500",
-    },
-    {
-      key: "pro",
-      title: text.proPlan,
-      monthlyPrice: isDomesticVersion ? "¥99" : "$29",
-      annualPrice: isDomesticVersion ? "¥69" : "$20",
-      features:
-        currentLanguage === "zh"
-          ? ["每日 300 次外部模型", "每月 600 张图片", "每月 180 次视频/音频"]
-          : [
-              "300 daily external calls",
-              "600 monthly images",
-              "180 monthly video/audio tasks",
-            ],
-      gradient: "from-blue-500 to-indigo-600",
-    },
-    {
-      key: "enterprise",
-      title: text.enterprisePlan,
-      monthlyPrice: isDomesticVersion ? "¥299" : "$99",
-      annualPrice: isDomesticVersion ? "¥209" : "$69",
-      features:
-        currentLanguage === "zh"
-          ? ["超高并发与优先队列", "更高额度与管理控制台", "专属支持与定制模型接入"]
-          : [
-              "High concurrency and priority queue",
-              "Higher limits with admin controls",
-              "Dedicated support and custom model routing",
-            ],
-      gradient: "from-purple-500 to-fuchsia-600",
-    },
-  ];
+  useEffect(() => {
+    setSelectedPayment(isDomesticVersion ? "alipay" : "stripe");
+  }, [isDomesticVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPlans = async () => {
+      setLoadingPlans(true);
+      try {
+        const response = await fetch("/api/payment/plans", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP_${response.status}`);
+        }
+
+        const payload = (await response.json()) as Partial<PaymentPlansPayload>;
+        const payloadPlans = Array.isArray(payload.plans) ? payload.plans : [];
+        const normalizedPlans = payloadPlans
+          .map((item) => normalizePlanPayload(item))
+          .filter((item): item is PaymentPlan => Boolean(item))
+          .sort(
+            (left, right) =>
+              PLAN_ORDER.indexOf(left.planCode) - PLAN_ORDER.indexOf(right.planCode),
+          );
+
+        if (cancelled) {
+          return;
+        }
+
+        if (normalizedPlans.length > 0) {
+          setPlans(normalizedPlans);
+        }
+        setCurrency(payload.currency === "USD" ? "USD" : "CNY");
+        setIsFallbackData(Boolean(payload.fallback));
+      } catch (error) {
+        console.error("[PaymentSystem] 加载套餐失败:", error);
+      } finally {
+        if (!cancelled) {
+          setLoadingPlans(false);
+        }
+      }
+    };
+
+    void loadPlans();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDomesticVersion]);
+
+  useEffect(() => {
+    if (plans.length === 0) {
+      return;
+    }
+    const exists = plans.some((plan) => plan.planCode === selectedPlan);
+    if (!exists) {
+      setSelectedPlan("pro");
+    }
+  }, [plans, selectedPlan, setSelectedPlan]);
+
+  const amountFormatter = useMemo(() => {
+    return new Intl.NumberFormat(currentLanguage === "zh" ? "zh-CN" : "en-US", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    });
+  }, [currentLanguage]);
+
+  const symbol = currency === "CNY" ? "¥" : "$";
+
+  const showPlans = useMemo(() => {
+    if (plans.length > 0) {
+      return plans;
+    }
+    return [];
+  }, [plans]);
+
+  const selectedPlanData = useMemo(
+    () => showPlans.find((plan) => plan.planCode === selectedPlan) || null,
+    [selectedPlan, showPlans],
+  );
+
+  const canSubscribe =
+    isLoggedIn &&
+    agreeTerms &&
+    !loadingPlans &&
+    selectedPlan !== "free" &&
+    selectedPlanData !== null;
 
   return (
-    <section className="rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-2xl p-6 sm:p-8 space-y-6">
-      {/* 标题区域 */}
-      <div className="text-center space-y-2">
-        <div className="inline-flex p-3 rounded-xl shadow-lg bg-gradient-to-br from-blue-500 to-indigo-600 shadow-blue-500/25 mb-3">
-          <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-          </svg>
-        </div>
-        <h3 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-          {text.subscription}
-        </h3>
-        <p className="text-sm text-gray-500 dark:text-gray-400">
-          {currentLanguage === "zh" ? "选择适合您的订阅计划" : "Choose the plan that fits your needs"}
-        </p>
-      </div>
+    <section className="relative overflow-hidden rounded-2xl border border-gray-200/80 dark:border-gray-700/80 bg-gradient-to-br from-slate-50 via-white to-blue-50/40 dark:from-[#10141c] dark:via-[#141b26] dark:to-[#0f172a] shadow-2xl p-5 sm:p-6 md:p-7">
+      <div className="pointer-events-none absolute -top-24 -left-16 h-60 w-60 rounded-full bg-blue-500/10 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-20 -right-14 h-60 w-60 rounded-full bg-emerald-500/10 blur-3xl" />
 
-      {/* 计费周期切换 */}
-      <div className="flex items-center justify-center gap-3">
-        <div className="rounded-xl bg-gray-100 dark:bg-gray-800 p-1.5 text-sm shadow-inner">
-          <button
-            type="button"
-            onClick={() => setBillingPeriod("monthly")}
-            className={`px-4 py-2 rounded-lg font-medium transition-all ${
-              billingPeriod === "monthly"
-                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-md"
-                : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
-            }`}
-          >
-            {text.billingMonthly}
-          </button>
-          <button
-            type="button"
-            onClick={() => setBillingPeriod("annual")}
-            className={`px-4 py-2 rounded-lg font-medium transition-all ${
-              billingPeriod === "annual"
-                ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-md"
-                : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
-            }`}
-          >
-            {text.billingAnnual}
-          </button>
+      <div className="relative z-10 space-y-5">
+        <div className="text-center space-y-2">
+          <div className="inline-flex items-center justify-center rounded-xl p-2.5 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 text-white shadow-lg">
+            <Crown className="h-5 w-5" />
+          </div>
+          <h3 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100">
+            {text.subscription}
+          </h3>
+          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
+            {currentLanguage === "zh"
+              ? "套餐额度和价格已与后台管理系统实时同步"
+              : "Plan quotas and prices are synced with admin settings in real time"}
+          </p>
+          {isFallbackData && (
+            <p className="text-[11px] sm:text-xs text-amber-600 dark:text-amber-400">
+              {currentLanguage === "zh"
+                ? "当前显示为兜底数据，请检查数据库连接状态"
+                : "Fallback data is shown now, please check database connectivity"}
+            </p>
+          )}
         </div>
-        {billingPeriod === "annual" && (
-          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
-            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-            </svg>
-            {text.saveThirty}
-          </span>
-        )}
-      </div>
 
-      {/* 订阅计划卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {plans.map((plan) => {
-          const selected = selectedPlan === plan.key;
-          const isPro = plan.key === "pro";
-          return (
+        <div className="flex justify-center">
+          <div className="rounded-xl border border-gray-200/80 dark:border-gray-700/80 bg-white/80 dark:bg-white/5 p-1 flex gap-1">
             <button
               type="button"
-              key={plan.key}
-              onClick={() => setSelectedPlan(plan.key)}
-              className={`relative text-left rounded-2xl border-2 transition-all p-5 ${
-                selected
-                  ? "border-blue-500 dark:border-blue-400 ring-4 ring-blue-500/20 shadow-xl scale-105"
-                  : "border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-lg"
-              } ${isPro ? "md:-mt-2 md:mb-2" : ""}`}
+              onClick={() => setBillingPeriod("monthly")}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                billingPeriod === "monthly"
+                  ? "bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 shadow"
+                  : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
+              }`}
             >
-              {isPro && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white text-xs font-bold shadow-lg">
-                  {currentLanguage === "zh" ? "推荐" : "Popular"}
-                </div>
-              )}
-              <div
-                className={`inline-flex px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-gradient-to-r ${plan.gradient} shadow-md`}
-              >
-                {plan.title}
-              </div>
-              <div className="mt-4 flex items-baseline gap-1">
-                <span className="text-3xl font-bold text-gray-900 dark:text-gray-100">
-                  {billingPeriod === "monthly" ? plan.monthlyPrice : plan.annualPrice}
-                </span>
-                <span className="text-sm text-gray-500 dark:text-gray-400">
-                  /{text.billingMonthly}
-                </span>
-              </div>
-              {billingPeriod === "annual" && (
-                <div className="mt-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                  {currentLanguage === "zh" ? "年付节省 30%" : "Save 30% annually"}
-                </div>
-              )}
-              <ul className="mt-4 space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
-                {plan.features.map((feature) => (
-                  <li key={feature} className="flex items-start gap-2">
-                    <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                    </svg>
-                    <span>{feature}</span>
-                  </li>
-                ))}
-              </ul>
+              {text.billingMonthly}
             </button>
-          );
-        })}
-      </div>
-
-      {/* 支付信息和订阅按钮 */}
-      <div className="space-y-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-        <div className="flex items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-          </svg>
-          <span>{text.paymentMethod}: {isDomesticVersion ? "支付宝 / 微信支付" : "Stripe / PayPal"}</span>
+            <button
+              type="button"
+              onClick={() => setBillingPeriod("yearly")}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
+                billingPeriod === "yearly"
+                  ? "bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow"
+                  : "text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
+              }`}
+            >
+              {text.billingAnnual}
+            </button>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={onSubscribe}
-          disabled={!isLoggedIn}
-          className="w-full h-12 px-6 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 disabled:cursor-not-allowed text-white text-base font-bold shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-0.5"
-        >
-          {text.subscribeNow}
-        </button>
-        {!isLoggedIn && (
-          <p className="text-center text-sm text-amber-600 dark:text-amber-400 flex items-center justify-center gap-1">
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-            </svg>
-            {text.subscribeHint}
-          </p>
+
+        {loadingPlans ? (
+          <div className="py-12 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            {currentLanguage === "zh" ? "正在加载套餐配置..." : "Loading plans..."}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
+            {showPlans.map((plan) => {
+              const theme = getPlanTheme(plan.planCode);
+              const isSelected = selectedPlan === plan.planCode;
+              const isFree = plan.planCode === "free";
+              const currentPrice =
+                billingPeriod === "monthly" ? plan.prices.monthly : plan.prices.yearly;
+              const currentOriginalPrice =
+                billingPeriod === "monthly"
+                  ? plan.prices.monthlyOriginal
+                  : plan.prices.yearlyOriginal;
+              const features = buildFeatureList(plan, currentLanguage);
+
+              return (
+                <button
+                  type="button"
+                  key={plan.planCode}
+                  disabled={isFree}
+                  onClick={() => {
+                    if (!isFree) {
+                      setSelectedPlan(plan.planCode);
+                    }
+                  }}
+                  className={`relative text-left rounded-xl border-2 overflow-hidden transition ${
+                    isSelected
+                      ? `${theme.selectedBorder} ring-2 ${theme.ring} shadow-xl scale-[1.01]`
+                      : `${theme.border} hover:shadow-lg`
+                  } ${isFree ? "opacity-75 cursor-not-allowed" : ""}`}
+                >
+                  <div className={`absolute inset-0 bg-gradient-to-br ${theme.background}`} />
+                  <div className="relative p-4 space-y-3">
+                    {plan.planCode === "pro" && (
+                      <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-violet-500 to-indigo-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+                        <Sparkles className="h-3 w-3" />
+                        {currentLanguage === "zh" ? "推荐" : "Popular"}
+                      </div>
+                    )}
+
+                    {isSelected && !isFree && (
+                      <div className="absolute left-3 top-3 h-5 w-5 rounded-full bg-white/90 dark:bg-gray-900/90 shadow flex items-center justify-center">
+                        <Check className={`h-3.5 w-3.5 ${theme.text}`} />
+                      </div>
+                    )}
+
+                    <div className="pt-1 flex items-center gap-2">
+                      <div className={`h-8 w-8 rounded-lg bg-gradient-to-r ${theme.gradient} text-white flex items-center justify-center shadow`}>
+                        {theme.icon}
+                      </div>
+                      <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                        {currentLanguage === "zh"
+                          ? plan.displayNameCn
+                          : plan.displayNameEn}
+                      </h4>
+                    </div>
+
+                    <div className="pt-1 border-t border-gray-200/70 dark:border-gray-700/70">
+                      <div className="flex items-end gap-1">
+                        <span className={`text-2xl font-extrabold ${theme.text}`}>
+                          {`${symbol}${amountFormatter.format(currentPrice)}`}
+                        </span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400 pb-1">
+                          {billingPeriod === "monthly"
+                            ? currentLanguage === "zh"
+                              ? "/月"
+                              : "/mo"
+                            : currentLanguage === "zh"
+                              ? "/年"
+                              : "/yr"}
+                        </span>
+                      </div>
+                      {currentOriginalPrice !== null &&
+                        currentOriginalPrice > currentPrice && (
+                          <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400 line-through">
+                            {`${symbol}${amountFormatter.format(currentOriginalPrice)}`}
+                          </div>
+                        )}
+                    </div>
+
+                    <ul className="space-y-1.5">
+                      {features.map((feature) => (
+                        <li key={`${plan.planCode}-${feature}`} className="flex items-start gap-1.5 text-xs text-gray-700 dark:text-gray-300">
+                          <span className={`mt-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-gradient-to-r ${theme.gradient} text-white`}>
+                            <Check className="h-2.5 w-2.5" />
+                          </span>
+                          <span>{feature}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         )}
+
+        <div className="rounded-xl border border-gray-200/80 dark:border-gray-700/80 bg-white/80 dark:bg-white/5 p-4 space-y-3">
+          <div className="space-y-2">
+            <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-300">
+              <span className="font-semibold">{text.paymentMethod}: </span>
+              <span>
+                {isDomesticVersion
+                  ? "支付宝 / 微信支付"
+                  : "Stripe / PayPal"}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {isDomesticVersion ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPayment("alipay")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${
+                      selectedPayment === "alipay"
+                        ? "bg-gradient-to-r from-blue-500 to-cyan-500 text-white shadow"
+                        : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"
+                    }`}
+                  >
+                    💳 支付宝
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPayment("wechat")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${
+                      selectedPayment === "wechat"
+                        ? "bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow"
+                        : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"
+                    }`}
+                  >
+                    💬 微信
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPayment("stripe")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${
+                      selectedPayment === "stripe"
+                        ? "bg-gradient-to-r from-violet-500 to-purple-600 text-white shadow"
+                        : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"
+                    }`}
+                  >
+                    💳 Stripe
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPayment("paypal")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${
+                      selectedPayment === "paypal"
+                        ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow"
+                        : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"
+                    }`}
+                  >
+                    🅿️ PayPal
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={agreeTerms}
+              onChange={(event) => setAgreeTerms(event.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600"
+            />
+            <span>
+              {currentLanguage === "zh"
+                ? "我已阅读并同意订阅规则"
+                : "I have read and agree to the subscription terms"}
+            </span>
+          </label>
+
+          <button
+            type="button"
+            onClick={() => onSubscribe(selectedPayment)}
+            disabled={!canSubscribe}
+            className="w-full h-11 rounded-xl bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 hover:from-blue-600 hover:via-indigo-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm shadow-lg transition"
+          >
+            {selectedPlan === "free"
+              ? currentLanguage === "zh"
+                ? "免费版无需订阅"
+                : "Free plan does not require subscription"
+              : text.subscribeNow}
+          </button>
+
+          {!isLoggedIn && (
+            <p className="text-center text-xs text-amber-600 dark:text-amber-400">
+              {text.subscribeHint}
+            </p>
+          )}
+        </div>
       </div>
     </section>
   );

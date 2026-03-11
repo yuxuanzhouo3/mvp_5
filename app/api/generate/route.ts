@@ -22,7 +22,12 @@ import {
 import { storeGeneratedFile } from "@/lib/generated-files";
 import { getProviderProxyStatus, providerFetch } from "@/lib/provider-http";
 import { verifyCloudbaseAccessToken } from "@/lib/server/cloudbase-auth";
+import { getRoutedRuntimeDbClient } from "@/lib/server/database-routing";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  extractRequestAnalyticsMeta,
+  trackAnalyticsSessionEvent,
+} from "@/lib/analytics/tracker";
 import {
   consumeGuestGenerationQuota,
   releaseGuestGenerationQuota,
@@ -2190,12 +2195,364 @@ function jsonWithCookie(
   return response;
 }
 
+type UserQuotaType = "document" | "image" | "video" | "audio";
+
+type UserQuotaAccountRow = {
+  id?: string | null;
+  cycle_end_date?: string | null;
+};
+
+type UserQuotaBalanceRow = {
+  id?: string | null;
+  base_limit?: number | string | null;
+  addon_limit?: number | string | null;
+  admin_adjustment?: number | string | null;
+  used_amount?: number | string | null;
+  remaining_amount?: number | string | null;
+};
+
+type UserQuotaReservation = {
+  userId: string;
+  source: "cn" | "global";
+  quotaType: UserQuotaType;
+  quotaAccountId: string;
+  quotaBalanceId: string;
+  requestId: string;
+};
+
+function toDbRows<T>(result: unknown): T[] {
+  if (!result || typeof result !== "object" || !("data" in result)) {
+    return [];
+  }
+  const data = (result as { data?: unknown }).data;
+  if (Array.isArray(data)) {
+    return data as T[];
+  }
+  if (data && typeof data === "object") {
+    return [data as T];
+  }
+  return [];
+}
+
+function toDbErrorMessage(result: unknown) {
+  if (!result || typeof result !== "object" || !("error" in result)) {
+    return null;
+  }
+  const error = (result as { error?: unknown }).error;
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" && message.trim() ? message.trim() : "unknown";
+}
+
+function toNonNegativeInt(input: unknown, fallback = 0) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return Math.max(0, fallback);
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function toInt(input: unknown, fallback = 0) {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) {
+    return Math.trunc(fallback);
+  }
+  return Math.trunc(parsed);
+}
+
+function formatUtcDateTimeForSql(date: Date) {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mi = String(date.getUTCMinutes()).padStart(2, "0");
+  const ss = String(date.getUTCSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function getDbNowBySource(source: "cn" | "global") {
+  return source === "cn"
+    ? formatUtcDateTimeForSql(new Date())
+    : new Date().toISOString();
+}
+
+function resolveQuotaTypeByGenerationType(type: string): UserQuotaType {
+  if (type === "image") {
+    return "image";
+  }
+  if (type === "video") {
+    return "video";
+  }
+  if (type === "audio") {
+    return "audio";
+  }
+  return "document";
+}
+
+function getQuotaExhaustedMessage(quotaType: UserQuotaType) {
+  const labelMap: Record<UserQuotaType, string> = {
+    document: "文档",
+    image: "图片",
+    video: "视频",
+    audio: "音频",
+  };
+  return `当前${labelMap[quotaType]}额度已用完，请升级套餐或联系管理员调整额度。`;
+}
+
+async function consumeUserGenerationQuota(input: {
+  userId: string;
+  source: "cn" | "global";
+  quotaType: UserQuotaType;
+  requestId: string;
+}) {
+  const db = await getRoutedRuntimeDbClient();
+  if (!db) {
+    throw new Error("数据库连接不可用，暂时无法校验用户额度。");
+  }
+
+  const accountResult = await db
+    .from("user_quota_accounts")
+    .select("id,cycle_end_date")
+    .eq("user_id", input.userId)
+    .eq("source", input.source)
+    .eq("status", "active")
+    .limit(20);
+
+  const accountError = toDbErrorMessage(accountResult);
+  if (accountError) {
+    throw new Error(`读取用户额度账户失败: ${accountError}`);
+  }
+
+  const latestAccount = toDbRows<UserQuotaAccountRow>(accountResult)
+    .map((item) => ({
+      id: String(item.id || "").trim(),
+      cycleEndDate: String(item.cycle_end_date || "").trim(),
+    }))
+    .filter((item) => item.id)
+    .sort(
+      (left, right) =>
+        new Date(right.cycleEndDate || 0).getTime() -
+        new Date(left.cycleEndDate || 0).getTime(),
+    )[0];
+
+  if (!latestAccount?.id) {
+    return {
+      allowed: false,
+      message: getQuotaExhaustedMessage(input.quotaType),
+    };
+  }
+
+  const balanceResult = await db
+    .from("user_quota_balances")
+    .select("id,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount")
+    .eq("quota_account_id", latestAccount.id)
+    .eq("quota_type", input.quotaType)
+    .limit(1);
+
+  const balanceError = toDbErrorMessage(balanceResult);
+  if (balanceError) {
+    throw new Error(`读取用户额度余额失败: ${balanceError}`);
+  }
+
+  const balance = toDbRows<UserQuotaBalanceRow>(balanceResult)[0];
+  if (!balance?.id) {
+    return {
+      allowed: false,
+      message: getQuotaExhaustedMessage(input.quotaType),
+    };
+  }
+
+  const baseLimit = toNonNegativeInt(balance.base_limit, 0);
+  const addonLimit = toNonNegativeInt(balance.addon_limit, 0);
+  const adminAdjustment = toInt(balance.admin_adjustment, 0);
+  const usedAmount = toNonNegativeInt(balance.used_amount, 0);
+  const totalLimit = Math.max(0, baseLimit + addonLimit + adminAdjustment);
+  const beforeRemaining =
+    balance.remaining_amount === null || balance.remaining_amount === undefined
+      ? Math.max(0, totalLimit - usedAmount)
+      : toNonNegativeInt(balance.remaining_amount, Math.max(0, totalLimit - usedAmount));
+
+  if (beforeRemaining <= 0) {
+    return {
+      allowed: false,
+      message: getQuotaExhaustedMessage(input.quotaType),
+    };
+  }
+
+  const nextUsedAmount = usedAmount + 1;
+  const afterRemaining = Math.max(0, beforeRemaining - 1);
+  const nowIso = getDbNowBySource(input.source);
+
+  const updateResult = await db
+    .from("user_quota_balances")
+    .update({
+      used_amount: nextUsedAmount,
+      remaining_amount: afterRemaining,
+      last_consumed_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq("id", balance.id);
+
+  const updateError = toDbErrorMessage(updateResult);
+  if (updateError) {
+    throw new Error(`扣减用户额度失败: ${updateError}`);
+  }
+
+  try {
+    await db.from("user_quota_change_logs").insert({
+      id: `quota_log_${randomUUID().replace(/-/g, "")}`,
+      user_id: input.userId,
+      source: input.source,
+      quota_type: input.quotaType,
+      change_kind: "consume",
+      delta_amount: -1,
+      before_amount: beforeRemaining,
+      after_amount: afterRemaining,
+      reference_type: "ai_generate",
+      reference_id: input.requestId,
+      operator_type: "user",
+      operator_id: input.userId,
+      note: `generate_${input.quotaType}`,
+      created_at: nowIso,
+    });
+  } catch (error) {
+    console.warn("[Generate] 写入用户额度扣减日志失败:", error);
+  }
+
+  return {
+    allowed: true,
+    reservation: {
+      userId: input.userId,
+      source: input.source,
+      quotaType: input.quotaType,
+      quotaAccountId: latestAccount.id,
+      quotaBalanceId: String(balance.id),
+      requestId: input.requestId,
+    } as UserQuotaReservation,
+  };
+}
+
+async function releaseUserGenerationQuota(reservation: UserQuotaReservation) {
+  const db = await getRoutedRuntimeDbClient();
+  if (!db) {
+    throw new Error("数据库连接不可用，无法回滚用户额度。");
+  }
+
+  const balanceResult = await db
+    .from("user_quota_balances")
+    .select("id,base_limit,addon_limit,admin_adjustment,used_amount,remaining_amount")
+    .eq("id", reservation.quotaBalanceId)
+    .limit(1);
+
+  const balanceError = toDbErrorMessage(balanceResult);
+  if (balanceError) {
+    throw new Error(`回滚用户额度失败: ${balanceError}`);
+  }
+
+  const balance = toDbRows<UserQuotaBalanceRow>(balanceResult)[0];
+  if (!balance?.id) {
+    return;
+  }
+
+  const baseLimit = toNonNegativeInt(balance.base_limit, 0);
+  const addonLimit = toNonNegativeInt(balance.addon_limit, 0);
+  const adminAdjustment = toInt(balance.admin_adjustment, 0);
+  const usedAmount = toNonNegativeInt(balance.used_amount, 0);
+  if (usedAmount <= 0) {
+    return;
+  }
+
+  const totalLimit = Math.max(0, baseLimit + addonLimit + adminAdjustment);
+  const beforeRemaining =
+    balance.remaining_amount === null || balance.remaining_amount === undefined
+      ? Math.max(0, totalLimit - usedAmount)
+      : toNonNegativeInt(balance.remaining_amount, Math.max(0, totalLimit - usedAmount));
+  const nextUsedAmount = Math.max(0, usedAmount - 1);
+  const afterRemaining = beforeRemaining + 1;
+  const nowIso = getDbNowBySource(reservation.source);
+
+  const updateResult = await db
+    .from("user_quota_balances")
+    .update({
+      used_amount: nextUsedAmount,
+      remaining_amount: afterRemaining,
+      updated_at: nowIso,
+    })
+    .eq("id", reservation.quotaBalanceId);
+
+  const updateError = toDbErrorMessage(updateResult);
+  if (updateError) {
+    throw new Error(`回滚用户额度失败: ${updateError}`);
+  }
+
+  try {
+    await db.from("user_quota_change_logs").insert({
+      id: `quota_log_${randomUUID().replace(/-/g, "")}`,
+      user_id: reservation.userId,
+      source: reservation.source,
+      quota_type: reservation.quotaType,
+      change_kind: "refund",
+      delta_amount: 1,
+      before_amount: beforeRemaining,
+      after_amount: afterRemaining,
+      reference_type: "ai_generate_rollback",
+      reference_id: reservation.requestId,
+      operator_type: "system",
+      operator_id: null,
+      note: `rollback_${reservation.quotaType}`,
+      created_at: nowIso,
+    });
+  } catch (error) {
+    console.warn("[Generate] 写入用户额度回滚日志失败:", error);
+  }
+}
+
 export async function POST(req: Request) {
   const requestId = randomUUID();
   const requestTimer = createRequestTimer(requestId);
   let guestQuotaReservation: GuestQuotaReservation | null = null;
+  let userQuotaReservation: UserQuotaReservation | null = null;
   let guestQuotaSnapshot: GuestQuotaSnapshot | undefined;
   let guestSetCookieHeader: string | undefined;
+  let analyticsUserId: string | null = null;
+  let analyticsSessionId: string | null = null;
+  let analyticsStartTracked = false;
+  let analyticsGenerationType: string | null = null;
+  let analyticsModelId: string | null = null;
+  let analyticsModelProvider: string | null = null;
+
+  const analyticsSource = IS_DOMESTIC_RUNTIME ? "cn" : "global";
+  const analyticsMeta = extractRequestAnalyticsMeta(req);
+
+  const trackGenerateEvent = async (
+    eventType: string,
+    eventName: string,
+    eventData: Record<string, unknown>,
+    ensureSession: boolean,
+  ) => {
+    try {
+      const sessionId = await trackAnalyticsSessionEvent({
+        source: analyticsSource,
+        userId: analyticsUserId,
+        sessionId: analyticsSessionId || undefined,
+        ensureSession: ensureSession && Boolean(analyticsUserId),
+        eventType,
+        eventName,
+        eventData,
+        meta: analyticsMeta,
+      });
+      if (sessionId) {
+        analyticsSessionId = sessionId;
+      }
+    } catch (error) {
+      console.warn(
+        `[Generate][${requestId}] analytics track failed (${eventType}/${eventName}):`,
+        error,
+      );
+    }
+  };
 
   try {
     const body = (await req.json()) as {
@@ -2284,6 +2641,7 @@ export async function POST(req: Request) {
       }
     }
 
+    analyticsUserId = loginUser?.userId || null;
     const isGuestRequest = !loginUser;
 
     if (!isGenerationTab(type) || !isConnectedGenerationTab(type)) {
@@ -2309,6 +2667,44 @@ export async function POST(req: Request) {
         { status: 403 },
       );
     }
+
+    const reserveUserQuotaIfNeeded = async () => {
+      if (isGuestRequest || !loginUser?.userId || userQuotaReservation) {
+        return null;
+      }
+
+      const quotaType = resolveQuotaTypeByGenerationType(type);
+      const userConsumeResult = await consumeUserGenerationQuota({
+        userId: loginUser.userId,
+        source: analyticsSource,
+        quotaType,
+        requestId,
+      });
+
+      if (!userConsumeResult.allowed) {
+        return userConsumeResult.message || getQuotaExhaustedMessage(quotaType);
+      }
+
+      userQuotaReservation = userConsumeResult.reservation || null;
+      return null;
+    };
+
+    analyticsGenerationType = type;
+    analyticsModelId = modelConfig.id;
+    analyticsModelProvider = modelConfig.provider;
+
+    await trackGenerateEvent(
+      "generate_start",
+      "generate_started",
+      {
+        type,
+        model_id: modelConfig.id,
+        model_provider: modelConfig.provider,
+        is_guest: isGuestRequest,
+      },
+      true,
+    );
+    analyticsStartTracked = true;
 
     console.log(
       `[Generate][${requestId}] 收到请求，类型: ${type}，模型: ${modelConfig.id}，代理: ${getProviderProxyStatus(
@@ -2360,6 +2756,11 @@ export async function POST(req: Request) {
         }
 
         guestQuotaReservation = guestConsumeResult.reservation || null;
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return Response.json({ message: userQuotaError }, { status: 429 });
       }
 
       const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
@@ -2439,10 +2840,29 @@ ${object.summary}`,
       }
 
       requestTimer.total("文档请求完成");
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_document_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: generatedFiles.length,
+          formats: requestedFormats,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+      );
       return jsonWithCookie(result, undefined, guestSetCookieHeader);
     }
 
     if (modelConfig.mode === "audio-generation") {
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return Response.json({ message: userQuotaError }, { status: 429 });
+      }
+
       const origin = new URL(req.url).origin;
       const audioGenerationResult =
         modelConfig.provider === "aliyun"
@@ -2479,10 +2899,28 @@ ${object.summary}`,
         createdAt: new Date().toISOString(),
       };
 
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_audio_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: audioUrls.length,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+      );
       return Response.json(result);
     }
 
     if (modelConfig.mode === "image-generation") {
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return Response.json({ message: userQuotaError }, { status: 429 });
+      }
+
       const imagePayload =
         modelConfig.provider === "aliyun"
           ? await generateImageWithDashScope(requestId, modelConfig.id, prompt)
@@ -2529,7 +2967,25 @@ ${object.summary}`,
         createdAt: new Date().toISOString(),
       };
 
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_image_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: localImages.length,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+      );
       return Response.json(result);
+    }
+
+    const userQuotaError = await reserveUserQuotaIfNeeded();
+    if (userQuotaError) {
+      return Response.json({ message: userQuotaError }, { status: 429 });
     }
 
     const videoPayload =
@@ -2565,6 +3021,19 @@ ${object.summary}`,
       createdAt: new Date().toISOString(),
     };
 
+    await trackGenerateEvent(
+      "generate_success",
+      "generate_video_success",
+      {
+        type,
+        model_id: modelConfig.id,
+        model_provider: modelConfig.provider,
+        output_count: videoUrls.length,
+        duration_ms: requestTimer.getTotalMs(),
+        is_guest: isGuestRequest,
+      },
+      false,
+    );
     return Response.json(result);
   } catch (error) {
     if (guestQuotaReservation) {
@@ -2578,12 +3047,36 @@ ${object.summary}`,
       }
     }
 
+    if (userQuotaReservation) {
+      try {
+        await releaseUserGenerationQuota(userQuotaReservation);
+      } catch (releaseError) {
+        console.error(`[Generate][${requestId}] 用户额度回滚失败:`, releaseError);
+      }
+    }
+
     const statusCode = getErrorStatusCode(error);
     const message = getGenerationErrorMessage(error);
     console.error(
       `[Generate][${requestId}] 请求处理失败，总耗时: ${requestTimer.getTotalMs()}ms:`,
       error,
     );
+
+    if (analyticsStartTracked) {
+      await trackGenerateEvent(
+        "generate_failed",
+        "generate_request_failed",
+        {
+          type: analyticsGenerationType,
+          model_id: analyticsModelId,
+          model_provider: analyticsModelProvider,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: !analyticsUserId,
+          error: message,
+        },
+        false,
+      );
+    }
 
     return jsonWithCookie(
       guestQuotaSnapshot ? { message, guestQuota: guestQuotaSnapshot } : { message },

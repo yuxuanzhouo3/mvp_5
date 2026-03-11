@@ -17,6 +17,9 @@ const nextConfig = {
       process.env.CLOUDBASE_ACCESS_KEY ||
       '',
   },
+  experimental: {
+    serverComponentsExternalPackages: ['@cloudbase/node-sdk', 'alipay-sdk'],
+  },
 }
 
 module.exports = nextConfig 

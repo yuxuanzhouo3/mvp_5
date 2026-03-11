@@ -4,8 +4,10 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   getQuotaConfig,
   updateAddonPackageLimits,
+  updateSubscriptionPlanPricing,
   updateSubscriptionPlanLimits,
   type AddonPackageRow,
+  type PlanPriceRow,
   type SubscriptionPlanRow,
 } from "@/actions/admin-quota";
 import {
@@ -27,10 +29,12 @@ function getSourceLabel() {
 export default function AdminQuotaPage() {
   const [plans, setPlans] = useState<SubscriptionPlanRow[]>([]);
   const [addons, setAddons] = useState<AddonPackageRow[]>([]);
+  const [prices, setPrices] = useState<PlanPriceRow[]>([]);
   const [appDisplayName, setAppDisplayName] = useState("");
   const [loadingConfig, setLoadingConfig] = useState(true);
   const [savingDisplayName, setSavingDisplayName] = useState(false);
   const [savingPlan, setSavingPlan] = useState<string | null>(null);
+  const [savingPrice, setSavingPrice] = useState<string | null>(null);
   const [savingAddon, setSavingAddon] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -46,6 +50,7 @@ export default function AdminQuotaPage() {
       ]);
       setPlans(quotaResult.plans || []);
       setAddons(quotaResult.addons || []);
+      setPrices(quotaResult.prices || []);
       setAppDisplayName(brandingResult.appDisplayName || "");
     } catch {
       setError("加载套餐与加油包配置失败");
@@ -123,6 +128,56 @@ export default function AdminQuotaPage() {
     }
 
     setSavingAddon(null);
+  }
+
+  async function handleSavePrice(
+    source: "cn" | "global",
+    planCode: "pro" | "enterprise",
+    e: FormEvent<HTMLFormElement>,
+  ) {
+    e.preventDefault();
+    const savingKey = `${source}:${planCode}`;
+    setSavingPrice(savingKey);
+    setError(null);
+    setSuccess(null);
+
+    const formData = new FormData(e.currentTarget);
+    formData.set("source", source);
+    formData.set("plan_code", planCode);
+    const result = await updateSubscriptionPlanPricing(formData);
+
+    if (!result.success) {
+      setError(result.error || "更新套餐定价失败");
+    } else {
+      setSuccess(
+        `${source === "cn" ? "国内版" : "国际版"} ${planCode === "pro" ? "专业版" : "企业版"}定价已更新`,
+      );
+      await loadConfig();
+    }
+
+    setSavingPrice(null);
+  }
+
+  function getPriceAmount(
+    source: "cn" | "global",
+    planCode: "pro" | "enterprise",
+    period: "monthly" | "yearly",
+  ) {
+    const hit = prices.find(
+      (item) =>
+        item.source === source &&
+        item.plan_code === planCode &&
+        item.billing_period === period,
+    );
+    return hit ? Number(hit.amount || 0) : 0;
+  }
+
+  function getPlanDisplayName(planCode: "pro" | "enterprise") {
+    const hit = plans.find((item) => item.plan_code === planCode);
+    if (hit?.display_name_cn) {
+      return hit.display_name_cn;
+    }
+    return planCode === "pro" ? "专业版" : "企业版";
   }
 
   return (
@@ -259,6 +314,68 @@ export default function AdminQuotaPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">套餐定价（专业版 / 企业版）</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {loadingConfig ? (
+            <div className="py-8 flex justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-2">
+              {(["cn", "global"] as const).map((source) => (
+                <div key={source} className="rounded-md border border-slate-200 p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-sm">
+                      {source === "cn" ? "国内版价格（CNY）" : "国际版价格（USD）"}
+                    </div>
+                    <Badge variant="outline">{source}</Badge>
+                  </div>
+
+                  {(["pro", "enterprise"] as const).map((planCode) => (
+                    <form
+                      key={`${source}:${planCode}`}
+                      onSubmit={(e) => void handleSavePrice(source, planCode, e)}
+                      className="rounded-md border border-slate-100 p-3 space-y-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium">{getPlanDisplayName(planCode)}</div>
+                        <Badge variant="secondary">{planCode}</Badge>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <PriceInput
+                          label="月付"
+                          name="monthly_amount"
+                          defaultValue={getPriceAmount(source, planCode, "monthly")}
+                        />
+                        <PriceInput
+                          label="年付"
+                          name="yearly_amount"
+                          defaultValue={getPriceAmount(source, planCode, "yearly")}
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        variant="outline"
+                        size="sm"
+                        disabled={savingPrice === `${source}:${planCode}`}
+                      >
+                        {savingPrice === `${source}:${planCode}` && (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        )}
+                        保存套餐定价
+                      </Button>
+                    </form>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -276,6 +393,30 @@ function QuotaInput({
     <label className="text-xs text-muted-foreground">
       {label}
       <Input name={name} type="number" defaultValue={defaultValue} className="mt-1" />
+    </label>
+  );
+}
+
+function PriceInput({
+  label,
+  name,
+  defaultValue,
+}: {
+  label: string;
+  name: string;
+  defaultValue: number;
+}) {
+  return (
+    <label className="text-xs text-muted-foreground">
+      {label}
+      <Input
+        name={name}
+        type="number"
+        defaultValue={defaultValue}
+        className="mt-1"
+        step="0.01"
+        min="0"
+      />
     </label>
   );
 }
