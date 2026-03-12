@@ -407,6 +407,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   const [prompt, setPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generations, setGenerations] = useState<GenerationItem[]>([]);
+  const [deletingGenerationIds, setDeletingGenerationIds] = useState<string[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [model, setModel] = useState("auto");
   const [selectedDocumentFormats, setSelectedDocumentFormats] = useState<DocumentFileFormat[]>(["docx"]);
@@ -1335,31 +1336,94 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   }, [user]);
 
   const handleToggleDocumentFormat = (format: DocumentFileFormat) => {
-    if (!user) {
-      setSelectedDocumentFormats([format]);
-      return;
-    }
-
-    setSelectedDocumentFormats((previous) =>
-      previous.includes(format)
-        ? previous.filter((item) => item !== format)
-        : [...previous, format],
-    );
+    setSelectedDocumentFormats([format]);
   };
 
-  const handleSelectAllDocumentFormats = () => {
-    if (!user) {
-      return;
-    }
-    setSelectedDocumentFormats([...DOCUMENT_FILE_FORMATS]);
-  };
+  const handleDeleteGeneration = useCallback(
+    async (generation: GenerationItem) => {
+      if (!user) {
+        return;
+      }
 
-  const handleClearAllDocumentFormats = () => {
-    if (!user) {
-      return;
-    }
-    setSelectedDocumentFormats([]);
-  };
+      const generationId = String(generation.id || "").trim();
+      if (!generationId || generationId.startsWith("err_")) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        currentLanguage === "zh"
+          ? "确认删除这条输出结果吗？删除后会同步移除数据库中的产物记录，且无法恢复。"
+          : "Delete this output result? This removes the stored artifact records from the database and cannot be undone.",
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      setDeletingGenerationIds((previous) =>
+        previous.includes(generationId) ? previous : [...previous, generationId],
+      );
+
+      try {
+        let response: Response;
+
+        if (isDomesticVersion) {
+          const tokenResult = await getCloudbaseAuth().getAccessToken();
+          const accessToken = tokenResult?.accessToken?.trim() || "";
+          if (!accessToken) {
+            throw new Error(
+              currentLanguage === "zh"
+                ? "登录状态已失效，请重新登录。"
+                : "Session expired. Please sign in again.",
+            );
+          }
+
+          response = await fetch(
+            `/api/domestic/user/generations/${encodeURIComponent(generationId)}`,
+            {
+              method: "DELETE",
+              headers: {
+                "x-cloudbase-access-token": accessToken,
+              },
+            },
+          );
+        } else {
+          response = await fetch(`/api/user/generations/${encodeURIComponent(generationId)}`, {
+            method: "DELETE",
+            cache: "no-store",
+            credentials: "include",
+          });
+        }
+
+        const payload = (await response.json()) as {
+          success?: boolean;
+          error?: string | null;
+        };
+        if (!response.ok || !payload.success) {
+          throw new Error(
+            (typeof payload.error === "string" && payload.error.trim()) ||
+              (currentLanguage === "zh"
+                ? "删除输出结果失败。"
+                : "Failed to delete output result."),
+          );
+        }
+
+        setGenerations((previous) =>
+          previous.filter((item) => String(item.id || "").trim() !== generationId),
+        );
+      } catch (error) {
+        window.alert(
+          error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : currentLanguage === "zh"
+              ? "删除输出结果失败。"
+              : "Failed to delete output result.",
+        );
+      } finally {
+        setDeletingGenerationIds((previous) => previous.filter((id) => id !== generationId));
+      }
+    },
+    [currentLanguage, isDomesticVersion, user],
+  );
 
   const handleGenerate = async () => {
     const trimmedPrompt = prompt.trim();
@@ -2320,8 +2384,6 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
               generatingText={text.generating}
               selectedDocumentFormats={selectedDocumentFormats}
               onToggleDocumentFormat={handleToggleDocumentFormat}
-              onSelectAllDocumentFormats={handleSelectAllDocumentFormats}
-              onClearAllDocumentFormats={handleClearAllDocumentFormats}
               onGenerate={handleGenerate}
               selectedFile={selectedOperationFile}
               onSelectedFileChange={setSelectedOperationFile}
@@ -2337,6 +2399,9 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
               generations={generations}
               currentLanguage={currentLanguage}
               targetResultView={targetResultView}
+              canDeletePersistedResults={Boolean(user)}
+              deletingGenerationIds={deletingGenerationIds}
+              onDeleteGeneration={handleDeleteGeneration}
             />
           </div>
         </main>

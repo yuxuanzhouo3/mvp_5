@@ -40,8 +40,6 @@ interface AIOperationsProps {
   generatingText: string;
   selectedDocumentFormats: DocumentFileFormat[];
   onToggleDocumentFormat: (format: DocumentFileFormat) => void;
-  onSelectAllDocumentFormats: () => void;
-  onClearAllDocumentFormats: () => void;
   onGenerate: () => void;
   selectedFile: File | null;
   onSelectedFileChange: (file: File | null) => void;
@@ -67,8 +65,6 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   generatingText,
   selectedDocumentFormats,
   onToggleDocumentFormat,
-  onSelectAllDocumentFormats,
-  onClearAllDocumentFormats,
   onGenerate,
   selectedFile,
   onSelectedFileChange,
@@ -121,9 +117,6 @@ const AIOperations: React.FC<AIOperationsProps> = ({
     isGuest && (activeCategory !== "generate" || activeTab !== "text");
   const requiresFileUpload = isDetectMode || isEditMode;
   const isDocumentGeneration = activeCategory === "generate" && activeTab === "text";
-  const areAllDocumentFormatsSelected =
-    selectedDocumentFormats.length === DOCUMENT_FILE_FORMATS.length;
-
   useEffect(() => {
     if (!requiresFileUpload) {
       return;
@@ -161,9 +154,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         ? Boolean(selectedFile) && prompt.trim().length > 0
         : prompt.trim().length > 0 &&
           (!isDocumentGeneration ||
-            (isGuest
-              ? selectedDocumentFormats.length === 1
-              : selectedDocumentFormats.length > 0)) &&
+            selectedDocumentFormats.length === 1) &&
           !generationDisabledReason;
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -348,35 +339,10 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/30 p-3 sm:p-4 space-y-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-              {isGuest
-                ? currentLanguage === "zh"
-                  ? "游客模式：每次仅支持一个文档格式"
-                  : "Guest mode: only one document format per request"
-                : currentLanguage === "zh"
-                  ? "选择需要生成的文档格式"
-                  : "Choose document formats before generating"}
+              {currentLanguage === "zh"
+                ? "每次仅生成 1 份文档结果，请选择输出格式"
+                : "Each request returns exactly 1 document. Choose the output format."}
             </p>
-
-            {!isGuest && (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={onSelectAllDocumentFormats}
-                  disabled={areAllDocumentFormatsSelected}
-                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
-                >
-                  {currentLanguage === "zh" ? "全选" : "Select all"}
-                </button>
-                <button
-                  type="button"
-                  onClick={onClearAllDocumentFormats}
-                  disabled={selectedDocumentFormats.length === 0}
-                  className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs text-gray-700 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
-                >
-                  {currentLanguage === "zh" ? "取消全选" : "Clear all"}
-                </button>
-              </div>
-            )}
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -415,11 +381,11 @@ const AIOperations: React.FC<AIOperationsProps> = ({
             </p>
           )}
 
-          {isGuest && selectedDocumentFormats.length !== 1 && (
+          {selectedDocumentFormats.length !== 1 && (
             <p className="text-xs text-red-600 dark:text-red-400">
               {currentLanguage === "zh"
-                ? "游客模式下每次必须且仅能选择一种文档格式。"
-                : "Guest mode requires exactly one document format."}
+                ? "每次必须且仅能选择一种文档格式。"
+                : "Exactly one document format is required for each request."}
             </p>
           )}
         </div>

@@ -33,6 +33,13 @@ type ListGenerationHistoryInput = {
   limit?: number;
 };
 
+type DeleteGenerationHistoryInput = {
+  db: RoutedAdminDbClient;
+  source: GenerationSource;
+  userId: string;
+  taskId: string;
+};
+
 type QueryResultLike = {
   data?: unknown;
   error?: { message?: unknown } | null;
@@ -1165,4 +1172,112 @@ export async function listPersistedGenerationHistory(
 
     return generation;
   });
+}
+
+export async function deletePersistedGenerationHistory(
+  input: DeleteGenerationHistoryInput,
+) {
+  const taskId = normalizeText(input.taskId, "");
+  if (!taskId) {
+    throw new Error("生成记录 ID 无效。");
+  }
+
+  const taskRows = await queryRows<AiTaskRow>(
+    input.db
+      .from("ai_tasks")
+      .select("id")
+      .eq("id", taskId)
+      .eq("user_id", input.userId)
+      .eq("source", input.source)
+      .limit(1),
+    "读取生成记录失败",
+  );
+
+  if (taskRows.length === 0) {
+    throw new Error("生成记录不存在，或您没有删除权限。");
+  }
+
+  const outputRows = await queryRows<AiTaskOutputRow>(
+    input.db
+      .from("ai_task_outputs")
+      .select("id,task_id,user_id,source,file_id")
+      .eq("task_id", taskId)
+      .eq("source", input.source),
+    "读取生成产物失败",
+  );
+
+  const fileIds = Array.from(
+    new Set(outputRows.map((row) => normalizeText(row.file_id, "")).filter(Boolean)),
+  );
+  const storageRows =
+    fileIds.length > 0
+      ? await queryRows<StorageFileRow>(
+          input.db
+            .from("storage_files")
+            .select("id,user_id,source,bucket_name,object_key")
+            .in("id", fileIds)
+            .eq("user_id", input.userId)
+            .eq("source", input.source),
+          "读取生成文件索引失败",
+        )
+      : [];
+
+  const objectKeysByBucket = new Map<string, string[]>();
+  storageRows.forEach((row) => {
+    const bucketName = normalizeText(row.bucket_name, GENERATED_OUTPUT_BUCKET);
+    const objectKey = normalizeText(row.object_key, "");
+    if (!objectKey) {
+      return;
+    }
+
+    if (!objectKeysByBucket.has(bucketName)) {
+      objectKeysByBucket.set(bucketName, []);
+    }
+    objectKeysByBucket.get(bucketName)!.push(objectKey);
+  });
+
+  let deletedObjectCount = 0;
+  for (const [bucketName, objectKeys] of Array.from(objectKeysByBucket.entries())) {
+    const uniqueObjectKeys = Array.from(new Set<string>(objectKeys));
+    if (uniqueObjectKeys.length === 0) {
+      continue;
+    }
+
+    const removalResult = await input.db.storage.from(bucketName).remove(uniqueObjectKeys);
+    if (removalResult.error) {
+      throw new Error(`删除存储文件失败: ${removalResult.error.message}`);
+    }
+    deletedObjectCount += uniqueObjectKeys.length;
+  }
+
+  const storageFileIds = storageRows
+    .map((row) => normalizeText(row.id, ""))
+    .filter(Boolean);
+  if (storageFileIds.length > 0) {
+    await executeQuery(
+      input.db
+        .from("storage_files")
+        .delete()
+        .in("id", storageFileIds)
+        .eq("user_id", input.userId)
+        .eq("source", input.source),
+      "删除生成文件索引失败",
+    );
+  }
+
+  await executeQuery(
+    input.db
+      .from("ai_tasks")
+      .delete()
+      .eq("id", taskId)
+      .eq("user_id", input.userId)
+      .eq("source", input.source),
+    "删除生成记录失败",
+  );
+
+  return {
+    deletedTaskId: taskId,
+    deletedFileCount: storageFileIds.length,
+    deletedObjectCount,
+  };
 }

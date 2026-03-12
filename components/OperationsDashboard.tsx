@@ -12,6 +12,9 @@ interface OperationsDashboardProps {
     folder: ResultFolder;
     key: number;
   } | null;
+  canDeletePersistedResults?: boolean;
+  deletingGenerationIds?: string[];
+  onDeleteGeneration?: (generation: GenerationItem) => void | Promise<void>;
 }
 
 export type ResultCategory = "generate" | "edit" | "detect";
@@ -29,6 +32,9 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   generations,
   currentLanguage,
   targetResultView,
+  canDeletePersistedResults = false,
+  deletingGenerationIds = [],
+  onDeleteGeneration,
 }) => {
   const resultTitle = currentLanguage === "zh" ? "输出结果" : "Output Results";
   const [activeResultCategory, setActiveResultCategory] = useState<ResultCategory>("generate");
@@ -147,6 +153,8 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   const exportFilesLabel = currentLanguage === "zh" ? "导出文件" : "Export Files";
   const closePreviewLabel = currentLanguage === "zh" ? "关闭" : "Close";
   const previewAltText = currentLanguage === "zh" ? "图片预览" : "Image preview";
+  const deleteLabel = currentLanguage === "zh" ? "删除" : "Delete";
+  const deletingLabel = currentLanguage === "zh" ? "删除中..." : "Deleting...";
   const folderLabelMap: Record<ResultFolder, string> =
     currentLanguage === "zh"
       ? {
@@ -294,7 +302,14 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
           </div>
         ) : (
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
-            {filteredGenerations.map((generation) => (
+            {filteredGenerations.map((generation) => {
+              const isDeleting = deletingGenerationIds.includes(generation.id);
+              const canDelete =
+                canDeletePersistedResults &&
+                Boolean(onDeleteGeneration) &&
+                !generation.id.startsWith("err_");
+
+              return (
               <div
                 key={generation.id}
                 className={`rounded-xl border p-3 ${
@@ -318,11 +333,23 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                     {generation.modelLabel}
                   </span>
                 </div>
-                <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                  {new Date(generation.createdAt).toLocaleString(
-                    currentLanguage === "zh" ? "zh-CN" : "en-US",
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                    {new Date(generation.createdAt).toLocaleString(
+                      currentLanguage === "zh" ? "zh-CN" : "en-US",
+                    )}
+                  </span>
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => onDeleteGeneration?.(generation)}
+                      disabled={isDeleting}
+                      className="inline-flex items-center rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] text-red-600 transition-colors hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300"
+                    >
+                      {isDeleting ? deletingLabel : deleteLabel}
+                    </button>
                   )}
-                </span>
+                </div>
               </div>
 
               <p className="text-sm text-gray-700 dark:text-gray-200 leading-6 break-words">
@@ -456,7 +483,8 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                 </div>
               )}
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
       </section>

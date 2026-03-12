@@ -98,7 +98,10 @@ const DASHSCOPE_CHAT_COMPLETION_TIMEOUT_MS = getPositiveIntFromEnv(
   "DASHSCOPE_CHAT_COMPLETION_TIMEOUT_MS",
   60000,
 );
-const DEFAULT_IMAGE_OUTPUT_COUNT = 1;
+const DEFAULT_GENERATION_OUTPUT_COUNT = 1;
+const DEFAULT_IMAGE_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
+const DEFAULT_AUDIO_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
+const DEFAULT_VIDEO_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
 const DOCUMENT_GENERATION_MAX_TOKENS = getPositiveIntFromEnv(
   "DOCUMENT_GENERATION_MAX_TOKENS",
   900,
@@ -3123,7 +3126,7 @@ function extractDashScopeTaskResultUrls(payload: DashScopeTaskPayload) {
         typeof record.file_url === "string" ? record.file_url.trim() : "",
       ].filter(Boolean);
     })
-    .slice(0, 4);
+    .slice(0, DEFAULT_AUDIO_OUTPUT_COUNT);
 }
 
 function extractDashScopeTranscriptionText(payload: unknown) {
@@ -3456,7 +3459,10 @@ async function editAudioWithReplicate(input: {
     pipeline.synthesisModelId,
     rewrittenScript,
   );
-  const audioUrls = extractReplicateOutputUrls(synthesized.output).slice(0, 4);
+  const audioUrls = extractReplicateOutputUrls(synthesized.output).slice(
+    0,
+    DEFAULT_AUDIO_OUTPUT_COUNT,
+  );
   if (audioUrls.length === 0) {
     throw new Error("Replicate 音频重配未返回可用音频链接，请稍后重试。");
   }
@@ -3602,7 +3608,7 @@ async function buildDashScopeAudioResult(response: Response, origin: string) {
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (contentType.includes("application/json")) {
     const payload = await readDashScopeJson<Record<string, unknown>>(response);
-    const audioUrls = extractReplicateOutputUrls(payload).slice(0, 4);
+    const audioUrls = extractReplicateOutputUrls(payload).slice(0, DEFAULT_AUDIO_OUTPUT_COUNT);
     if (audioUrls.length === 0) {
       const base64Audio = extractDashScopeAudioBase64(payload);
       if (!base64Audio) {
@@ -4349,7 +4355,7 @@ export async function POST(req: Request) {
     );
 
     if (modelConfig.mode === "file-generation") {
-      let requestedFormats: readonly DocumentFileFormat[] = DOCUMENT_FILE_FORMATS;
+      let requestedFormats: readonly DocumentFileFormat[] = [DOCUMENT_FILE_FORMATS[0]];
 
       if (requestPayload.formats !== undefined) {
         if (!Array.isArray(requestPayload.formats)) {
@@ -4364,7 +4370,7 @@ export async function POST(req: Request) {
           return returnTrackedGenerateError("请至少选择一种文档格式。", 400);
         }
 
-        requestedFormats = filteredFormats;
+        requestedFormats = [filteredFormats[0]];
       }
 
       if (isGuestRequest && requestedFormats.length !== 1) {
@@ -4737,7 +4743,10 @@ ${object.summary}`,
           : await (async () => {
               getReplicateApiKeyOrThrow();
               const prediction = await generateAudioWithReplicate(requestId, modelConfig.id, prompt);
-              const audioUrls = extractReplicateOutputUrls(prediction.output).slice(0, 4);
+              const audioUrls = extractReplicateOutputUrls(prediction.output).slice(
+                0,
+                DEFAULT_AUDIO_OUTPUT_COUNT,
+              );
               if (audioUrls.length === 0) {
                 throw new Error("Replicate 音频生成未返回可用音频链接，请稍后重试。");
               }
@@ -4890,7 +4899,10 @@ ${object.summary}`,
                 db: runtimeDbClient,
               });
             })();
-      const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(0, 2);
+      const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(
+        0,
+        DEFAULT_VIDEO_OUTPUT_COUNT,
+      );
       if (videoUrls.length === 0) {
         throw new Error(
           modelConfig.provider === "aliyun"
@@ -4952,7 +4964,10 @@ ${object.summary}`,
             getReplicateApiKeyOrThrow();
             return generateVideoWithReplicate(requestId, modelConfig.id, prompt);
           })();
-    const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(0, 2);
+    const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(
+      0,
+      DEFAULT_VIDEO_OUTPUT_COUNT,
+    );
     if (videoUrls.length === 0) {
       throw new Error(
         modelConfig.provider === "aliyun"

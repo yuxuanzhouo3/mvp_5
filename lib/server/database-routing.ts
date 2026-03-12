@@ -24,6 +24,11 @@ type StoragePublicUrlResult = {
   error: { message: string } | null;
 };
 
+type StorageRemoveResult = {
+  data: { paths: string[] } | null;
+  error: { message: string } | null;
+};
+
 type StorageBucketClient = {
   upload: (
     objectPath: string,
@@ -31,6 +36,7 @@ type StorageBucketClient = {
     options?: UploadOptions,
   ) => Promise<StorageUploadResult>;
   getPublicUrl: (objectPath: string) => Promise<StoragePublicUrlResult>;
+  remove: (objectPaths: string[]) => Promise<StorageRemoveResult>;
 };
 
 type StorageClient = {
@@ -181,12 +187,14 @@ function createSupabaseStorageClient(): StorageClient {
           if (!supabaseAdmin) {
             return {
               data: null,
-              error: { message: "Supabase 未配置" },
+              error: { message: "Supabase storage is not configured." },
             };
           }
+
           const { data, error } = await supabaseAdmin.storage
             .from(bucketName)
             .upload(objectPath, fileBody, options);
+
           return {
             data: data
               ? {
@@ -194,27 +202,52 @@ function createSupabaseStorageClient(): StorageClient {
                   fullPath: data.fullPath || data.path || objectPath,
                 }
               : null,
-            error: error ? { message: error.message || "上传失败" } : null,
+            error: error ? { message: error.message || "Failed to upload file." } : null,
           };
         },
         async getPublicUrl(objectPath: string) {
           if (!supabaseAdmin) {
             return {
               data: { publicUrl: null },
-              error: { message: "Supabase 未配置" },
+              error: { message: "Supabase storage is not configured." },
             };
           }
+
           const { data } = supabaseAdmin.storage.from(bucketName).getPublicUrl(objectPath);
           return {
             data: { publicUrl: data?.publicUrl || null },
             error: null,
           };
         },
+        async remove(objectPaths: string[]) {
+          const paths = objectPaths
+            .map((item) => normalizePathSegment(item))
+            .filter(Boolean);
+
+          if (paths.length === 0) {
+            return {
+              data: { paths: [] },
+              error: null,
+            };
+          }
+
+          if (!supabaseAdmin) {
+            return {
+              data: null,
+              error: { message: "Supabase storage is not configured." },
+            };
+          }
+
+          const { error } = await supabaseAdmin.storage.from(bucketName).remove(paths);
+          return {
+            data: { paths },
+            error: error ? { message: error.message || "Failed to delete storage files." } : null,
+          };
+        },
       };
     },
   };
 }
-
 function createCloudbaseStorageClient(app: any): StorageClient {
   return {
     from(bucketName: string) {
@@ -241,7 +274,7 @@ function createCloudbaseStorageClient(app: any): StorageClient {
             return {
               data: null,
               error: {
-                message: toReadableError(error, "CloudBase 上传文件失败"),
+                message: toReadableError(error, "CloudBase 涓婁紶鏂囦欢澶辫触"),
               },
             };
           }
@@ -262,7 +295,36 @@ function createCloudbaseStorageClient(app: any): StorageClient {
             return {
               data: { publicUrl: null },
               error: {
-                message: toReadableError(error, "CloudBase 读取文件地址失败"),
+                message: toReadableError(error, "CloudBase 璇诲彇鏂囦欢鍦板潃澶辫触"),
+              },
+            };
+          }
+        },
+        async remove(objectPaths: string[]) {
+          const paths = objectPaths
+            .map((item) => normalizePathSegment(item))
+            .filter(Boolean);
+
+          if (paths.length === 0) {
+            return {
+              data: { paths: [] },
+              error: null,
+            };
+          }
+
+          try {
+            await app.deleteFile({
+              fileList: paths.map((objectPath) => buildCloudPath(bucketName, objectPath)),
+            });
+            return {
+              data: { paths },
+              error: null,
+            };
+          } catch (error) {
+            return {
+              data: null,
+              error: {
+                message: toReadableError(error, "CloudBase 鍒犻櫎瀛樺偍鏂囦欢澶辫触"),
               },
             };
           }
@@ -271,7 +333,6 @@ function createCloudbaseStorageClient(app: any): StorageClient {
     },
   };
 }
-
 async function getCloudbaseAdminClient(): Promise<RoutedAdminDbClient> {
   if (cachedCloudbaseClient) {
     return cachedCloudbaseClient;
@@ -326,7 +387,7 @@ export async function getRoutedAdminDbClient(
       return await getCloudbaseAdminClient();
     } catch (error) {
       console.error(
-        "[AdminDB] 初始化 CloudBase 客户端失败:",
+        "[AdminDB] 閸掓繂顫愰崠?CloudBase 鐎广垺鍩涚粩顖氥亼鐠?",
         toReadableError(error, "unknown"),
       );
       return null;
@@ -342,7 +403,7 @@ export async function getRoutedRuntimeDbClient(): Promise<RoutedAdminDbClient | 
       return await getCloudbaseAdminClient();
     } catch (error) {
       console.error(
-        "[RuntimeDB] 初始化 CloudBase 客户端失败:",
+        "[RuntimeDB] 閸掓繂顫愰崠?CloudBase 鐎广垺鍩涚粩顖氥亼鐠?",
         toReadableError(error, "unknown"),
       );
       return null;
