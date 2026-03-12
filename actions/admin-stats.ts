@@ -28,6 +28,8 @@ export type DashboardStats = {
   subscriptions: {
     total: number;
     byPlan: Record<string, number>;
+    pending: number;
+    pendingByPlan: Record<string, number>;
   };
   orders: {
     total: number;
@@ -40,13 +42,29 @@ export type DashboardStats = {
     byOs: Record<string, number>;
     byDeviceType: Record<string, number>;
   };
+  analytics: {
+    sessionsToday: number;
+    sessionsThisMonth: number;
+    eventsToday: number;
+    eventsThisMonth: number;
+    keyEventsThisMonth: {
+      register: number;
+      sessionStart: number;
+      passwordResetRequest: number;
+      passwordReset: number;
+      generateStart: number;
+      generateSuccess: number;
+      generateFailed: number;
+      paymentSuccess: number;
+    };
+  };
 };
 
 export type DailyUserStat = {
   date: string;
   activeUsers: number;
   newUsers: number;
-  sessions: number;
+  generations: number;
 };
 
 export type DailyRevenueStat = {
@@ -59,12 +77,15 @@ export type DailyRevenueStat = {
 
 export type DailyStats = DailyUserStat;
 export type RevenueStats = DailyRevenueStat;
+type AnalyticsKeyEventCounts = DashboardStats["analytics"]["keyEventsThisMonth"];
 
 type StatsUserRow = {
   source?: string | null;
   id?: string | null;
   created_at?: string | null;
   current_plan_code?: string | null;
+  subscription_status?: string | null;
+  plan_expires_at?: string | null;
 };
 
 type StatsOrderRow = {
@@ -79,6 +100,7 @@ type StatsOrderRow = {
 
 type StatsSubscriptionRow = {
   source?: string | null;
+  user_id?: string | null;
   plan_code?: string | null;
   status?: string | null;
   current_period_end?: string | null;
@@ -87,20 +109,16 @@ type StatsSubscriptionRow = {
 type StatsSessionRow = {
   source?: string | null;
   user_id?: string | null;
+  session_id?: string | null;
   os?: string | null;
   device_type?: string | null;
   started_at?: string | null;
 };
 
-type StatsTaskRow = {
-  source?: string | null;
-  user_id?: string | null;
-  created_at?: string | null;
-};
-
 type StatsEventRow = {
   source?: string | null;
   user_id?: string | null;
+  session_id?: string | null;
   event_type?: string | null;
   created_at?: string | null;
   device_type?: string | null;
@@ -119,9 +137,220 @@ function getDateThresholds() {
   monthStart.setDate(monthStart.getDate() - 29);
 
   return {
-    todayIso: todayStart.toISOString(),
-    weekIso: weekStart.toISOString(),
-    monthIso: monthStart.toISOString(),
+    todayMs: todayStart.getTime(),
+    weekMs: weekStart.getTime(),
+    monthMs: monthStart.getTime(),
+  };
+}
+
+function formatUtcDateTimeForSql(date: Date) {
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const mi = String(date.getUTCMinutes()).padStart(2, "0");
+  const ss = String(date.getUTCSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function toSourceQueryDateTime(date: Date, sourceScope: AdminSourceScope) {
+  return sourceScope === "cn"
+    ? formatUtcDateTimeForSql(date)
+    : date.toISOString();
+}
+
+function toTimestampMs(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const hasTimezone = /[zZ]|[+-]\d{2}:\d{2}$/.test(normalized);
+  const sqlLikeMatch = normalized.match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/,
+  );
+
+  const parsed = sqlLikeMatch && !hasTimezone
+    ? Date.parse(
+        `${sqlLikeMatch[1]}T${sqlLikeMatch[2]}${sqlLikeMatch[3] || ""}Z`,
+      )
+    : Date.parse(normalized);
+
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function isOnOrAfter(value: string | null | undefined, thresholdMs: number) {
+  const timestampMs = toTimestampMs(value);
+  return timestampMs !== null && timestampMs >= thresholdMs;
+}
+
+function toDateKey(value: string | null | undefined) {
+  const timestampMs = toTimestampMs(value);
+  if (timestampMs === null) {
+    return null;
+  }
+  return ymd(new Date(timestampMs));
+}
+
+function normalizeLowerText(value: string | null | undefined, fallback = "") {
+  if (!value) {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized || fallback;
+}
+
+function normalizeKeyText(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized || null;
+}
+
+function buildActorKey(userId?: string | null, sessionId?: string | null) {
+  const normalizedUserId = normalizeKeyText(userId);
+  if (normalizedUserId) {
+    return `user:${normalizedUserId}`;
+  }
+
+  const normalizedSessionId = normalizeKeyText(sessionId);
+  if (normalizedSessionId) {
+    return `session:${normalizedSessionId}`;
+  }
+
+  return null;
+}
+
+function createEmptyAnalyticsKeyEventCounts(): AnalyticsKeyEventCounts {
+  return {
+    register: 0,
+    sessionStart: 0,
+    passwordResetRequest: 0,
+    passwordReset: 0,
+    generateStart: 0,
+    generateSuccess: 0,
+    generateFailed: 0,
+    paymentSuccess: 0,
+  };
+}
+
+function accumulateAnalyticsKeyEvent(
+  counts: AnalyticsKeyEventCounts,
+  eventType: string | null | undefined,
+) {
+  switch (normalizeLowerText(eventType)) {
+    case "register":
+      counts.register += 1;
+      break;
+    case "session_start":
+      counts.sessionStart += 1;
+      break;
+    case "auth_password_reset_request":
+      counts.passwordResetRequest += 1;
+      break;
+    case "auth_password_reset":
+      counts.passwordReset += 1;
+      break;
+    case "generate_start":
+      counts.generateStart += 1;
+      break;
+    case "generate_success":
+      counts.generateSuccess += 1;
+      break;
+    case "generate_failed":
+      counts.generateFailed += 1;
+      break;
+    case "payment_success":
+      counts.paymentSuccess += 1;
+      break;
+    default:
+      break;
+  }
+}
+
+function buildDeviceDistribution(
+  sessions: StatsSessionRow[],
+  events: StatsEventRow[],
+) {
+  const snapshots = new Map<
+    string,
+    { timestampMs: number; os: string | null; deviceType: string | null }
+  >();
+
+  const upsertSnapshot = (input: {
+    userId?: string | null;
+    sessionId?: string | null;
+    timestamp?: string | null;
+    os?: string | null;
+    deviceType?: string | null;
+  }) => {
+    const actorKey = buildActorKey(input.userId, input.sessionId);
+    if (!actorKey) {
+      return;
+    }
+
+    const timestampMs = toTimestampMs(input.timestamp) ?? 0;
+    const nextOs = normalizeKeyText(input.os);
+    const nextDeviceType = normalizeKeyText(input.deviceType);
+    const current = snapshots.get(actorKey);
+
+    if (!current) {
+      snapshots.set(actorKey, {
+        timestampMs,
+        os: nextOs,
+        deviceType: nextDeviceType,
+      });
+      return;
+    }
+
+    const isNewer = timestampMs >= current.timestampMs;
+    snapshots.set(actorKey, {
+      timestampMs: Math.max(timestampMs, current.timestampMs),
+      os: isNewer ? nextOs || current.os : current.os || nextOs,
+      deviceType: isNewer
+        ? nextDeviceType || current.deviceType
+        : current.deviceType || nextDeviceType,
+    });
+  };
+
+  for (const row of sessions) {
+    upsertSnapshot({
+      userId: row.user_id,
+      sessionId: row.session_id,
+      timestamp: row.started_at,
+      os: row.os,
+      deviceType: row.device_type,
+    });
+  }
+
+  for (const row of events) {
+    upsertSnapshot({
+      userId: row.user_id,
+      sessionId: row.session_id,
+      timestamp: row.created_at,
+      os: row.os,
+      deviceType: row.device_type,
+    });
+  }
+
+  const byOs: Record<string, number> = {};
+  const byDeviceType: Record<string, number> = {};
+
+  snapshots.forEach((snapshot) => {
+    const os = snapshot.os || "unknown";
+    const deviceType = normalizeLowerText(snapshot.deviceType, "unknown");
+    byOs[os] = (byOs[os] || 0) + 1;
+    byDeviceType[deviceType] = (byDeviceType[deviceType] || 0) + 1;
+  });
+
+  return {
+    byOs,
+    byDeviceType,
   };
 }
 
@@ -167,28 +396,28 @@ export async function getDashboardStats(
     return null;
   }
 
-  const { todayIso, weekIso, monthIso } = getDateThresholds();
+  const { todayMs, weekMs, monthMs } = getDateThresholds();
 
-  const [usersRows, ordersRows, subsRows, sessionsRows, tasksRows, eventsRows] =
+  const [usersRows, ordersRows, subsRows, sessionsRows, eventsRows] =
     await Promise.all([
     db
       .from("app_users")
-      .select("id, source, current_plan_code, created_at", { count: "exact" }),
+      .select(
+        "id, source, current_plan_code, subscription_status, plan_expires_at, created_at",
+        { count: "exact" },
+      ),
     db
       .from("orders")
       .select("id, source, amount, payment_status, created_at, paid_at, currency"),
     db
       .from("user_subscriptions")
-      .select("id, source, plan_code, status, current_period_end"),
+      .select("id, source, user_id, plan_code, status, current_period_end"),
     db
       .from("analytics_sessions")
-      .select("source, user_id, os, device_type, started_at"),
-    db
-      .from("ai_tasks")
-      .select("source, user_id, created_at"),
+      .select("source, user_id, session_id, os, device_type, started_at"),
     db
       .from("analytics_events")
-      .select("source, user_id, event_type, created_at, device_type, os"),
+      .select("source, user_id, session_id, event_type, created_at, device_type, os"),
     ]);
 
   if (
@@ -196,7 +425,6 @@ export async function getDashboardStats(
     ordersRows.error ||
     subsRows.error ||
     sessionsRows.error ||
-    tasksRows.error ||
     eventsRows.error
   ) {
     return null;
@@ -209,22 +437,18 @@ export async function getDashboardStats(
     sourceScope,
   );
   const sessions = withinSourceScope((sessionsRows.data || []) as StatsSessionRow[], sourceScope);
-  const tasks = withinSourceScope((tasksRows.data || []) as StatsTaskRow[], sourceScope);
   const events = withinSourceScope((eventsRows.data || []) as StatsEventRow[], sourceScope);
 
-  const userToday = users.filter((u) => (u.created_at || "") >= todayIso).length;
-  const userWeek = users.filter((u) => (u.created_at || "") >= weekIso).length;
-  const userMonth = users.filter((u) => (u.created_at || "") >= monthIso).length;
+  const userToday = users.filter((u) => isOnOrAfter(u.created_at, todayMs)).length;
+  const userWeek = users.filter((u) => isOnOrAfter(u.created_at, weekMs)).length;
+  const userMonth = users.filter((u) => isOnOrAfter(u.created_at, monthMs)).length;
 
-  const sessionsMonth = sessions.filter((s) => (s.started_at || "") >= monthIso);
-  const sessionsWeek = sessions.filter((s) => (s.started_at || "") >= weekIso);
-  const sessionsToday = sessions.filter((s) => (s.started_at || "") >= todayIso);
-  const tasksMonth = tasks.filter((t) => (t.created_at || "") >= monthIso);
-  const tasksWeek = tasks.filter((t) => (t.created_at || "") >= weekIso);
-  const tasksToday = tasks.filter((t) => (t.created_at || "") >= todayIso);
-  const eventsMonth = events.filter((event) => (event.created_at || "") >= monthIso);
-  const eventsWeek = events.filter((event) => (event.created_at || "") >= weekIso);
-  const eventsToday = events.filter((event) => (event.created_at || "") >= todayIso);
+  const sessionsMonth = sessions.filter((s) => isOnOrAfter(s.started_at, monthMs));
+  const sessionsWeek = sessions.filter((s) => isOnOrAfter(s.started_at, weekMs));
+  const sessionsToday = sessions.filter((s) => isOnOrAfter(s.started_at, todayMs));
+  const eventsMonth = events.filter((event) => isOnOrAfter(event.created_at, monthMs));
+  const eventsWeek = events.filter((event) => isOnOrAfter(event.created_at, weekMs));
+  const eventsToday = events.filter((event) => isOnOrAfter(event.created_at, todayMs));
 
   const activityTodayUsers = new Set<string>();
   const activityWeekUsers = new Set<string>();
@@ -233,25 +457,16 @@ export async function getDashboardStats(
   for (const row of sessionsToday) {
     if (row.user_id) activityTodayUsers.add(row.user_id);
   }
-  for (const row of tasksToday) {
-    if (row.user_id) activityTodayUsers.add(row.user_id);
-  }
   for (const row of eventsToday) {
     if (row.user_id) activityTodayUsers.add(row.user_id);
   }
   for (const row of sessionsWeek) {
     if (row.user_id) activityWeekUsers.add(row.user_id);
   }
-  for (const row of tasksWeek) {
-    if (row.user_id) activityWeekUsers.add(row.user_id);
-  }
   for (const row of eventsWeek) {
     if (row.user_id) activityWeekUsers.add(row.user_id);
   }
   for (const row of sessionsMonth) {
-    if (row.user_id) activityMonthUsers.add(row.user_id);
-  }
-  for (const row of tasksMonth) {
     if (row.user_id) activityMonthUsers.add(row.user_id);
   }
   for (const row of eventsMonth) {
@@ -265,13 +480,13 @@ export async function getDashboardStats(
   const paidOrders = orders.filter((o) => o.payment_status === "paid");
   const revenueRawTotal = paidOrders.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const revenueRawToday = paidOrders
-    .filter((o) => (o.paid_at || o.created_at || "") >= todayIso)
+    .filter((o) => isOnOrAfter(o.paid_at || o.created_at, todayMs))
     .reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const revenueRawWeek = paidOrders
-    .filter((o) => (o.paid_at || o.created_at || "") >= weekIso)
+    .filter((o) => isOnOrAfter(o.paid_at || o.created_at, weekMs))
     .reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const revenueRawMonth = paidOrders
-    .filter((o) => (o.paid_at || o.created_at || "") >= monthIso)
+    .filter((o) => isOnOrAfter(o.paid_at || o.created_at, monthMs))
     .reduce((sum, row) => sum + Number(row.amount || 0), 0);
 
   const usdRevenue =
@@ -294,36 +509,55 @@ export async function getDashboardStats(
         }
       : { total: 0, today: 0, thisWeek: 0, thisMonth: 0 };
 
-  const now = new Date().toISOString();
-  const activeSubscriptions = subscriptions.filter((item) => {
-    if (!["active", "trialing"].includes(item.status || "")) {
+  const nowMs = Date.now();
+  const currentSubscribedUsers = users.filter((item) => {
+    const planCode = normalizeLowerText(item.current_plan_code, "free");
+    if (!planCode || planCode === "free") {
       return false;
     }
-    if (!item.current_period_end) {
-      return true;
+
+    const planExpiresMs = toTimestampMs(item.plan_expires_at);
+    if (planExpiresMs !== null) {
+      return planExpiresMs >= nowMs;
     }
-    return item.current_period_end >= now;
+
+    const subscriptionStatus = normalizeLowerText(item.subscription_status);
+    return subscriptionStatus === "active" || subscriptionStatus === "trialing";
   });
   const byPlan: Record<string, number> = {};
-  for (const item of activeSubscriptions) {
-    const plan = item.plan_code || "free";
+  for (const item of currentSubscribedUsers) {
+    const plan = normalizeLowerText(item.current_plan_code, "free");
     byPlan[plan] = (byPlan[plan] || 0) + 1;
   }
 
-  const byOs: Record<string, number> = {};
-  const byDeviceType: Record<string, number> = {};
-  for (const item of sessionsMonth) {
-    const os = item.os || "unknown";
-    const deviceType = item.device_type || "unknown";
-    byOs[os] = (byOs[os] || 0) + 1;
-    byDeviceType[deviceType] = (byDeviceType[deviceType] || 0) + 1;
+  const pendingUserIds = new Set<string>();
+  const pendingByPlan: Record<string, number> = {};
+  const pendingPlanKeys = new Set<string>();
+  for (const item of subscriptions) {
+    if (normalizeLowerText(item.status) !== "pending") {
+      continue;
+    }
+
+    const pendingPlan = normalizeLowerText(item.plan_code, "free");
+    const pendingUserId = (item.user_id || "").trim();
+    if (pendingUserId) {
+      pendingUserIds.add(pendingUserId);
+    }
+
+    const pendingKey = `${pendingUserId || "unknown"}:${pendingPlan}`;
+    if (pendingPlanKeys.has(pendingKey)) {
+      continue;
+    }
+    pendingPlanKeys.add(pendingKey);
+    pendingByPlan[pendingPlan] = (pendingByPlan[pendingPlan] || 0) + 1;
   }
+
+  const analyticsKeyEvents = createEmptyAnalyticsKeyEventCounts();
   for (const item of eventsMonth) {
-    const os = item.os || "unknown";
-    const deviceType = item.device_type || "unknown";
-    byOs[os] = (byOs[os] || 0) + 1;
-    byDeviceType[deviceType] = (byDeviceType[deviceType] || 0) + 1;
+    accumulateAnalyticsKeyEvent(analyticsKeyEvents, item.event_type);
   }
+
+  const devices = buildDeviceDistribution(sessionsMonth, eventsMonth);
 
   return {
     users: {
@@ -348,19 +582,25 @@ export async function getDashboardStats(
       thisMonth: cnyRevenue.thisMonth,
     },
     subscriptions: {
-      total: activeSubscriptions.length,
+      total: currentSubscribedUsers.length,
       byPlan,
+      pending: pendingUserIds.size,
+      pendingByPlan,
     },
     orders: {
       total: orders.length,
-      today: orders.filter((o) => (o.created_at || "") >= todayIso).length,
+      today: orders.filter((o) => isOnOrAfter(o.created_at, todayMs)).length,
       paid: orders.filter((o) => o.payment_status === "paid").length,
       pending: orders.filter((o) => o.payment_status === "pending").length,
       failed: orders.filter((o) => ["failed", "canceled", "cancelled"].includes(o.payment_status || "")).length,
     },
-    devices: {
-      byOs,
-      byDeviceType,
+    devices,
+    analytics: {
+      sessionsToday: sessionsToday.length,
+      sessionsThisMonth: sessionsMonth.length,
+      eventsToday: eventsToday.length,
+      eventsThisMonth: eventsMonth.length,
+      keyEventsThisMonth: analyticsKeyEvents,
     },
   };
 }
@@ -377,31 +617,28 @@ export async function getDailyActiveUsers(
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (days - 1));
+  const startMs = start.getTime();
+  const startQuery = toSourceQueryDateTime(start, sourceScope);
 
-  const [sessionsResult, usersResult, tasksResult, eventsResult] =
+  const [sessionsResult, usersResult, eventsResult] =
     await Promise.all([
     db
       .from("analytics_sessions")
       .select("source, user_id, started_at")
-      .gte("started_at", start.toISOString()),
+      .gte("started_at", startQuery),
     db
       .from("app_users")
       .select("source, created_at")
-      .gte("created_at", start.toISOString()),
-    db
-      .from("ai_tasks")
-      .select("source, user_id, created_at")
-      .gte("created_at", start.toISOString()),
+      .gte("created_at", startQuery),
     db
       .from("analytics_events")
       .select("source, user_id, event_type, created_at")
-      .gte("created_at", start.toISOString()),
+      .gte("created_at", startQuery),
     ]);
 
   if (
     sessionsResult.error ||
     usersResult.error ||
-    tasksResult.error ||
     eventsResult.error
   ) {
     return [];
@@ -411,40 +648,28 @@ export async function getDailyActiveUsers(
     (sessionsResult.data || []) as StatsSessionRow[],
     sourceScope,
   );
-  const taskRows = withinSourceScope((tasksResult.data || []) as StatsTaskRow[], sourceScope);
   const eventRows = withinSourceScope((eventsResult.data || []) as StatsEventRow[], sourceScope);
-  const dateMap = new Map<string, { activeUsers: Set<string>; taskCount: number }>();
+  const dateMap = new Map<string, { activeUsers: Set<string>; generationCount: number }>();
 
   for (const row of sessionRows) {
-    if (!row.started_at) continue;
-    const key = ymd(new Date(row.started_at));
+    if (!isOnOrAfter(row.started_at, startMs)) continue;
+    const key = toDateKey(row.started_at);
+    if (!key) continue;
     if (!dateMap.has(key)) {
-      dateMap.set(key, { activeUsers: new Set<string>(), taskCount: 0 });
+      dateMap.set(key, { activeUsers: new Set<string>(), generationCount: 0 });
     }
     const item = dateMap.get(key)!;
     if (row.user_id) {
       item.activeUsers.add(row.user_id);
     }
-  }
-
-  for (const row of taskRows) {
-    if (!row.created_at) continue;
-    const key = ymd(new Date(row.created_at));
-    if (!dateMap.has(key)) {
-      dateMap.set(key, { activeUsers: new Set<string>(), taskCount: 0 });
-    }
-    const item = dateMap.get(key)!;
-    if (row.user_id) {
-      item.activeUsers.add(row.user_id);
-    }
-    item.taskCount += 1;
   }
 
   for (const row of eventRows) {
-    if (!row.created_at) continue;
-    const key = ymd(new Date(row.created_at));
+    if (!isOnOrAfter(row.created_at, startMs)) continue;
+    const key = toDateKey(row.created_at);
+    if (!key) continue;
     if (!dateMap.has(key)) {
-      dateMap.set(key, { activeUsers: new Set<string>(), taskCount: 0 });
+      dateMap.set(key, { activeUsers: new Set<string>(), generationCount: 0 });
     }
     const item = dateMap.get(key)!;
     if (row.user_id) {
@@ -452,15 +677,16 @@ export async function getDailyActiveUsers(
     }
 
     if ((row.event_type || "").toLowerCase() === "generate_success") {
-      item.taskCount += 1;
+      item.generationCount += 1;
     }
   }
 
   const userRows = withinSourceScope((usersResult.data || []) as StatsUserRow[], sourceScope);
   const newUserCountByDate = new Map<string, number>();
   for (const row of userRows) {
-    if (!row.created_at) continue;
-    const key = ymd(new Date(row.created_at));
+    if (!isOnOrAfter(row.created_at, startMs)) continue;
+    const key = toDateKey(row.created_at);
+    if (!key) continue;
     newUserCountByDate.set(key, (newUserCountByDate.get(key) || 0) + 1);
   }
 
@@ -468,14 +694,14 @@ export async function getDailyActiveUsers(
     date,
     activeUsers: dataItem.activeUsers.size,
     newUsers: newUserCountByDate.get(date) || 0,
-    sessions: dataItem.taskCount,
+    generations: dataItem.generationCount,
   }));
 
   return ensureDateRange(mapped, days, (date) => ({
     date,
     activeUsers: 0,
     newUsers: newUserCountByDate.get(date) || 0,
-    sessions: 0,
+    generations: 0,
   }));
 }
 
@@ -491,6 +717,7 @@ export async function getDailyRevenue(
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (days - 1));
+  const startMs = start.getTime();
 
   const { data, error } = await db
     .from("orders")
@@ -510,9 +737,10 @@ export async function getDailyRevenue(
   for (const row of rows) {
     const dateRaw = row.paid_at || row.created_at;
     if (!dateRaw) continue;
-    const dateObj = new Date(dateRaw);
-    if (dateObj < start) continue;
-    const key = ymd(dateObj);
+    const dateMs = toTimestampMs(dateRaw);
+    if (dateMs === null || dateMs < startMs) continue;
+    const key = toDateKey(dateRaw);
+    if (!key) continue;
     if (!dateMap.has(key)) {
       dateMap.set(key, { amount: 0, orderCount: 0, payingUsers: new Set<string>() });
     }

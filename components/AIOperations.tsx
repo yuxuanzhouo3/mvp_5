@@ -43,6 +43,8 @@ interface AIOperationsProps {
   onSelectAllDocumentFormats: () => void;
   onClearAllDocumentFormats: () => void;
   onGenerate: () => void;
+  selectedFile: File | null;
+  onSelectedFileChange: (file: File | null) => void;
   generationDisabledReason?: string | null;
   featureUnavailableReason?: string | null;
   isGuest?: boolean;
@@ -68,6 +70,8 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   onSelectAllDocumentFormats,
   onClearAllDocumentFormats,
   onGenerate,
+  selectedFile,
+  onSelectedFileChange,
   generationDisabledReason,
   featureUnavailableReason,
   isGuest = false,
@@ -79,7 +83,6 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   >(
     currentType?.category ?? "generate",
   );
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -98,7 +101,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
 
   const handleCategorySwitch = (category: "generate" | "edit" | "detect") => {
     setActiveCategory(category);
-    setSelectedFile(null);
+    onSelectedFileChange(null);
     setPrompt("");
     if (currentType?.category === category) {
       return;
@@ -126,15 +129,15 @@ const AIOperations: React.FC<AIOperationsProps> = ({
       return;
     }
 
-    setSelectedFile(null);
+    onSelectedFileChange(null);
     setPrompt("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
-  }, [activeTab, requiresFileUpload, setPrompt]);
+  }, [activeTab, onSelectedFileChange, requiresFileUpload, setPrompt]);
 
   const acceptByTab: Record<string, string> = {
-    edit_text: ".txt,.md,.doc,.docx,.pdf,.xlsx",
+    edit_text: ".txt,.md,.docx,.xlsx",
     edit_image: "image/*",
     edit_audio: "audio/*",
     edit_video: "video/*",
@@ -169,7 +172,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
       return;
     }
 
-    setSelectedFile(file);
+    onSelectedFileChange(file);
     if (isDetectMode) {
       setPrompt(
         currentLanguage === "zh"
@@ -236,7 +239,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
             type="button"
             className="text-red-500 hover:text-red-600"
             onClick={() => {
-              setSelectedFile(null);
+              onSelectedFileChange(null);
               if (isDetectMode) {
                 setPrompt("");
               }

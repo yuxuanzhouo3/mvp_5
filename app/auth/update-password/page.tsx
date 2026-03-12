@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/context/LanguageContext";
 import { createClient } from "@/lib/supabase/client";
+import { trackAnalyticsClient } from "@/lib/analytics/client";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,18 @@ function SpinnerIcon({ className }: { className?: string }) {
       <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
     </svg>
   );
+}
+
+async function syncGlobalProfileAfterPasswordUpdate() {
+  try {
+    await fetch("/api/user/profile", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "include",
+    });
+  } catch (error) {
+    console.warn("[update-password] syncGlobalProfileAfterPasswordUpdate failed:", error);
+  }
 }
 
 function UpdatePasswordContent() {
@@ -171,6 +184,22 @@ function UpdatePasswordContent() {
       if (updateError) {
         throw updateError;
       }
+
+      await syncGlobalProfileAfterPasswordUpdate();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      void trackAnalyticsClient({
+        source: "global",
+        userId: user?.id || null,
+        eventType: "auth_password_reset",
+        eventName: "email_link_password_reset_success",
+        eventData: {
+          method: "supabase_email",
+        },
+        sessionScope: "auth",
+      });
+
       setStatus("success");
       window.setTimeout(() => {
         router.replace(nextPath);

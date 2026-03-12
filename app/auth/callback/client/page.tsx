@@ -22,6 +22,18 @@ function redirectWithFreshRequest(path: string) {
   window.location.replace(path);
 }
 
+async function syncGlobalProfileAfterAuth() {
+  try {
+    await fetch("/api/user/profile", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "include",
+    });
+  } catch (error) {
+    console.warn("[auth/callback/client] syncGlobalProfileAfterAuth failed:", error);
+  }
+}
+
 function Spinner() {
   return (
     <svg className="h-8 w-8 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -97,6 +109,8 @@ function AuthCallbackClientContent() {
             throw setSessionError;
           }
 
+          await syncGlobalProfileAfterAuth();
+
           const {
             data: { user },
           } = await supabase.auth.getUser();
@@ -133,6 +147,8 @@ function AuthCallbackClientContent() {
           if (exchangeError) {
             throw exchangeError;
           }
+
+          await syncGlobalProfileAfterAuth();
 
           const {
             data: { user },

@@ -130,16 +130,17 @@ function isQuotaType(input: string): input is QuotaType {
 }
 
 export async function getQuotaConfig() {
-  const { session, db } = await requireAdminContext();
+  const { session, db, sourceScope } = await requireAdminContext();
   if (!session || !db) {
     return {
+      sourceScope: "cn" as const,
       plans: [] as SubscriptionPlanRow[],
       addons: [] as AddonPackageRow[],
       prices: [] as PlanPriceRow[],
     };
   }
 
-  const [{ data: plans }, { data: addons }, cnPrices, globalPrices] = await Promise.all([
+  const [{ data: plans }, { data: addons }, sourcePrices] = await Promise.all([
     db
       .from("subscription_plans")
       .select("*")
@@ -148,19 +149,18 @@ export async function getQuotaConfig() {
       .from("addon_packages")
       .select("*")
       .order("sort_order", { ascending: true }),
-    readPlanPricesBySource("cn"),
-    readPlanPricesBySource("global"),
+    readPlanPricesBySource(sourceScope),
   ]);
 
-  const mergedPrices = [...cnPrices, ...globalPrices];
-  const filteredPrices = mergedPrices.filter(
+  const filteredPrices = sourcePrices.filter(
     (item) =>
       (item.plan_code === "pro" || item.plan_code === "enterprise") &&
-      (item.source === "cn" || item.source === "global") &&
+      item.source === sourceScope &&
       (item.billing_period === "monthly" || item.billing_period === "yearly"),
   );
 
   return {
+    sourceScope,
     plans: (plans || []) as SubscriptionPlanRow[],
     addons: (addons || []) as AddonPackageRow[],
     prices: filteredPrices,
@@ -275,7 +275,7 @@ function buildPlanPriceId(input: {
 export async function updateSubscriptionPlanPricing(
   formData: FormData,
 ): Promise<AdminActionResult> {
-  const { session } = await requireAdminContext();
+  const { session, sourceScope } = await requireAdminContext();
   if (!session) {
     return { success: false, error: "未授权访问" };
   }
@@ -287,6 +287,15 @@ export async function updateSubscriptionPlanPricing(
 
   if (source !== "cn" && source !== "global") {
     return { success: false, error: "定价来源无效" };
+  }
+  if (source !== sourceScope) {
+    return {
+      success: false,
+      error:
+        sourceScope === "cn"
+          ? "当前后台仅允许修改国内版定价"
+          : "当前后台仅允许修改国际版定价",
+    };
   }
   if (planCode !== "pro" && planCode !== "enterprise") {
     return { success: false, error: "仅支持专业版与企业版定价" };
@@ -380,27 +389,20 @@ export async function updateSubscriptionPlanPricing(
     }
   }
 
-  try {
-    await db.from("admin_audit_logs").insert({
-      id: createTextId("audit"),
-      admin_user_id: session.userId,
-      action: "update_plan_pricing",
-      target_type: "plan_prices",
-      target_id: `${source}:${planCode}`,
+  await writeAdminAuditLog({
+    action: "update_plan_pricing",
+    targetType: "plan_prices",
+    targetId: `${source}:${planCode}`,
+    source,
+    beforeJson: beforeRows,
+    afterJson: {
       source,
-      before_json: beforeRows,
-      after_json: {
-        source,
-        plan_code: planCode,
-        currency,
-        monthly_amount: normalizedMonthly,
-        yearly_amount: normalizedYearly,
-      },
-      created_at: new Date().toISOString(),
-    });
-  } catch (auditError) {
-    console.warn("[AdminQuota] 写入套餐定价审计日志失败:", auditError);
-  }
+      plan_code: planCode,
+      currency,
+      monthly_amount: normalizedMonthly,
+      yearly_amount: normalizedYearly,
+    },
+  });
 
   revalidatePath("/admin/quota");
   return { success: true };

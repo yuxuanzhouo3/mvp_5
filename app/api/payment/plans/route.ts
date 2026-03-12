@@ -594,7 +594,11 @@ export async function GET() {
     const addonsError = toQueryErrorMessage(addonsResult);
     const addonPricesError = toQueryErrorMessage(addonPricesResult);
 
-    if (plansError || pricesError || addonsError || addonPricesError) {
+    const hasQueryError = Boolean(
+      plansError || pricesError || addonsError || addonPricesError,
+    );
+
+    if (hasQueryError) {
       console.error("[PaymentPlans] 查询商品配置失败:", {
         source,
         plansError,
@@ -602,18 +606,22 @@ export async function GET() {
         addonsError,
         addonPricesError,
       });
-      return Response.json(fallbackPayload);
     }
 
     const payload = buildMergedPayload({
       source,
-      plans: toQueryRows<SubscriptionPlanRow>(plansResult),
-      prices: toQueryRows<PlanPriceRow>(pricesResult),
-      addons: toQueryRows<AddonPackageRow>(addonsResult),
-      addonPrices: toQueryRows<AddonPackagePriceRow>(addonPricesResult),
+      plans: plansError ? [] : toQueryRows<SubscriptionPlanRow>(plansResult),
+      prices: pricesError ? [] : toQueryRows<PlanPriceRow>(pricesResult),
+      addons: addonsError ? [] : toQueryRows<AddonPackageRow>(addonsResult),
+      addonPrices: addonPricesError
+        ? []
+        : toQueryRows<AddonPackagePriceRow>(addonPricesResult),
     });
 
-    return Response.json(payload);
+    return Response.json({
+      ...payload,
+      fallback: hasQueryError,
+    });
   } catch (error) {
     console.error("[PaymentPlans] 加载商品配置异常:", error);
     return Response.json(fallbackPayload);

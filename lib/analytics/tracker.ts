@@ -147,8 +147,11 @@ function isUserIdForeignKeyError(message: string) {
     return false;
   }
   return (
+    normalized.includes("foreign key constraint") ||
+    normalized.includes("violates foreign key constraint") ||
     normalized.includes("foreign key constraint fails") ||
     normalized.includes("cannot add or update a child row") ||
+    normalized.includes("23503") ||
     normalized.includes("1452") ||
     normalized.includes("ibfk")
   );
@@ -188,10 +191,7 @@ async function insertRow(tableName: string, row: Record<string, unknown>) {
     userIdValue !== undefined &&
     String(userIdValue).trim().length > 0;
   const canRetryWithoutUserId =
-    db.backend === "cloudbase" &&
-    hasUserId &&
-    Boolean(errorMessage) &&
-    isUserIdForeignKeyError(errorMessage!);
+    hasUserId && Boolean(errorMessage) && isUserIdForeignKeyError(errorMessage!);
 
   if (canRetryWithoutUserId) {
     const retryResult = await db

@@ -14,7 +14,15 @@ export type GenerationTab =
   | "detect_audio"
   | "detect_video";
 
-export type ConnectedGenerationTab = "text" | "image" | "video" | "audio";
+export type ConnectedGenerationTab =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "edit_text"
+  | "edit_image"
+  | "edit_audio"
+  | "edit_video";
 export type GenerationUILanguage = "zh" | "en";
 export type GenerationModelProvider = "mistral" | "replicate" | "aliyun" | "demo";
 export type GenerationModelRegion = "domestic" | "international" | "demo";
@@ -24,6 +32,10 @@ export type GenerationModelMode =
   | "image-generation"
   | "video-generation"
   | "audio-generation"
+  | "file-editing"
+  | "image-editing"
+  | "video-editing"
+  | "audio-editing"
   | "demo";
 
 export type GenerationModelConfig = {
@@ -41,116 +53,203 @@ export type GenerationModelConfig = {
 
 const GENERATION_MODELS: readonly GenerationModelConfig[] = [
   {
-    id: "qwen3.5-flash",
-    label: "Qwen3.5 Flash via DashScope",
+    id: "qwen-flash",
+    label: "Qwen Flash via DashScope",
     provider: "aliyun",
     mode: "file-generation",
     tabs: ["text"],
     region: "domestic",
-    optionLabelZh: "Qwen3.5 Flash · 文生文档（更快）",
-    optionLabelEn: "Qwen3.5 Flash · Document Generation (Faster)",
-    autoLabelZh: "Qwen3.5 Flash 文档",
-    autoLabelEn: "Qwen3.5 Flash Docs",
+    optionLabelZh: "Qwen Flash · 文生文档",
+    optionLabelEn: "Qwen Flash · Document Generation",
+    autoLabelZh: "Qwen Flash 文档",
+    autoLabelEn: "Qwen Flash Docs",
   },
   {
-    id: "wan2.6-t2i",
-    label: "Wan 2.6 T2I via DashScope",
+    id: "wanx2.0-t2i-turbo",
+    label: "Wanx 2.0 T2I Turbo via DashScope",
     provider: "aliyun",
     mode: "image-generation",
     tabs: ["image"],
     region: "domestic",
-    optionLabelZh: "Wan 2.6 T2I · 文生图片",
-    optionLabelEn: "Wan 2.6 T2I · Text to Image",
-    autoLabelZh: "Wan 2.6 文生图",
-    autoLabelEn: "Wan 2.6 T2I",
+    optionLabelZh: "Wanx 2.0 Turbo · 文生图片",
+    optionLabelEn: "Wanx 2.0 Turbo · Text to Image",
+    autoLabelZh: "Wanx 2.0 文生图",
+    autoLabelEn: "Wanx 2.0 T2I",
   },
   {
-    id: "wan2.6-i2v-flash",
-    label: "Wan 2.6 I2V Flash via DashScope",
+    id: "wan2.2-t2v-plus",
+    label: "Wan 2.2 T2V Plus via DashScope",
     provider: "aliyun",
     mode: "video-generation",
     tabs: ["video"],
     region: "domestic",
-    optionLabelZh: "Wan 2.6 I2V Flash · 文生视频（自动生成首帧）",
-    optionLabelEn: "Wan 2.6 I2V Flash · Text to Video (auto keyframe)",
-    autoLabelZh: "Wan 2.6 文生视频",
-    autoLabelEn: "Wan 2.6 Video",
+    optionLabelZh: "Wan 2.2 Plus · 文生视频",
+    optionLabelEn: "Wan 2.2 Plus · Text to Video",
+    autoLabelZh: "Wan 2.2 文生视频",
+    autoLabelEn: "Wan 2.2 Video",
   },
   {
-    id: "qwen3-tts-instruct-flash",
-    label: "Qwen3 TTS Instruct Flash via DashScope",
+    id: "qwen3-tts-flash",
+    label: "Qwen3 TTS Flash via DashScope",
     provider: "aliyun",
     mode: "audio-generation",
     tabs: ["audio"],
     region: "domestic",
-    optionLabelZh: "Qwen3 TTS Instruct Flash · 语音合成",
-    optionLabelEn: "Qwen3 TTS Instruct Flash · Text to Speech",
+    optionLabelZh: "Qwen3 TTS Flash · 语音合成",
+    optionLabelEn: "Qwen3 TTS Flash · Text to Speech",
     autoLabelZh: "Qwen 语音",
     autoLabelEn: "Qwen Speech",
   },
   {
-    id: "mistral-small-latest",
-    label: "Mistral Small Latest",
-    provider: "mistral",
+    id: "qwen-flash-edit",
+    label: "Qwen Flash Edit via DashScope",
+    provider: "aliyun",
+    mode: "file-editing",
+    tabs: ["edit_text"],
+    region: "domestic",
+    optionLabelZh: "Qwen Flash · 文档编辑",
+    optionLabelEn: "Qwen Flash · Document Editing",
+    autoLabelZh: "Qwen 文档编辑",
+    autoLabelEn: "Qwen Docs Edit",
+  },
+  {
+    id: "wanx2.1-imageedit",
+    label: "Wanx 2.1 ImageEdit via DashScope",
+    provider: "aliyun",
+    mode: "image-editing",
+    tabs: ["edit_image"],
+    region: "domestic",
+    optionLabelZh: "Wanx 2.1 ImageEdit · 图片编辑",
+    optionLabelEn: "Wanx 2.1 ImageEdit · Image Editing",
+    autoLabelZh: "Wanx 图片编辑",
+    autoLabelEn: "Wanx Image Edit",
+  },
+  {
+    id: "wan2.2-i2v-flash",
+    label: "Wan 2.2 I2V Flash via DashScope",
+    provider: "aliyun",
+    mode: "video-editing",
+    tabs: ["edit_video"],
+    region: "domestic",
+    optionLabelZh: "Wan 2.2 I2V Flash · 视频编辑",
+    optionLabelEn: "Wan 2.2 I2V Flash · Video Editing",
+    autoLabelZh: "Wan 视频编辑",
+    autoLabelEn: "Wan Video Edit",
+  },
+  {
+    id: "paraformer-v2-qwen3-tts-flash",
+    label: "Paraformer V2 + Qwen3 TTS Flash via DashScope",
+    provider: "aliyun",
+    mode: "audio-editing",
+    tabs: ["edit_audio"],
+    region: "domestic",
+    optionLabelZh: "Paraformer V2 + Qwen3 TTS Flash · 音频编辑",
+    optionLabelEn: "Paraformer V2 + Qwen3 TTS Flash · Audio Editing",
+    autoLabelZh: "音频重配",
+    autoLabelEn: "Audio Redub",
+  },
+  {
+    id: "lucataco/qwen1.5-1.8b",
+    label: "Qwen 1.5 1.8B via Replicate",
+    provider: "replicate",
     mode: "file-generation",
     tabs: ["text"],
     region: "international",
-    optionLabelZh: "Mistral Small Latest · 文生文档",
-    optionLabelEn: "Mistral Small Latest · Document Generation",
-    autoLabelZh: "Mistral 文档",
-    autoLabelEn: "Mistral Docs",
+    optionLabelZh: "Qwen 1.5 1.8B · 文生文档",
+    optionLabelEn: "Qwen 1.5 1.8B · Document Generation",
+    autoLabelZh: "Qwen 文档",
+    autoLabelEn: "Qwen Docs",
   },
   {
-    id: "google/imagen-4",
-    label: "Google Imagen 4 via Replicate",
+    id: "nvidia/sana-sprint-1.6b",
+    label: "SANA Sprint 1.6B via Replicate",
     provider: "replicate",
     mode: "image-generation",
     tabs: ["image"],
     region: "international",
-    optionLabelZh: "Google Imagen 4 · 文生图片",
-    optionLabelEn: "Google Imagen 4 · Text to Image",
-    autoLabelZh: "Imagen 4",
-    autoLabelEn: "Imagen 4",
+    optionLabelZh: "SANA Sprint 1.6B · 文生图片",
+    optionLabelEn: "SANA Sprint 1.6B · Text to Image",
+    autoLabelZh: "SANA 图片",
+    autoLabelEn: "SANA Image",
   },
   {
-    id: "stability-ai/stable-audio-2.5",
-    label: "Stable Audio 2.5 via Replicate",
+    id: "minimax/speech-02-turbo",
+    label: "MiniMax Speech 02 Turbo via Replicate",
     provider: "replicate",
     mode: "audio-generation",
     tabs: ["audio"],
     region: "international",
-    optionLabelZh: "Stable Audio 2.5 · 文生音频",
-    optionLabelEn: "Stable Audio 2.5 · Text to Audio",
-    autoLabelZh: "Stable Audio 2.5",
-    autoLabelEn: "Stable Audio 2.5",
+    optionLabelZh: "MiniMax Speech 02 Turbo · 语音合成",
+    optionLabelEn: "MiniMax Speech 02 Turbo · Text to Speech",
+    autoLabelZh: "MiniMax 语音",
+    autoLabelEn: "MiniMax Speech",
   },
   {
-    id: "minimax/video-01",
-    label: "MiniMax Video-01 via Replicate",
+    id: "ji4chenli/t2v-turbo",
+    label: "T2V Turbo via Replicate",
     provider: "replicate",
     mode: "video-generation",
     tabs: ["video"],
     region: "international",
-    optionLabelZh: "MiniMax Video-01 · 文生视频",
-    optionLabelEn: "MiniMax Video-01 · Text to Video",
-    autoLabelZh: "MiniMax",
-    autoLabelEn: "MiniMax",
+    optionLabelZh: "T2V Turbo · 文生视频",
+    optionLabelEn: "T2V Turbo · Text to Video",
+    autoLabelZh: "T2V Turbo",
+    autoLabelEn: "T2V Turbo",
+  },
+  {
+    id: "lucataco/qwen1.5-1.8b-chat",
+    label: "Qwen 1.5 1.8B Chat via Replicate",
+    provider: "replicate",
+    mode: "file-editing",
+    tabs: ["edit_text"],
+    region: "international",
+    optionLabelZh: "Qwen 1.5 1.8B Chat · 文档编辑",
+    optionLabelEn: "Qwen 1.5 1.8B Chat · Document Editing",
+    autoLabelZh: "Qwen 文档编辑",
+    autoLabelEn: "Qwen Docs Edit",
+  },
+  {
+    id: "espressotechie/qwen-imgedit-4bit",
+    label: "Qwen ImgEdit 4bit via Replicate",
+    provider: "replicate",
+    mode: "image-editing",
+    tabs: ["edit_image"],
+    region: "international",
+    optionLabelZh: "Qwen ImgEdit 4bit · 图片编辑",
+    optionLabelEn: "Qwen ImgEdit 4bit · Image Editing",
+    autoLabelZh: "Qwen 图片编辑",
+    autoLabelEn: "Qwen Image Edit",
+  },
+  {
+    id: "lightricks/ltx-video-0.9.7-distilled",
+    label: "LTX Video 0.9.7 Distilled via Replicate",
+    provider: "replicate",
+    mode: "video-editing",
+    tabs: ["edit_video"],
+    region: "international",
+    optionLabelZh: "LTX Video 0.9.7 Distilled · 视频编辑",
+    optionLabelEn: "LTX Video 0.9.7 Distilled · Video Editing",
+    autoLabelZh: "LTX 视频编辑",
+    autoLabelEn: "LTX Video Edit",
+  },
+  {
+    id: "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo",
+    label: "Whisper + MiniMax Speech 02 Turbo via Replicate",
+    provider: "replicate",
+    mode: "audio-editing",
+    tabs: ["edit_audio"],
+    region: "international",
+    optionLabelZh: "Whisper + MiniMax Speech 02 Turbo · 音频编辑",
+    optionLabelEn: "Whisper + MiniMax Speech 02 Turbo · Audio Editing",
+    autoLabelZh: "Whisper 音频重配",
+    autoLabelEn: "Whisper Audio Redub",
   },
   {
     id: "ui-demo",
     label: "Coming Soon",
     provider: "demo",
     mode: "demo",
-    tabs: [
-      "edit_text",
-      "edit_image",
-      "edit_audio",
-      "edit_video",
-      "detect_text",
-      "detect_image",
-      "detect_audio",
-      "detect_video",
-    ],
+    tabs: ["detect_text", "detect_image", "detect_audio", "detect_video"],
     region: "demo",
     optionLabelZh: "开发中",
     optionLabelEn: "Coming Soon",
@@ -160,17 +259,23 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
 ] as const;
 
 const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
-  text: DEFAULT_LANGUAGE === "zh" ? "qwen3.5-flash" : "mistral-small-latest",
-  image: DEFAULT_LANGUAGE === "zh" ? "wan2.6-t2i" : "google/imagen-4",
-  video: DEFAULT_LANGUAGE === "zh" ? "wan2.6-i2v-flash" : "minimax/video-01",
+  text: DEFAULT_LANGUAGE === "zh" ? "qwen-flash" : "lucataco/qwen1.5-1.8b",
+  image: DEFAULT_LANGUAGE === "zh" ? "wanx2.0-t2i-turbo" : "nvidia/sana-sprint-1.6b",
+  video: DEFAULT_LANGUAGE === "zh" ? "wan2.2-t2v-plus" : "ji4chenli/t2v-turbo",
   audio:
     DEFAULT_LANGUAGE === "zh"
-      ? "qwen3-tts-instruct-flash"
-      : "stability-ai/stable-audio-2.5",
-  edit_text: "ui-demo",
-  edit_image: "ui-demo",
-  edit_audio: "ui-demo",
-  edit_video: "ui-demo",
+      ? "qwen3-tts-flash"
+      : "minimax/speech-02-turbo",
+  edit_text:
+    DEFAULT_LANGUAGE === "zh" ? "qwen-flash-edit" : "lucataco/qwen1.5-1.8b-chat",
+  edit_image:
+    DEFAULT_LANGUAGE === "zh" ? "wanx2.1-imageedit" : "espressotechie/qwen-imgedit-4bit",
+  edit_audio:
+    DEFAULT_LANGUAGE === "zh"
+      ? "paraformer-v2-qwen3-tts-flash"
+      : "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo",
+  edit_video:
+    DEFAULT_LANGUAGE === "zh" ? "wan2.2-i2v-flash" : "lightricks/ltx-video-0.9.7-distilled",
   detect_text: "ui-demo",
   detect_image: "ui-demo",
   detect_audio: "ui-demo",
@@ -261,7 +366,16 @@ export function isGenerationTab(value: string): value is GenerationTab {
 export function isConnectedGenerationTab(
   value: string,
 ): value is ConnectedGenerationTab {
-  return value === "text" || value === "image" || value === "video" || value === "audio";
+  return (
+    value === "text" ||
+    value === "image" ||
+    value === "video" ||
+    value === "audio" ||
+    value === "edit_text" ||
+    value === "edit_image" ||
+    value === "edit_audio" ||
+    value === "edit_video"
+  );
 }
 
 export function getDefaultModelIdForTab(tab: GenerationTab) {
@@ -314,6 +428,10 @@ export function getGenerationModelConfig(
   requestedModel: unknown,
 ): GenerationModelConfig {
   const models = getGenerationModelsForTab(tab, { includeDisabled: true });
+  if (models.length === 0) {
+    throw new Error("当前类型暂无可用模型。");
+  }
+
   if (typeof requestedModel === "string") {
     const matched = models.find((model) => model.id === requestedModel);
     if (matched) {

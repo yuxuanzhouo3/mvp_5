@@ -37,7 +37,7 @@ import {
 
 const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
 
-type TabKey = "users" | "revenue" | "devices" | "plans";
+type TabKey = "users" | "revenue" | "devices" | "plans" | "analytics";
 
 function toNumericValue(value: unknown) {
   if (Array.isArray(value)) {
@@ -116,12 +116,35 @@ export default function StatsPage() {
     return Object.entries(stats.subscriptions.byPlan).map(([name, value]) => ({ name, value }));
   }, [stats]);
 
+  const pendingPlanData = useMemo(() => {
+    if (!stats?.subscriptions.pendingByPlan) return [];
+    return Object.entries(stats.subscriptions.pendingByPlan).map(([name, value]) => ({
+      name,
+      value,
+    }));
+  }, [stats]);
+
+  const analyticsEventData = useMemo(() => {
+    if (!stats?.analytics) return [];
+    const keyEvents = stats.analytics.keyEventsThisMonth;
+    return [
+      { name: "注册事件", value: keyEvents.register },
+      { name: "会话启动", value: keyEvents.sessionStart },
+      { name: "重置申请", value: keyEvents.passwordResetRequest },
+      { name: "重置成功", value: keyEvents.passwordReset },
+      { name: "生成开始", value: keyEvents.generateStart },
+      { name: "生成成功", value: keyEvents.generateSuccess },
+      { name: "生成失败", value: keyEvents.generateFailed },
+      { name: "支付成功", value: keyEvents.paymentSuccess },
+    ];
+  }, [stats]);
+
   return (
     <div className="space-y-6 p-4 md:p-6">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">用户数据统计</h1>
-          <p className="mt-1 text-sm text-slate-500">查看用户、付费、设备等统计数据</p>
+          <p className="mt-1 text-sm text-slate-500">查看用户、付费、设备与埋点统计数据</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -276,8 +299,10 @@ export default function StatsPage() {
                   </div>
                   <div className="h-6 w-px bg-slate-200" />
                   <div className="flex flex-col">
-                    <span className="text-slate-500">已付款</span>
-                    <span className="font-semibold text-blue-600">{formatNumber(stats.orders.paid)}</span>
+                    <span className="text-slate-500">待生效</span>
+                    <span className="font-semibold text-blue-600">
+                      {formatNumber(stats.subscriptions.pending)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -300,6 +325,9 @@ export default function StatsPage() {
                   <TabButton active={activeTab === "plans"} onClick={() => setActiveTab("plans")}>
                     订阅分布
                   </TabButton>
+                  <TabButton active={activeTab === "analytics"} onClick={() => setActiveTab("analytics")}>
+                    埋点概览
+                  </TabButton>
                 </div>
               </div>
 
@@ -320,7 +348,7 @@ export default function StatsPage() {
             {activeTab === "users" ? (
               <div className="rounded-lg border border-slate-200 bg-white">
                 <div className="px-4 pb-2 pt-4 sm:px-6 sm:pb-4 sm:pt-6">
-                  <h3 className="text-base font-semibold text-slate-900 sm:text-lg">活跃用户趋势</h3>
+                  <h3 className="text-base font-semibold text-slate-900 sm:text-lg">活跃用户与生成趋势</h3>
                 </div>
                 <div className="px-2 pb-4 sm:px-6 sm:pb-6">
                   <div className="h-[250px] sm:h-[350px]">
@@ -353,7 +381,7 @@ export default function StatsPage() {
                           <Legend />
                           <Line type="monotone" dataKey="activeUsers" name="活跃用户" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
                           <Line type="monotone" dataKey="newUsers" name="新增用户" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                          <Line type="monotone" dataKey="sessions" name="任务数" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                          <Line type="monotone" dataKey="generations" name="生成成功数" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
                         </LineChart>
                       </ResponsiveContainer>
                     ) : (
@@ -415,6 +443,7 @@ export default function StatsPage() {
                 <div className="rounded-lg border border-slate-200 bg-white">
                   <div className="px-4 pb-2 pt-4 sm:px-6 sm:pb-4 sm:pt-6">
                     <h3 className="text-base font-semibold text-slate-900 sm:text-lg">设备类型分布</h3>
+                    <p className="mt-1 text-xs text-slate-500">近 30 天按用户或会话去重后的主体分布</p>
                   </div>
                   <div className="px-2 pb-4 sm:px-6 sm:pb-6">
                     <div className="h-[220px] sm:h-[300px]">
@@ -443,7 +472,7 @@ export default function StatsPage() {
                               }}
                               formatter={(value) => [
                                 toNumericValue(value).toLocaleString(),
-                                "用户数",
+                                "去重主体数",
                               ]}
                             />
                           </PieChart>
@@ -458,6 +487,7 @@ export default function StatsPage() {
                 <div className="rounded-lg border border-slate-200 bg-white">
                   <div className="px-4 pb-2 pt-4 sm:px-6 sm:pb-4 sm:pt-6">
                     <h3 className="text-base font-semibold text-slate-900 sm:text-lg">操作系统分布</h3>
+                    <p className="mt-1 text-xs text-slate-500">近 30 天按用户或会话去重后的主体分布</p>
                   </div>
                   <div className="px-2 pb-4 sm:px-6 sm:pb-6">
                     <div className="h-[220px] sm:h-[300px]">
@@ -486,7 +516,7 @@ export default function StatsPage() {
                               }}
                               formatter={(value) => [
                                 toNumericValue(value).toLocaleString(),
-                                "用户数",
+                                "去重主体数",
                               ]}
                             />
                           </PieChart>
@@ -548,6 +578,12 @@ export default function StatsPage() {
                         <span className="text-sm font-medium text-slate-700">总订阅数</span>
                         <span className="text-2xl font-bold text-slate-900">{stats.subscriptions.total}</span>
                       </div>
+                      <div className="flex items-center justify-between rounded-lg bg-slate-100 p-4">
+                        <span className="text-sm font-medium text-slate-700">待生效变更</span>
+                        <span className="text-2xl font-bold text-slate-900">
+                          {stats.subscriptions.pending}
+                        </span>
+                      </div>
                       <div className="space-y-2">
                         {planData.map((plan, index) => (
                           <div key={plan.name} className="flex items-center justify-between rounded p-2">
@@ -562,8 +598,125 @@ export default function StatsPage() {
                           </div>
                         ))}
                       </div>
+                      {pendingPlanData.length > 0 ? (
+                        <div className="rounded-lg border border-slate-200 p-3">
+                          <div className="mb-2 text-sm font-medium text-slate-700">待生效计划</div>
+                          <div className="space-y-2">
+                            {pendingPlanData.map((plan, index) => (
+                              <div key={`pending-${plan.name}`} className="flex items-center justify-between rounded p-2">
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    className="h-3 w-3 rounded-full"
+                                    style={{ backgroundColor: COLORS[(index + planData.length) % COLORS.length] }}
+                                  />
+                                  <span className="text-sm text-slate-700">{plan.name}</span>
+                                </div>
+                                <span className="font-medium text-slate-900">{plan.value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
+                </div>
+              </div>
+            ) : null}
+
+            {activeTab === "analytics" ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 bg-white p-4 sm:p-5">
+                    <div className="text-sm font-medium text-slate-500">埋点会话</div>
+                    <div className="mt-3 flex items-end justify-between gap-3">
+                      <div>
+                        <div className="text-2xl font-bold text-slate-900">
+                          {formatNumber(stats.analytics.sessionsThisMonth)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">近 30 天</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-semibold text-slate-900">
+                          {formatNumber(stats.analytics.sessionsToday)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">今日</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-white p-4 sm:p-5">
+                    <div className="text-sm font-medium text-slate-500">埋点事件</div>
+                    <div className="mt-3 flex items-end justify-between gap-3">
+                      <div>
+                        <div className="text-2xl font-bold text-slate-900">
+                          {formatNumber(stats.analytics.eventsThisMonth)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">近 30 天</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-semibold text-slate-900">
+                          {formatNumber(stats.analytics.eventsToday)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">今日</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-white">
+                  <div className="px-4 pb-2 pt-4 sm:px-6 sm:pb-4 sm:pt-6">
+                    <h3 className="text-base font-semibold text-slate-900 sm:text-lg">近 30 天关键埋点事件分布</h3>
+                    <p className="mt-1 text-xs text-slate-500">按原始事件类型聚合，不对业务结果做二次推断</p>
+                  </div>
+                  <div className="px-2 pb-4 sm:px-6 sm:pb-6">
+                    <div className="h-[250px] sm:h-[320px]">
+                      {analyticsEventData.some((item) => item.value > 0) ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={analyticsEventData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                            <XAxis dataKey="name" className="text-xs" interval={0} angle={-20} textAnchor="end" height={60} />
+                            <YAxis className="text-xs" allowDecimals={false} />
+                            <Tooltip
+                              contentStyle={{
+                                backgroundColor: "#ffffff",
+                                border: "1px solid #e2e8f0",
+                                borderRadius: "8px",
+                              }}
+                              formatter={(value) => [
+                                toNumericValue(value).toLocaleString(),
+                                "事件数",
+                              ]}
+                            />
+                            <Bar dataKey="value" name="事件数" radius={[4, 4, 0, 0]}>
+                              {analyticsEventData.map((item, index) => (
+                                <Cell key={item.name} fill={COLORS[index % COLORS.length]} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-slate-500">暂无埋点数据</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                  {analyticsEventData.map((item, index) => (
+                    <div key={item.name} className="rounded-lg border border-slate-200 bg-white p-4">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-3 w-3 rounded-full"
+                          style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                        />
+                        <span className="text-sm text-slate-500">{item.name}</span>
+                      </div>
+                      <div className="mt-3 text-2xl font-bold text-slate-900">
+                        {formatNumber(item.value)}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">近 30 天事件数</div>
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : null}

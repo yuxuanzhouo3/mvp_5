@@ -104,6 +104,7 @@ type AppUserRow = {
   email_normalized?: string | null;
   display_name?: string | null;
   current_plan_code?: string | null;
+  subscription_status?: string | null;
   plan_expires_at?: string | null;
 };
 
@@ -175,8 +176,11 @@ type UserSubscriptionRow = {
 
 type UserQuotaAccountRow = {
   id?: string | null;
+  plan_code?: string | null;
   status?: string | null;
+  cycle_start_date?: string | null;
   cycle_end_date?: string | null;
+  next_reset_at?: string | null;
 };
 
 type UserQuotaBalanceRow = {
@@ -633,6 +637,10 @@ export async function ensureDomesticAppUser(input: {
       "更新用户信息失败",
     );
 
+    await ensureDomesticUserQuotaState({
+      db,
+      userId,
+    });
     return;
   }
 
@@ -652,6 +660,11 @@ export async function ensureDomesticAppUser(input: {
     }),
     "创建用户信息失败",
   );
+
+  await ensureDomesticUserQuotaState({
+    db,
+    userId,
+  });
 }
 
 export async function assertDomesticSubscriptionPurchaseAllowed(input: {
@@ -782,19 +795,50 @@ export async function prepareDomesticSubscriptionCheckout(input: {
     billingPeriod: input.billingPeriod,
   });
 
-  const userRows = await queryRows<AppUserRow>(
-    input.db
-      .from("app_users")
-      .select("id,current_plan_code,plan_expires_at")
-      .eq("id", input.userId)
-      .eq("source", DOMESTIC_SOURCE)
-      .limit(1),
-    "读取用户升级价格上下文失败",
-  );
+  const [userRows, subscriptionRows] = await Promise.all([
+    queryRows<AppUserRow>(
+      input.db
+        .from("app_users")
+        .select("id,current_plan_code,plan_expires_at")
+        .eq("id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(1),
+      "读取用户升级价格上下文失败",
+    ),
+    queryRows<UserSubscriptionRow>(
+      input.db
+        .from("user_subscriptions")
+        .select("id,plan_code,billing_period,status,current_period_end")
+        .eq("user_id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(20),
+      "读取用户当前订阅周期失败",
+    ),
+  ]);
 
   const userRow = userRows[0];
+  const activeSubscriptionRow = [...subscriptionRows]
+    .filter((row) => {
+      const status = normalizeSubscriptionStatus(row.status);
+      const periodEndMs = row.current_period_end
+        ? new Date(row.current_period_end).getTime()
+        : 0;
+      return (
+        status !== "pending" &&
+        status !== "expired" &&
+        status !== "canceled" &&
+        periodEndMs > Date.now()
+      );
+    })
+    .sort((left, right) =>
+      compareByDateDesc(left.current_period_end, right.current_period_end),
+    )[0];
   const currentPlanCode = resolveDomesticPlanCode(userRow?.current_plan_code);
-  const currentPlanExpiresAt = normalizeText(userRow?.plan_expires_at, "");
+  const currentBillingPeriod =
+    resolveDomesticBillingPeriod(activeSubscriptionRow?.billing_period) || "monthly";
+  const currentPlanExpiresAt =
+    normalizeText(activeSubscriptionRow?.current_period_end, "") ||
+    normalizeText(userRow?.plan_expires_at, "");
   const currentPlanExpiresMs = currentPlanExpiresAt
     ? new Date(currentPlanExpiresAt).getTime()
     : 0;
@@ -819,22 +863,13 @@ export async function prepareDomesticSubscriptionCheckout(input: {
     } satisfies DomesticSubscriptionCheckoutQuote;
   }
 
-  const [currentPlanMonthly, targetPlanMonthly] = await Promise.all([
-    readDomesticPlanPricing({
-      db: input.db,
-      planCode: currentPlanCode,
-      billingPeriod: "monthly",
-    }),
-    input.billingPeriod === "monthly"
-      ? Promise.resolve(pricingPlan)
-      : readDomesticPlanPricing({
-          db: input.db,
-          planCode: input.planCode,
-          billingPeriod: "monthly",
-        }),
-  ]);
+  const currentPlanPricing = await readDomesticPlanPricing({
+    db: input.db,
+    planCode: currentPlanCode,
+    billingPeriod: currentBillingPeriod,
+  });
 
-  if (pricingPlan.planLevel <= currentPlanMonthly.planLevel) {
+  if (pricingPlan.planLevel <= currentPlanPricing.planLevel) {
     return {
       pricingPlan,
       checkoutPlan: pricingPlan,
@@ -843,14 +878,15 @@ export async function prepareDomesticSubscriptionCheckout(input: {
     } satisfies DomesticSubscriptionCheckoutQuote;
   }
 
-  const targetDays = getDomesticDurationDays(input.billingPeriod);
-  const currentDailyPrice = currentPlanMonthly.amount / 30;
-  const targetDailyPrice = Math.max(0.01, targetPlanMonthly.amount / 30);
+  const currentDurationDays = getDomesticDurationDays(currentBillingPeriod);
+  const targetDurationDays = getDomesticDurationDays(input.billingPeriod);
+  const currentDailyPrice = currentPlanPricing.amount / currentDurationDays;
+  const targetDailyPrice = Math.max(0.01, pricingPlan.amount / targetDurationDays);
   const remainingValue = Number((remainingDays * currentDailyPrice).toFixed(2));
   const freeUpgrade = remainingValue >= pricingPlan.amount;
   const subscriptionDurationDays = freeUpgrade
     ? Math.max(1, Math.floor(remainingValue / targetDailyPrice))
-    : targetDays;
+    : targetDurationDays;
   const chargedAmount = freeUpgrade
     ? 0.01
     : Math.max(0.01, Number((pricingPlan.amount - remainingValue).toFixed(2)));
@@ -867,13 +903,17 @@ export async function prepareDomesticSubscriptionCheckout(input: {
       upgrade_charge_context: {
         mode: "remaining_value",
         current_plan_code: currentPlanCode,
+        current_billing_period: currentBillingPeriod,
         current_plan_expires_at: currentPlanExpiresAt || null,
+        current_duration_days: currentDurationDays,
+        current_price_amount: currentPlanPricing.amount,
+        current_daily_price: Number(currentDailyPrice.toFixed(4)),
         remaining_days: remainingDays,
         remaining_value: remainingValue,
         target_billing_period: input.billingPeriod,
+        target_duration_days: targetDurationDays,
         target_price_amount: pricingPlan.amount,
-        current_monthly_amount: currentPlanMonthly.amount,
-        target_monthly_amount: targetPlanMonthly.amount,
+        target_daily_price: Number(targetDailyPrice.toFixed(4)),
         charged_amount: Number(chargedAmount.toFixed(2)),
         free_upgrade: freeUpgrade,
       },
@@ -1625,6 +1665,7 @@ async function upsertSubscription(input: {
   }
 
   if (effectiveStatus === "pending") {
+    const pendingSubscriptionId = normalizeText(latestPendingRow?.id, "") || createTextId("sub");
     const pendingPayload = {
       plan_code: input.planCode,
       billing_period: input.billingPeriod,
@@ -1649,13 +1690,13 @@ async function upsertSubscription(input: {
         input.db
           .from("user_subscriptions")
           .update(pendingPayload)
-          .eq("id", latestPendingRow.id),
+          .eq("id", pendingSubscriptionId),
         "更新待生效订阅失败",
       );
     } else {
       await executeQuery(
         input.db.from("user_subscriptions").insert({
-          id: createTextId("sub"),
+          id: pendingSubscriptionId,
           user_id: input.userId,
           source: DOMESTIC_SOURCE,
           start_at: input.nowIso,
@@ -1663,6 +1704,25 @@ async function upsertSubscription(input: {
           ...pendingPayload,
         }),
         "创建待生效订阅失败",
+      );
+    }
+
+    const stalePendingIds = rows
+      .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
+      .map((row) => normalizeText(row.id, ""))
+      .filter((id) => Boolean(id) && id !== pendingSubscriptionId);
+
+    for (const pendingId of stalePendingIds) {
+      await executeQuery(
+        input.db
+          .from("user_subscriptions")
+          .update({
+            status: "canceled",
+            canceled_at: input.nowIso,
+            updated_at: input.nowIso,
+          })
+          .eq("id", pendingId),
+        "清理重复待生效订阅失败",
       );
     }
   } else if (latestActiveRow?.id) {
@@ -1716,6 +1776,27 @@ async function upsertSubscription(input: {
     );
   }
 
+  if (effectiveStatus === "active") {
+    const stalePendingIds = rows
+      .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
+      .map((row) => normalizeText(row.id, ""))
+      .filter((id) => Boolean(id));
+
+    for (const pendingId of stalePendingIds) {
+      await executeQuery(
+        input.db
+          .from("user_subscriptions")
+          .update({
+            status: "canceled",
+            canceled_at: input.nowIso,
+            updated_at: input.nowIso,
+          })
+          .eq("id", pendingId),
+        "清理历史待生效订阅失败",
+      );
+    }
+  }
+
   await executeQuery(
     input.db.from("subscription_change_logs").insert({
       id: createTextId("sub_log"),
@@ -1750,7 +1831,7 @@ async function upsertSubscription(input: {
 async function syncQuotaAccount(input: {
   db: RoutedAdminDbClient;
   userId: string;
-  plan: DomesticPlanPricing;
+  plan: QuotaSeedDefinition;
   now: Date;
 }) {
   const nowIso = toDomesticDateTime(input.now);
@@ -2151,6 +2232,154 @@ async function ensureAddonQuotaBalances(input: {
       .limit(20),
     "读取补齐后的加油包额度余额失败",
   );
+}
+
+export async function ensureDomesticUserQuotaState(input: {
+  db: RoutedAdminDbClient;
+  userId: string;
+  now?: Date;
+}) {
+  const now = input.now || new Date();
+  const nowIso = toDomesticDateTime(now);
+  const nowMs = now.getTime();
+
+  await applyDueDomesticPendingSubscriptions({
+    db: input.db,
+    userId: input.userId,
+    now,
+    limit: 5,
+  });
+
+  const [userRows, subscriptionRows, quotaAccountRows] = await Promise.all([
+    queryRows<AppUserRow>(
+      input.db
+        .from("app_users")
+        .select("id,current_plan_code,subscription_status,plan_expires_at")
+        .eq("id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(1),
+      "读取用户套餐状态失败",
+    ),
+    queryRows<UserSubscriptionRow>(
+      input.db
+        .from("user_subscriptions")
+        .select("id,plan_code,status,current_period_end")
+        .eq("user_id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(20),
+      "读取用户订阅记录失败",
+    ),
+    queryRows<UserQuotaAccountRow>(
+      input.db
+        .from("user_quota_accounts")
+        .select("id,plan_code,status,cycle_start_date,cycle_end_date,next_reset_at")
+        .eq("user_id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(20),
+      "读取用户额度账户失败",
+    ),
+  ]);
+
+  const userRow = userRows[0];
+  const rawPlanCode = normalizeText(userRow?.current_plan_code, "free").toLowerCase();
+  const subscriptionStatus = normalizeText(userRow?.subscription_status, "inactive").toLowerCase();
+  const planExpiresAt = normalizeText(userRow?.plan_expires_at, "");
+  const planExpiresMs = planExpiresAt ? new Date(planExpiresAt).getTime() : 0;
+  const hasActivePaidPlan =
+    (rawPlanCode === "pro" || rawPlanCode === "enterprise") && planExpiresMs > nowMs;
+  const effectivePlanCode = hasActivePaidPlan ? rawPlanCode : "free";
+  const shouldUpdateUserPlanState =
+    (hasActivePaidPlan && !["active", "trialing"].includes(subscriptionStatus)) ||
+    (!hasActivePaidPlan &&
+      (rawPlanCode !== "free" ||
+        subscriptionStatus !== "inactive" ||
+        Boolean(planExpiresAt)));
+
+  if (shouldUpdateUserPlanState) {
+    await executeQuery(
+      input.db
+        .from("app_users")
+        .update({
+          current_plan_code: effectivePlanCode,
+          subscription_status: hasActivePaidPlan ? "active" : "inactive",
+          plan_expires_at: hasActivePaidPlan ? planExpiresAt : null,
+          updated_at: nowIso,
+        })
+        .eq("id", input.userId)
+        .eq("source", DOMESTIC_SOURCE),
+      "同步用户套餐状态失败",
+    );
+  }
+
+  for (const subscriptionRow of subscriptionRows) {
+    const subscriptionId = normalizeText(subscriptionRow.id, "");
+    const subscriptionStatusValue = normalizeSubscriptionStatus(subscriptionRow.status);
+    const periodEndIso = normalizeText(subscriptionRow.current_period_end, "");
+    const periodEndMs = periodEndIso ? new Date(periodEndIso).getTime() : 0;
+
+    if (
+      !subscriptionId ||
+      subscriptionStatusValue === "pending" ||
+      subscriptionStatusValue === "expired" ||
+      subscriptionStatusValue === "canceled" ||
+      !Number.isFinite(periodEndMs) ||
+      periodEndMs > nowMs
+    ) {
+      continue;
+    }
+
+    await executeQuery(
+      input.db
+        .from("user_subscriptions")
+        .update({
+          status: "expired",
+          updated_at: nowIso,
+        })
+        .eq("id", subscriptionId),
+      "同步已过期订阅状态失败",
+    );
+  }
+
+  const activeQuotaAccounts = [...quotaAccountRows]
+    .filter((item) => normalizeText(item.status, "") === "active")
+    .sort((left, right) => compareByDateDesc(left.cycle_end_date, right.cycle_end_date));
+  const activeQuotaAccount = activeQuotaAccounts[0];
+  const activeQuotaPlanCode = normalizeText(activeQuotaAccount?.plan_code, "free").toLowerCase();
+  const nextResetAtMs = activeQuotaAccount?.next_reset_at
+    ? new Date(activeQuotaAccount.next_reset_at).getTime()
+    : 0;
+  const cycleEndMs = activeQuotaAccount?.cycle_end_date
+    ? new Date(activeQuotaAccount.cycle_end_date).getTime()
+    : 0;
+  const shouldResetQuotaAccount =
+    !activeQuotaAccount?.id ||
+    activeQuotaAccounts.length !== 1 ||
+    activeQuotaPlanCode !== effectivePlanCode ||
+    (Number.isFinite(nextResetAtMs) && nextResetAtMs > 0
+      ? nextResetAtMs <= nowMs
+      : Number.isFinite(cycleEndMs) && cycleEndMs > 0
+        ? cycleEndMs <= nowMs
+        : false);
+
+  if (shouldResetQuotaAccount) {
+    const seedPlan = await readQuotaSeedDefinitionByCode({
+      db: input.db,
+      planCode: effectivePlanCode,
+    });
+
+    await syncQuotaAccount({
+      db: input.db,
+      userId: input.userId,
+      plan: seedPlan,
+      now,
+    });
+  }
+
+  await ensureAddonQuotaBalances({
+    db: input.db,
+    userId: input.userId,
+    now,
+  });
 }
 
 export async function settleDomesticSubscriptionPayment(input: {

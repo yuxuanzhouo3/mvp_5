@@ -44,6 +44,64 @@ function mapSupabaseSignUpErrorMessage(rawMessage: string, isZh: boolean) {
   return rawMessage;
 }
 
+function mapAuthQueryErrorMessage(
+  errorCode: string | null,
+  errorDescription: string | null,
+  isZh: boolean,
+) {
+  const code = (errorCode || "").trim().toLowerCase();
+  const description = (errorDescription || "").trim();
+
+  const messages: Record<string, { zh: string; en: string }> = {
+    unsupported_auth_version: {
+      zh: "当前版本不支持该登录方式。",
+      en: "This authentication method is not available in the current edition.",
+    },
+    configuration_error: {
+      zh: "认证配置缺失，请联系管理员检查环境变量。",
+      en: "Authentication configuration is missing.",
+    },
+    config_error: {
+      zh: "认证配置缺失，请联系管理员检查环境变量。",
+      en: "Authentication configuration is missing.",
+    },
+    oauth_start_failed: {
+      zh: "Google 登录启动失败，请稍后重试。",
+      en: "Failed to start Google sign-in.",
+    },
+    exchange_failed: {
+      zh: "登录回调已失效，请重新发起登录。",
+      en: "The sign-in callback is no longer valid. Please try again.",
+    },
+    code_exchange_failed: {
+      zh: "验证链接已失效，请重新发起操作。",
+      en: "The verification link has expired. Please try again.",
+    },
+    verification_failed: {
+      zh: "邮箱验证失败，请重新获取验证邮件。",
+      en: "Email verification failed. Please request a new verification email.",
+    },
+    invalid_link: {
+      zh: "当前链接无效或已过期。",
+      en: "This link is invalid or has expired.",
+    },
+    callback_failed: {
+      zh: "认证回调处理失败，请稍后重试。",
+      en: "Authentication callback handling failed.",
+    },
+    no_session: {
+      zh: "未建立有效登录会话，请重新登录。",
+      en: "No valid sign-in session was established.",
+    },
+  };
+
+  if (code && messages[code]) {
+    return isZh ? messages[code].zh : messages[code].en;
+  }
+
+  return description || null;
+}
+
 function UserIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -229,6 +287,20 @@ export function AuthPage({ mode }: AuthPageProps) {
     return () => window.clearTimeout(timer);
   }, [countdown]);
 
+  useEffect(() => {
+    const queryError = mapAuthQueryErrorMessage(
+      searchParams.get("error"),
+      searchParams.get("error_description"),
+      isZh,
+    );
+    if (!queryError) {
+      return;
+    }
+
+    setSuccess(null);
+    setError(queryError);
+  }, [isZh, searchParams]);
+
   const title = useMemo(() => {
     if (mode === "login") return isZh ? "欢迎回来" : "Welcome Back";
     if (mode === "signup") return isZh ? "创建账号" : "Create Account";
@@ -297,6 +369,22 @@ export function AuthPage({ mode }: AuthPageProps) {
     },
     [isDomesticVersion, pushEmailDeliveryLog, supabase, next],
   );
+
+  const syncGlobalProfileAfterLogin = useCallback(async () => {
+    if (isDomesticVersion) {
+      return;
+    }
+
+    try {
+      await fetch("/api/user/profile", {
+        method: "GET",
+        cache: "no-store",
+        credentials: "include",
+      });
+    } catch (error) {
+      console.warn("[AuthPage] syncGlobalProfileAfterLogin failed:", error);
+    }
+  }, [isDomesticVersion]);
 
   const handleSendCode = async () => {
     setError(null);
@@ -506,7 +594,9 @@ export function AuthPage({ mode }: AuthPageProps) {
             ? "密码重置成功，正在跳转登录"
             : "Password reset successful, redirecting to login",
         );
-        window.setTimeout(() => router.push("/auth/login"), 1200);
+        window.setTimeout(() => {
+          router.push(`/auth/login?next=${encodeURIComponent(next)}`);
+        }, 1200);
         return;
       }
 
@@ -578,6 +668,7 @@ export function AuthPage({ mode }: AuthPageProps) {
           return;
         }
 
+        await syncGlobalProfileAfterLogin();
         void trackAnalyticsClient({
           source: "global",
           userId: data.user?.id || null,
@@ -681,6 +772,7 @@ export function AuthPage({ mode }: AuthPageProps) {
       }
 
       const resetRedirectUrl = new URL("/auth/update-password", window.location.origin);
+      resetRedirectUrl.searchParams.set("next", next);
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(
         form.email.trim(),
         {
@@ -716,7 +808,9 @@ export function AuthPage({ mode }: AuthPageProps) {
           ? "重置链接已发送，请查收邮箱。"
           : "Password reset link sent. Please check your email.",
       );
-      window.setTimeout(() => router.push("/auth/login"), 1200);
+      window.setTimeout(() => {
+        router.push(`/auth/login?next=${encodeURIComponent(next)}`);
+      }, 1200);
     } catch (submitError) {
       setError(extractDomesticAuthErrorMessage(submitError, isZh ? "操作失败" : "Operation failed"));
     } finally {

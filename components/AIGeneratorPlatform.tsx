@@ -13,7 +13,6 @@ import AuthSystem from "./AuthSystem";
 import PaymentSystem, {
   type BillingPeriod,
   type PaymentMethod,
-  type PlanKey,
   type PurchaseSelection,
 } from "./PaymentSystem";
 import { Badge } from "./ui/badge";
@@ -139,6 +138,12 @@ type GuestQuotaState = {
   remaining: number;
 };
 
+type GenerationsApiPayload = {
+  success?: boolean;
+  generations?: GenerationItem[] | null;
+  error?: string | null;
+};
+
 function toSafeNonNegativeNumber(value: unknown, fallback: number) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
@@ -174,6 +179,38 @@ function parseGuestQuotaPayload(payload: unknown): GuestQuotaState | null {
     used,
     remaining,
   };
+}
+
+function mergeGenerationHistory(
+  incoming: GenerationItem[],
+  existing: GenerationItem[],
+) {
+  const merged: GenerationItem[] = [];
+  const seenIds = new Set<string>();
+
+  for (const item of incoming) {
+    const id = String(item.id || "").trim();
+    if (!id || seenIds.has(id)) {
+      continue;
+    }
+    seenIds.add(id);
+    merged.push(item);
+  }
+
+  for (const item of existing) {
+    const id = String(item.id || "").trim();
+    if (!id || seenIds.has(id)) {
+      continue;
+    }
+    seenIds.add(id);
+    merged.push(item);
+  }
+
+  return merged.sort((left, right) => {
+    const leftMs = Date.parse(String(left.createdAt || ""));
+    const rightMs = Date.parse(String(right.createdAt || ""));
+    return (Number.isFinite(rightMs) ? rightMs : 0) - (Number.isFinite(leftMs) ? leftMs : 0);
+  });
 }
 
 function normalizeDisplayNameCandidate(value: unknown) {
@@ -286,12 +323,6 @@ function getResultFolderByTab(tab: string): ResultFolder {
 }
 
 function getUnsupportedTabMessage(tab: string, language: "zh" | "en") {
-  if (tab.startsWith("edit_")) {
-    return language === "zh"
-      ? "AI 编辑功能正在开发中，暂不可用。"
-      : "AI Editing is under development and currently unavailable.";
-  }
-
   if (tab.startsWith("detect_")) {
     return language === "zh"
       ? "AI 检测功能正在开发中，暂不可用。"
@@ -301,6 +332,69 @@ function getUnsupportedTabMessage(tab: string, language: "zh" | "en") {
   return language === "zh"
     ? "当前功能暂不可用。"
     : "This feature is currently unavailable.";
+}
+
+async function extractVideoKeyframeFile(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    return await new Promise<File>((resolve, reject) => {
+      const video = document.createElement("video");
+      video.preload = "auto";
+      video.muted = true;
+      video.playsInline = true;
+
+      const cleanup = () => {
+        video.src = "";
+        URL.revokeObjectURL(objectUrl);
+      };
+
+      video.onerror = () => {
+        cleanup();
+        reject(new Error("视频首帧提取失败，请更换文件后重试。"));
+      };
+
+      video.onloadeddata = () => {
+        if (!video.videoWidth || !video.videoHeight) {
+          cleanup();
+          reject(new Error("无法读取视频画面尺寸，请更换文件后重试。"));
+          return;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        const context = canvas.getContext("2d");
+        if (!context) {
+          cleanup();
+          reject(new Error("浏览器不支持视频首帧提取。"));
+          return;
+        }
+
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          cleanup();
+          if (!blob) {
+            reject(new Error("视频首帧导出失败，请稍后重试。"));
+            return;
+          }
+
+          const baseName = file.name.replace(/\.[^.]+$/, "") || "video";
+          resolve(
+            new File([blob], `${baseName}-keyframe.png`, {
+              type: "image/png",
+            }),
+          );
+        }, "image/png");
+      };
+
+      video.src = objectUrl;
+    });
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
 }
 
 const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayName }) => {
@@ -316,10 +410,9 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [model, setModel] = useState("auto");
   const [selectedDocumentFormats, setSelectedDocumentFormats] = useState<DocumentFileFormat[]>(["docx"]);
+  const [selectedOperationFile, setSelectedOperationFile] = useState<File | null>(null);
   const [user, setUser] = useState<DashboardUser | null>(null);
   const [guestQuota, setGuestQuota] = useState<GuestQuotaState | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<PlanKey>("pro");
-  const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>("monthly");
   const [showAuthDialog, setShowAuthDialog] = useState(false);
   const [showSubscriptionDialog, setShowSubscriptionDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -1084,6 +1177,82 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   }, [user]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadPersistedGenerations = async () => {
+      if (!user?.id) {
+        if (!cancelled) {
+          setGenerations([]);
+        }
+        return;
+      }
+
+      try {
+        let response: Response;
+
+        if (isDomesticVersion) {
+          const tokenResult = await getCloudbaseAuth().getAccessToken();
+          const accessToken = tokenResult?.accessToken?.trim() || "";
+          if (!accessToken) {
+            throw new Error(
+              currentLanguage === "zh"
+                ? "登录状态已失效，请重新登录。"
+                : "Session expired. Please sign in again.",
+            );
+          }
+
+          response = await fetch("/api/domestic/user/generations", {
+            method: "GET",
+            headers: {
+              "x-cloudbase-access-token": accessToken,
+            },
+            cache: "no-store",
+          });
+        } else {
+          response = await fetch("/api/user/generations", {
+            method: "GET",
+            cache: "no-store",
+            credentials: "include",
+          });
+        }
+
+        const payload = (await response.json()) as GenerationsApiPayload;
+        if (!response.ok || !payload.success) {
+          throw new Error(
+            (typeof payload.error === "string" && payload.error.trim()) ||
+              (currentLanguage === "zh"
+                ? "加载生成历史失败"
+                : "Failed to load generation history."),
+          );
+        }
+
+        const nextGenerations = Array.isArray(payload.generations)
+          ? payload.generations
+          : [];
+        if (!cancelled) {
+          setGenerations((previous) =>
+            mergeGenerationHistory(nextGenerations, previous),
+          );
+        }
+      } catch (error) {
+        console.warn(
+          "[AIGeneratorPlatform] load persisted generations failed:",
+          error,
+        );
+        if (!cancelled) {
+          setGenerations((previous) => (user?.id ? previous : []));
+        }
+      }
+    };
+
+    void loadPersistedGenerations();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentLanguage, isDomesticVersion, user?.id]);
+
+  useEffect(() => {
     const handleEsc = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setShowAuthDialog(false);
@@ -1198,6 +1367,11 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
       return;
     }
 
+    const isEditRequest = activeTab.startsWith("edit_");
+    if (isEditRequest && !selectedOperationFile) {
+      return;
+    }
+
     const isGuest = !user;
     if (isGuest && activeTab !== "text") {
       return;
@@ -1251,9 +1425,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     setIsGenerating(true);
 
     try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
+      const headers: Record<string, string> = {};
 
       if (user && isDomesticVersion) {
         try {
@@ -1297,16 +1469,37 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         headers.Authorization = `Bearer ${session.access_token}`;
       }
 
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          type: activeTab,
-          prompt: trimmedPrompt,
-          model,
-          formats: activeTab === "text" ? selectedDocumentFormats : undefined,
-        }),
-      });
+      let response: Response;
+      if (isEditRequest) {
+        const formData = new FormData();
+        formData.set("type", activeTab);
+        formData.set("prompt", trimmedPrompt);
+        formData.set("model", model);
+        formData.set("file", selectedOperationFile!);
+
+        if (activeTab === "edit_video" && isDomesticVersion) {
+          const keyframe = await extractVideoKeyframeFile(selectedOperationFile!);
+          formData.set("keyframe", keyframe);
+        }
+
+        response = await fetch("/api/generate", {
+          method: "POST",
+          headers,
+          body: formData,
+        });
+      } else {
+        headers["Content-Type"] = "application/json";
+        response = await fetch("/api/generate", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            type: activeTab,
+            prompt: trimmedPrompt,
+            model,
+            formats: activeTab === "text" ? selectedDocumentFormats : undefined,
+          }),
+        });
+      }
 
       const payload = (await response.json()) as
         | (GenerationItem & { guestQuota?: unknown })
@@ -1347,6 +1540,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
 
         window.dispatchEvent(new CustomEvent("quota:refresh"));
       }
+      setSelectedOperationFile(null);
       setPrompt("");
     } catch (error) {
       const modelId =
@@ -1760,8 +1954,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         icon: "🖼️",
         placeholder:
           currentLanguage === "zh"
-            ? "上传图片后输入编辑要求，例如：去背景、替换人物服饰、增强清晰度"
-            : "Upload an image and describe edits, for example: remove background, replace outfit, improve clarity",
+            ? "上传图片后输入编辑要求，例如：去背景、替换服饰、统一画面风格"
+            : "Upload an image and describe edits, for example: remove the background, change clothing, and unify the visual style",
         category: "edit" as const,
       },
       edit_audio: {
@@ -1769,8 +1963,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         icon: "🎵",
         placeholder:
           currentLanguage === "zh"
-            ? "上传音频后输入编辑要求，例如：降噪、提取人声、调整语速"
-            : "Upload audio and describe edits, for example: denoise, isolate vocals, adjust speaking speed",
+            ? "上传音频后输入编辑要求，例如：提炼口播文案、润色表达、重新配音"
+            : "Upload audio and describe edits, for example: refine the narration, polish the script, and redub it",
         category: "edit" as const,
       },
       edit_video: {
@@ -1778,8 +1972,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         icon: "🎬",
         placeholder:
           currentLanguage === "zh"
-            ? "上传视频后输入编辑要求，例如：替换背景、自动加字幕、修改画面风格"
-            : "Upload a video and describe edits, for example: replace background, add subtitles, restyle visuals",
+            ? "上传视频后输入编辑要求，例如：保持主体不变、替换背景、改成电影感风格"
+            : "Upload a video and describe edits, for example: keep the subject, replace the background, and restyle it cinematically",
         category: "edit" as const,
       },
       detect_text: {
@@ -2129,6 +2323,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
               onSelectAllDocumentFormats={handleSelectAllDocumentFormats}
               onClearAllDocumentFormats={handleClearAllDocumentFormats}
               onGenerate={handleGenerate}
+              selectedFile={selectedOperationFile}
+              onSelectedFileChange={setSelectedOperationFile}
               generationDisabledReason={generationDisabledReason}
               featureUnavailableReason={featureUnavailableReason}
               isGuest={!user}
@@ -2196,10 +2392,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
             <PaymentSystem
               currentLanguage={currentLanguage}
               isDomesticVersion={isDomesticVersion}
-              selectedPlan={selectedPlan}
-              setSelectedPlan={setSelectedPlan}
-              billingPeriod={billingPeriod}
-              setBillingPeriod={setBillingPeriod}
+              initialSelectedPlan="pro"
+              initialBillingPeriod="monthly"
               onSubscribe={handleSubscribe}
               isLoggedIn={Boolean(user)}
             />

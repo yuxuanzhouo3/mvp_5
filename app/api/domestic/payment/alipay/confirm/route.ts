@@ -50,6 +50,28 @@ function isAddonOrder(orderType: unknown) {
   return typeof orderType === "string" && orderType.trim().toLowerCase() === "addon";
 }
 
+function buildConfirmResponse(
+  orderType: unknown,
+  settled: Awaited<
+    ReturnType<typeof settleDomesticSubscriptionPayment | typeof settleDomesticAddonPayment>
+  >,
+) {
+  return {
+    success: true,
+    status: "COMPLETED",
+    already_paid: settled.alreadyPaid,
+    productType: isAddonOrder(orderType) ? "ADDON" : "SUBSCRIPTION",
+    plan_code: "planCode" in settled ? settled.planCode : null,
+    plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
+    subscription_status:
+      "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
+    effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
+    addon_code: "addonCode" in settled ? settled.addonCode : null,
+    granted_at: "grantedAt" in settled ? settled.grantedAt : null,
+    paid_at: "paidAt" in settled ? settled.paidAt : null,
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as { outTradeNo?: unknown };
@@ -84,6 +106,26 @@ export async function POST(request: NextRequest) {
         { success: false, error: "无权访问该订单" },
         { status: 403 },
       );
+    }
+
+    if ((order.payment_status || "").trim().toLowerCase() === "paid") {
+      const settled = isAddonOrder(order.order_type)
+        ? await settleDomesticAddonPayment({
+            db,
+            order,
+            provider: "alipay",
+            providerOrderId: outTradeNo,
+            providerTransactionId: order.provider_transaction_id || null,
+          })
+        : await settleDomesticSubscriptionPayment({
+            db,
+            order,
+            provider: "alipay",
+            providerOrderId: outTradeNo,
+            providerTransactionId: order.provider_transaction_id || null,
+          });
+
+      return NextResponse.json(buildConfirmResponse(order.order_type, settled));
     }
 
     const alipayProvider = createAlipayProviderFromEnv();
@@ -149,20 +191,7 @@ export async function POST(request: NextRequest) {
           providerPayload,
         });
 
-    return NextResponse.json({
-      success: true,
-      status: "COMPLETED",
-      already_paid: settled.alreadyPaid,
-      productType: isAddonOrder(order.order_type) ? "ADDON" : "SUBSCRIPTION",
-      plan_code: "planCode" in settled ? settled.planCode : null,
-      plan_expires_at: "planExpiresAt" in settled ? settled.planExpiresAt || null : null,
-      subscription_status:
-        "effectiveStatus" in settled ? settled.effectiveStatus || null : null,
-      effective_at: "effectiveAt" in settled ? settled.effectiveAt || null : null,
-      addon_code: "addonCode" in settled ? settled.addonCode : null,
-      granted_at: "grantedAt" in settled ? settled.grantedAt : null,
-      paid_at: "paidAt" in settled ? settled.paidAt : null,
-    });
+    return NextResponse.json(buildConfirmResponse(order.order_type, settled));
   } catch (error) {
     const httpError = toHttpError(error);
     console.error("[Alipay Confirm] error:", error);

@@ -9,6 +9,7 @@ import {
   extractRequestAnalyticsMeta,
   trackAnalyticsSessionEvent,
 } from "@/lib/analytics/tracker";
+import { syncGlobalAuthUser } from "@/lib/server/supabase-auth-user-sync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,6 +57,11 @@ async function trackConfirmedUser(
     if (error || !user?.id) {
       return;
     }
+
+    await syncGlobalAuthUser(user, {
+      markVerified: true,
+      touchLastLoginAt: true,
+    });
 
     await trackAnalyticsSessionEvent({
       source: "global",

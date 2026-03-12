@@ -57,6 +57,19 @@ function formatUtcDateTimeForSql(date: Date) {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 }
 
+function isIsoDateTimeString(value: string) {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)) {
+    return false;
+  }
+
+  return Number.isFinite(Date.parse(normalized));
+}
+
 function normalizeCloudbaseValue(value: unknown): unknown {
   if (value === undefined) {
     return null;
@@ -66,6 +79,9 @@ function normalizeCloudbaseValue(value: unknown): unknown {
   }
   if (value instanceof Date) {
     return formatUtcDateTimeForSql(value);
+  }
+  if (typeof value === "string" && isIsoDateTimeString(value)) {
+    return formatUtcDateTimeForSql(new Date(value));
   }
   if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
     return value;

@@ -46,6 +46,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if ((order.payment_status || "").trim().toLowerCase() === "paid") {
+      const amount =
+        Number.isFinite(Number(order.amount)) ? Number(order.amount).toFixed(2) : null;
+
+      return NextResponse.json({
+        success: true,
+        status: "TRADE_SUCCESS",
+        is_paid: true,
+        trade_no: order.provider_transaction_id || null,
+        total_amount: amount,
+        buyer_pay_amount: amount,
+        local_status: "paid",
+      });
+    }
+
     const alipayProvider = createAlipayProviderFromEnv();
     const status = await alipayProvider.queryPayment(outTradeNo);
     const isPaid =

@@ -21,6 +21,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Loader2, RefreshCw } from "lucide-react";
 
+function getSourceCode() {
+  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  return language.startsWith("zh") ? "cn" : "global";
+}
+
 function getSourceLabel() {
   const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
   return language.startsWith("zh") ? "国内版（cn）" : "国际版（global）";
@@ -39,6 +44,7 @@ export default function AdminQuotaPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  const sourceCode = useMemo(() => getSourceCode(), []);
   const sourceLabel = useMemo(() => getSourceLabel(), []);
 
   async function loadConfig() {
@@ -131,11 +137,11 @@ export default function AdminQuotaPage() {
   }
 
   async function handleSavePrice(
-    source: "cn" | "global",
     planCode: "pro" | "enterprise",
     e: FormEvent<HTMLFormElement>,
   ) {
     e.preventDefault();
+    const source = sourceCode;
     const savingKey = `${source}:${planCode}`;
     setSavingPrice(savingKey);
     setError(null);
@@ -159,13 +165,12 @@ export default function AdminQuotaPage() {
   }
 
   function getPriceAmount(
-    source: "cn" | "global",
     planCode: "pro" | "enterprise",
     period: "monthly" | "yearly",
   ) {
     const hit = prices.find(
       (item) =>
-        item.source === source &&
+        item.source === sourceCode &&
         item.plan_code === planCode &&
         item.billing_period === period,
     );
@@ -325,52 +330,48 @@ export default function AdminQuotaPage() {
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           ) : (
-            <div className="grid gap-4 lg:grid-cols-2">
-              {(["cn", "global"] as const).map((source) => (
-                <div key={source} className="rounded-md border border-slate-200 p-3 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium text-sm">
-                      {source === "cn" ? "国内版价格（CNY）" : "国际版价格（USD）"}
-                    </div>
-                    <Badge variant="outline">{source}</Badge>
-                  </div>
-
-                  {(["pro", "enterprise"] as const).map((planCode) => (
-                    <form
-                      key={`${source}:${planCode}`}
-                      onSubmit={(e) => void handleSavePrice(source, planCode, e)}
-                      className="rounded-md border border-slate-100 p-3 space-y-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm font-medium">{getPlanDisplayName(planCode)}</div>
-                        <Badge variant="secondary">{planCode}</Badge>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <PriceInput
-                          label="月付"
-                          name="monthly_amount"
-                          defaultValue={getPriceAmount(source, planCode, "monthly")}
-                        />
-                        <PriceInput
-                          label="年付"
-                          name="yearly_amount"
-                          defaultValue={getPriceAmount(source, planCode, "yearly")}
-                        />
-                      </div>
-                      <Button
-                        type="submit"
-                        variant="outline"
-                        size="sm"
-                        disabled={savingPrice === `${source}:${planCode}`}
-                      >
-                        {savingPrice === `${source}:${planCode}` && (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        )}
-                        保存套餐定价
-                      </Button>
-                    </form>
-                  ))}
+            <div className="rounded-md border border-slate-200 p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium text-sm">
+                  {sourceCode === "cn" ? "国内版价格（CNY）" : "国际版价格（USD）"}
                 </div>
+                <Badge variant="outline">{sourceCode}</Badge>
+              </div>
+
+              {(["pro", "enterprise"] as const).map((planCode) => (
+                <form
+                  key={`${sourceCode}:${planCode}`}
+                  onSubmit={(e) => void handleSavePrice(planCode, e)}
+                  className="rounded-md border border-slate-100 p-3 space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-medium">{getPlanDisplayName(planCode)}</div>
+                    <Badge variant="secondary">{planCode}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <PriceInput
+                      label="月付"
+                      name="monthly_amount"
+                      defaultValue={getPriceAmount(planCode, "monthly")}
+                    />
+                    <PriceInput
+                      label="年付"
+                      name="yearly_amount"
+                      defaultValue={getPriceAmount(planCode, "yearly")}
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    size="sm"
+                    disabled={savingPrice === `${sourceCode}:${planCode}`}
+                  >
+                    {savingPrice === `${sourceCode}:${planCode}` && (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    )}
+                    保存套餐定价
+                  </Button>
+                </form>
               ))}
             </div>
           )}

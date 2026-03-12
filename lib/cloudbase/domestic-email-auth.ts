@@ -591,6 +591,12 @@ export async function signUpWithDomesticEmailCode(params: {
     scene: "signup",
     success: true,
   });
+
+  try {
+    await auth.signOut();
+  } catch (error) {
+    console.warn("[domestic-email-auth] signUp signOut skipped:", error);
+  }
 }
 
 export async function resetDomesticPasswordWithCode(params: {

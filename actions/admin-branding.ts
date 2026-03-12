@@ -48,6 +48,7 @@ export async function updateAdminAppDisplayName(
     .maybeSingle();
 
   if (beforeError) {
+    console.error("[AdminBranding] 读取当前项目名称失败:", beforeError);
     return { success: false, error: "读取当前项目名称失败" };
   }
 
@@ -63,6 +64,7 @@ export async function updateAdminAppDisplayName(
       .eq("setting_key", APP_DISPLAY_NAME_SETTING_KEY);
 
     if (updateError) {
+      console.error("[AdminBranding] 更新项目名称失败:", updateError);
       return { success: false, error: "更新项目名称失败" };
     }
   } else {
@@ -73,6 +75,7 @@ export async function updateAdminAppDisplayName(
     });
 
     if (insertError) {
+      console.error("[AdminBranding] 创建项目名称配置失败:", insertError);
       return { success: false, error: "创建项目名称配置失败" };
     }
   }

@@ -45,6 +45,21 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    if ((order.payment_status || "").trim().toLowerCase() === "paid") {
+      return NextResponse.json({
+        success: true,
+        trade_state: "SUCCESS",
+        transaction_id: order.provider_transaction_id || null,
+        amount:
+          Number.isFinite(Number(order.amount))
+            ? Math.max(1, Math.round(Number(order.amount) * 100))
+            : null,
+        success_time: order.paid_at || null,
+        is_paid: true,
+        local_status: "paid",
+      });
+    }
+
     const wechatProvider = createWechatProviderFromEnv();
     const status = await wechatProvider.queryOrderByOutTradeNo(outTradeNo);
 

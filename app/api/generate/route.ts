@@ -1,5 +1,7 @@
 ﻿import { createMistral } from "@ai-sdk/mistral";
 import { generateObject } from "ai";
+import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { randomUUID } from "node:crypto";
 import {
   getGenerationModelConfig,
@@ -34,9 +36,15 @@ import {
   type GuestQuotaReservation,
   type GuestQuotaSnapshot,
 } from "@/lib/server/guest-quota";
+import { persistGenerationHistory } from "@/lib/server/generation-history";
+import { ensureDomesticAppUser } from "@/lib/payment/domestic-payment";
+import { ensureGlobalAppUser } from "@/lib/payment/global-payment";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
+
+void createMistral;
+void generateObject;
 
 const CLOUDBASE_ACCESS_TOKEN_HEADER = "x-cloudbase-access-token";
 const AUTHORIZATION_HEADER = "authorization";
@@ -67,6 +75,10 @@ const REPLICATE_AUDIO_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
   "REPLICATE_AUDIO_TASK_TIMEOUT_MS",
   180000,
 );
+const REPLICATE_TEXT_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
+  "REPLICATE_TEXT_TASK_TIMEOUT_MS",
+  120000,
+);
 const REPLICATE_CREATE_MAX_RETRIES = 2;
 const REPLICATE_CREATE_BASE_DELAY_MS = 1500;
 const DASHSCOPE_POLL_INTERVAL_MS = 1500;
@@ -78,13 +90,27 @@ const DASHSCOPE_VIDEO_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
   "DASHSCOPE_VIDEO_TASK_TIMEOUT_MS",
   300000,
 );
+const DASHSCOPE_AUDIO_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
+  "DASHSCOPE_AUDIO_TASK_TIMEOUT_MS",
+  180000,
+);
 const DASHSCOPE_CHAT_COMPLETION_TIMEOUT_MS = getPositiveIntFromEnv(
   "DASHSCOPE_CHAT_COMPLETION_TIMEOUT_MS",
   60000,
 );
+const DEFAULT_IMAGE_OUTPUT_COUNT = 1;
 const DOCUMENT_GENERATION_MAX_TOKENS = getPositiveIntFromEnv(
   "DOCUMENT_GENERATION_MAX_TOKENS",
   900,
+);
+const DOCUMENT_EDIT_SOURCE_MAX_CHARS = getPositiveIntFromEnv(
+  "DOCUMENT_EDIT_SOURCE_MAX_CHARS",
+  12000,
+);
+const GENERATED_INPUT_BUCKET = "generated-outputs";
+const GENERATED_INPUT_SIGNED_URL_TTL_SECONDS = getPositiveIntFromEnv(
+  "GENERATED_INPUT_SIGNED_URL_TTL_SECONDS",
+  86400,
 );
 const DASHSCOPE_TTS_VOICE = process.env.DASHSCOPE_TTS_VOICE?.trim() || "longxiaochun";
 const DASHSCOPE_TTS_RESPONSE_FORMAT =
@@ -109,6 +135,56 @@ function extractBearerToken(request: Request) {
   }
 
   return authHeader.slice(bearerPrefix.length).trim();
+}
+
+type GenerateRequestPayload = {
+  prompt: string;
+  type: string;
+  model: unknown;
+  formats: unknown;
+  inputFile: File | null;
+  keyframeFile: File | null;
+};
+
+function normalizeFormFieldValue(value: FormDataEntryValue | null) {
+  return typeof value === "string" ? value : "";
+}
+
+async function parseGenerateRequest(req: Request): Promise<GenerateRequestPayload> {
+  const contentType = req.headers.get("content-type")?.toLowerCase() ?? "";
+
+  if (contentType.includes("multipart/form-data")) {
+    const formData = await req.formData();
+    const inputFile = formData.get("file");
+    const keyframeFile = formData.get("keyframe");
+    const formats = formData.getAll("formats");
+
+    return {
+      prompt: normalizeFormFieldValue(formData.get("prompt")).trim(),
+      type: normalizeFormFieldValue(formData.get("type")).trim(),
+      model: normalizeFormFieldValue(formData.get("model")).trim(),
+      formats: formats.length > 0 ? formats : undefined,
+      inputFile: inputFile instanceof File && inputFile.size > 0 ? inputFile : null,
+      keyframeFile:
+        keyframeFile instanceof File && keyframeFile.size > 0 ? keyframeFile : null,
+    };
+  }
+
+  const body = (await req.json()) as {
+    prompt?: unknown;
+    type?: unknown;
+    model?: unknown;
+    formats?: unknown;
+  };
+
+  return {
+    prompt: typeof body.prompt === "string" ? body.prompt.trim() : "",
+    type: typeof body.type === "string" ? body.type : "",
+    model: body.model,
+    formats: body.formats,
+    inputFile: null,
+    keyframeFile: null,
+  };
 }
 
 function buildGeneratedDocumentJsonSchema(requireSpreadsheet: boolean) {
@@ -292,12 +368,6 @@ type DashScopeChatCompletionPayload = {
   }>;
 };
 
-const mistral = createMistral({
-  apiKey: process.env.MISTRAL_API_KEY,
-  baseURL: process.env.MISTRAL_BASE_URL,
-  fetch: (input, init) => providerFetch("mistral", input, init),
-});
-
 function createRequestTimer(requestId: string) {
   const requestStartedAt = Date.now();
 
@@ -441,6 +511,52 @@ function waitFor(ms: number) {
   });
 }
 
+function extractDashScopeErrorMeta(rawMessage: string) {
+  const normalizedMessage = rawMessage.trim();
+  const jsonStart = normalizedMessage.indexOf("{");
+  if (jsonStart < 0) {
+    return {
+      code: "",
+      type: "",
+      message: "",
+    };
+  }
+
+  const payloadText = normalizedMessage.slice(jsonStart).trim();
+  if (!payloadText.startsWith("{")) {
+    return {
+      code: "",
+      type: "",
+      message: "",
+    };
+  }
+
+  try {
+    const payload = JSON.parse(payloadText) as Record<string, unknown>;
+    const nestedError =
+      payload.error && typeof payload.error === "object"
+        ? (payload.error as Record<string, unknown>)
+        : payload;
+    const code =
+      typeof nestedError.code === "string" ? nestedError.code.trim() : "";
+    const type =
+      typeof nestedError.type === "string" ? nestedError.type.trim() : "";
+    const message =
+      typeof nestedError.message === "string" ? nestedError.message.trim() : "";
+    return {
+      code,
+      type,
+      message,
+    };
+  } catch {
+    return {
+      code: "",
+      type: "",
+      message: "",
+    };
+  }
+}
+
 function getGenerationErrorMessage(error: unknown) {
   const rawMessage =
     error instanceof Error ? error.message : typeof error === "string" ? error : "未知错误";
@@ -449,6 +565,13 @@ function getGenerationErrorMessage(error: unknown) {
   const statusCode = getErrorStatusCode(error);
   const retryAfter = getResponseHeaderValue(error, "retry-after");
   const retryAfterSeconds = retryAfter ? Number(retryAfter) : NaN;
+  const isDashScopeError = rawMessage.includes("阿里云百炼请求失败");
+  const dashScopeError = isDashScopeError
+    ? extractDashScopeErrorMeta(rawMessage)
+    : { code: "", type: "", message: "" };
+  const dashScopeCode = dashScopeError.code.toUpperCase();
+  const dashScopeType = dashScopeError.type.toUpperCase();
+  const dashScopeMessage = dashScopeError.message.toLowerCase();
 
   if (rawMessage.includes("Connect Timeout Error")) {
     return "连接模型接口超时，请检查网络或代理配置。";
@@ -465,20 +588,107 @@ function getGenerationErrorMessage(error: unknown) {
     return "Replicate 当前限流，请稍后重试。";
   }
 
+  if (
+    statusCode === 401 &&
+    isDashScopeError &&
+    (
+      dashScopeCode.includes("INVALID_API_KEY") ||
+      dashScopeType.includes("INVALID_API_KEY") ||
+      dashScopeMessage.includes("api key") ||
+      dashScopeMessage.includes("access key") ||
+      dashScopeMessage.includes("unauthorized")
+    )
+  ) {
+    return "阿里云百炼鉴权失败：请检查 DASHSCOPE_API_KEY 是否有效，以及当前环境变量是否已正确加载。";
+  }
+
+  if (
+    statusCode === 403 &&
+    (
+      dashScopeCode === "ALLOCATIONQUOTA.FREETIERONLY" ||
+      dashScopeType === "ALLOCATIONQUOTA.FREETIERONLY" ||
+      dashScopeMessage.includes("free tier of the model has been exhausted")
+    )
+  ) {
+    return "阿里云百炼当前模型的免费额度已用尽，且账号开启了“仅使用免费额度”。请到阿里云百炼控制台关闭该限制或开通付费后重试。";
+  }
+
+  if (
+    (statusCode === 402 || statusCode === 403) &&
+    isDashScopeError &&
+    (
+      dashScopeCode.includes("BILL") ||
+      dashScopeCode.includes("BALANCE") ||
+      dashScopeCode.includes("ARREAR") ||
+      dashScopeType.includes("BILL") ||
+      dashScopeType.includes("BALANCE") ||
+      dashScopeType.includes("ARREAR") ||
+      dashScopeMessage.includes("insufficient balance") ||
+      dashScopeMessage.includes("account balance") ||
+      dashScopeMessage.includes("arrears") ||
+      dashScopeMessage.includes("overdue")
+    )
+  ) {
+    return "阿里云百炼账户余额不足或账号存在欠费，当前模型调用已被拒绝。请充值或处理欠费后重试。";
+  }
+
+  if (
+    statusCode === 403 &&
+    isDashScopeError &&
+    (
+      dashScopeCode.includes("NOPERMISSION") ||
+      dashScopeCode.includes("FORBIDDEN") ||
+      dashScopeType.includes("NOPERMISSION") ||
+      dashScopeType.includes("FORBIDDEN") ||
+      dashScopeMessage.includes("no permission") ||
+      dashScopeMessage.includes("permission denied") ||
+      dashScopeMessage.includes("access denied") ||
+      dashScopeMessage.includes("not enabled")
+    )
+  ) {
+    return "阿里云百炼当前账号无权访问该模型，或该模型尚未开通。请到控制台确认模型权限、服务开通状态和所属地域配置。";
+  }
+
+  if (
+    statusCode === 404 &&
+    isDashScopeError &&
+    (
+      dashScopeCode.includes("MODEL") ||
+      dashScopeType.includes("MODEL") ||
+      dashScopeMessage.includes("model not found") ||
+      dashScopeMessage.includes("unknown model") ||
+      dashScopeMessage.includes("not found")
+    )
+  ) {
+    return "阿里云百炼模型不存在或当前环境不可用，请检查模型 ID、服务开通状态和区域配置。";
+  }
+
+  if (
+    statusCode === 429 &&
+    isDashScopeError &&
+    (
+      dashScopeCode.includes("QUOTA") ||
+      dashScopeCode.includes("RATE") ||
+      dashScopeCode.includes("THROTTLE") ||
+      dashScopeType.includes("QUOTA") ||
+      dashScopeType.includes("RATE") ||
+      dashScopeType.includes("THROTTLE") ||
+      dashScopeMessage.includes("rate limit") ||
+      dashScopeMessage.includes("quota") ||
+      dashScopeMessage.includes("throttle")
+    )
+  ) {
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+      return `阿里云百炼当前限流或额度受限，请约 ${Math.ceil(retryAfterSeconds)} 秒后重试。`;
+    }
+    return "阿里云百炼当前限流或额度受限，请稍后重试。";
+  }
+
   if (isNetworkConnectionError(error)) {
     return `网络连接异常（${errorCode || "NETWORK_ERROR"}），请检查代理或稍后重试。`;
   }
 
   return rawMessage;
-}
-
-function getMistralApiKeyOrThrow() {
-  const apiKey = process.env.MISTRAL_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("缺少 MISTRAL_API_KEY");
-  }
-
-  return apiKey;
 }
 
 function getReplicateApiKeyOrThrow() {
@@ -526,6 +736,18 @@ function splitReplicateModelId(modelId: string) {
   return { owner, name };
 }
 
+function normalizeReplicateTextModelId(modelId: string) {
+  return modelId === "lucataco/qwen1.5-1.8b-chat"
+    ? "lucataco/qwen1.5-1.8b"
+    : modelId;
+}
+
+function normalizeReplicateAudioModelId(modelId: string) {
+  return modelId === "codeplugtech/minimax-speech-02-turbo"
+    ? "minimax/speech-02-turbo"
+    : modelId;
+}
+
 function buildReplicateImagePrompt(userPrompt: string) {
   const cleanedPrompt = userPrompt.replace(/\s+/g, " ").trim();
   return [
@@ -542,6 +764,21 @@ function buildReplicateVideoPrompt(userPrompt: string) {
     "Keep motion simple, stable, and visually coherent.",
     `User request: ${userPrompt.trim()}`,
     "If the request is in Chinese, understand and execute it correctly.",
+  ].join("\n");
+}
+
+function buildReplicateDocumentPrompt(userPrompt: string, requireSpreadsheet: boolean) {
+  return [
+    ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
+    "Return raw JSON only.",
+    "Output JSON keys: title, summary, sections, spreadsheets.",
+    "Each section must include heading, paragraphs, bullets, and may include table.",
+    "Each spreadsheet must include name, columns, rows.",
+    requireSpreadsheet
+      ? "Return at least one useful spreadsheet."
+      : "Return an empty spreadsheets array unless tabular data is genuinely useful.",
+    "",
+    buildFileGenerationPrompt(userPrompt, requireSpreadsheet),
   ].join("\n");
 }
 
@@ -612,6 +849,39 @@ function extractReplicateOutputUrls(output: unknown) {
   return Array.from(urls);
 }
 
+function extractReplicateTextOutput(output: unknown): string {
+  if (typeof output === "string") {
+    return output;
+  }
+
+  if (Array.isArray(output)) {
+    return output.map((item) => extractReplicateTextOutput(item)).join("");
+  }
+
+  if (!output || typeof output !== "object") {
+    return "";
+  }
+
+  const record = output as Record<string, unknown>;
+  if (typeof record.text === "string") {
+    return record.text;
+  }
+
+  if (typeof record.output_text === "string") {
+    return record.output_text;
+  }
+
+  if ("output" in record) {
+    return extractReplicateTextOutput(record.output);
+  }
+
+  if ("data" in record) {
+    return extractReplicateTextOutput(record.data);
+  }
+
+  return "";
+}
+
 async function readReplicateResponseJson(
   response: Response,
 ): Promise<ReplicatePredictionPayload> {
@@ -675,7 +945,10 @@ async function createReplicatePrediction(
   modelId: string,
   input: Record<string, unknown>,
 ) {
-  const { owner, name } = splitReplicateModelId(modelId);
+  const normalizedModelId = normalizeReplicateAudioModelId(
+    normalizeReplicateTextModelId(modelId),
+  );
+  const { owner, name } = splitReplicateModelId(normalizedModelId);
   const headers = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -702,7 +975,7 @@ async function createReplicatePrediction(
         console.warn(`[Generate][${requestId}] Replicate 模型端点不可用，自动切换 version 端点`);
       }
 
-      const versionId = await getReplicateLatestVersionId(modelId);
+      const versionId = await getReplicateLatestVersionId(normalizedModelId);
       const versionEndpointResponse = await replicateFetch("/predictions", {
         method: "POST",
         headers,
@@ -768,12 +1041,51 @@ async function waitForReplicatePredictionResult(
   throw new Error(timeoutMessage);
 }
 
+function buildReplicateImageInputs(modelId: string, promptForModel: string) {
+  if (modelId === "nvidia/sana-sprint-1.6b") {
+    return {
+      primaryInput: {
+        prompt: promptForModel,
+        width: 1536,
+        height: 864,
+        output_format: "png",
+      },
+      fallbackInput: {
+        prompt: promptForModel,
+      },
+    };
+  }
+
+  return {
+    primaryInput: {
+      prompt: promptForModel,
+      aspect_ratio: "16:9",
+      safety_filter_level: "block_medium_and_above",
+    },
+    fallbackInput: {
+      prompt: promptForModel,
+    },
+  };
+}
+
 async function generateImageWithReplicate(requestId: string, modelId: string, prompt: string) {
-  const payload = await createReplicatePrediction(requestId, modelId, {
-    prompt: buildReplicateImagePrompt(prompt),
-    aspect_ratio: "16:9",
-    safety_filter_level: "block_medium_and_above",
-  });
+  const promptForModel = buildReplicateImagePrompt(prompt);
+  const { primaryInput, fallbackInput } = buildReplicateImageInputs(
+    modelId,
+    promptForModel,
+  );
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(requestId, modelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(`[Generate][${requestId}] Replicate 图片参数不兼容，自动降级为最小输入重试`);
+    payload = await createReplicatePrediction(requestId, modelId, fallbackInput);
+  }
 
   const status = (payload.status ?? "").toLowerCase();
   if (status === "succeeded") {
@@ -799,6 +1111,23 @@ function buildReplicateAudioPrompt(prompt: string) {
 }
 
 function buildReplicateAudioInputs(modelId: string, promptForModel: string) {
+  if (normalizeReplicateAudioModelId(modelId) === "minimax/speech-02-turbo") {
+    return {
+      primaryInput: {
+        text: promptForModel,
+        voice_id:
+          process.env.REPLICATE_MINIMAX_SPEECH_VOICE_ID?.trim() ||
+          "English_Graceful_Woman",
+        speed: 1,
+        vol: 1,
+        pitch: 0,
+      },
+      fallbackInput: {
+        text: promptForModel,
+      },
+    };
+  }
+
   if (modelId === "stability-ai/stable-audio-2.5") {
     return {
       primaryInput: {
@@ -823,7 +1152,7 @@ function buildReplicateAudioInputs(modelId: string, promptForModel: string) {
 }
 
 function buildReplicateAudioTimeoutMessage(modelId: string, predictionId: string) {
-  return `Replicate audio generation timed out for ${modelId}. prediction_id: ${predictionId}`;
+  return `Replicate 音频生成超时，请稍后重试。model_id: ${modelId} prediction_id: ${predictionId}`;
 }
 
 async function generateAudioWithReplicate(requestId: string, modelId: string, prompt: string) {
@@ -861,7 +1190,27 @@ async function generateAudioWithReplicate(requestId: string, modelId: string, pr
   );
 }
 
+const DEFAULT_VIDEO_DURATION_SECONDS = 5;
+const T2V_TURBO_DEFAULT_FPS = 8;
+const T2V_TURBO_DEFAULT_FRAME_COUNT =
+  DEFAULT_VIDEO_DURATION_SECONDS * T2V_TURBO_DEFAULT_FPS;
+
 function buildReplicateVideoInputs(modelId: string, promptForModel: string) {
+  if (modelId === "ji4chenli/t2v-turbo") {
+    return {
+      primaryInput: {
+        prompt: promptForModel,
+        num_inference_steps: 4,
+        guidance_scale: 7.5,
+        num_frames: T2V_TURBO_DEFAULT_FRAME_COUNT,
+        fps: T2V_TURBO_DEFAULT_FPS,
+      },
+      fallbackInput: {
+        prompt: promptForModel,
+      },
+    };
+  }
+
   if (modelId === "minimax/video-01") {
     return {
       primaryInput: {
@@ -877,7 +1226,7 @@ function buildReplicateVideoInputs(modelId: string, promptForModel: string) {
   return {
     primaryInput: {
       prompt: promptForModel,
-      duration: 5,
+      duration: DEFAULT_VIDEO_DURATION_SECONDS,
       aspect_ratio: "16:9",
       output_format: "mp4",
     },
@@ -905,6 +1254,10 @@ function buildReplicateVideoTimeoutMessage(modelId: string, predictionId: string
   }
 
   return `Replicate 视频生成超时，请稍后重试。prediction_id: ${predictionId}`;
+}
+
+function buildReplicateVideoEditingTimeoutMessage(modelId: string, predictionId: string) {
+  return `Replicate 视频编辑超时，请稍后重试。model_id: ${modelId} prediction_id: ${predictionId}`;
 }
 
 async function generateVideoWithReplicate(requestId: string, modelId: string, prompt: string) {
@@ -1148,6 +1501,17 @@ function stripMarkdownCodeFence(rawText: string) {
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/, "")
     .trim();
+}
+
+function extractJsonObjectText(rawText: string) {
+  const cleaned = stripMarkdownCodeFence(rawText);
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
+  return cleaned;
 }
 
 function extractChatMessageText(content: unknown) {
@@ -1569,7 +1933,7 @@ function shouldDisableThinkingForDashScopeDocumentMode(
   modelId: string,
   _mode: DashScopeDocumentResponseMode,
 ) {
-  return modelId === "qwen3.5-flash";
+  return modelId === "qwen3.5-flash" || modelId === "qwen-flash";
 }
 
 function buildDashScopeDocumentResponseCandidates(modelId: string): DashScopeDocumentResponseMode[] {
@@ -1638,6 +2002,31 @@ function buildFileGenerationSystemPrompt(requireSpreadsheet: boolean) {
   ].join("\n");
 }
 
+function parseGeneratedDocumentFromRawText(
+  rawText: string,
+  prompt: string,
+  requireSpreadsheet: boolean,
+) {
+  const rawDocument = JSON.parse(extractJsonObjectText(rawText));
+  const documentSchema = getGeneratedDocumentSchema({ requireSpreadsheet });
+  const directResult = documentSchema.safeParse(rawDocument);
+  if (directResult.success) {
+    return directResult.data;
+  }
+
+  const normalizedDocument = normalizeGeneratedDocumentPayload(
+    rawDocument,
+    prompt,
+    requireSpreadsheet,
+  );
+  const normalizedResult = documentSchema.safeParse(normalizedDocument);
+  if (normalizedResult.success) {
+    return normalizedResult.data;
+  }
+
+  throw normalizedResult.error;
+}
+
 async function generateDocumentWithDashScope(
   requestId: string,
   modelId: string,
@@ -1700,28 +2089,429 @@ async function generateDocumentWithDashScope(
 
   const content = extractChatMessageText(payload.choices?.[0]?.message?.content);
   if (!content.trim()) {
-    throw new Error("?????????????????");
+    throw new Error("阿里云百炼文档生成未返回可解析内容。");
+  }
+
+  return parseGeneratedDocumentFromRawText(content, prompt, requireSpreadsheet);
+}
+
+async function generateDocumentWithReplicate(
+  requestId: string,
+  modelId: string,
+  prompt: string,
+  requireSpreadsheet: boolean,
+) {
+  const normalizedModelId = normalizeReplicateTextModelId(modelId);
+  const documentPrompt = buildReplicateDocumentPrompt(prompt, requireSpreadsheet);
+  const primaryInput = {
+    prompt: documentPrompt,
+    max_new_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+    temperature: 0.3,
+    top_p: 0.95,
+  };
+  const fallbackInput = {
+    prompt: documentPrompt,
+  };
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(requestId, normalizedModelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(
+      `[Generate][${requestId}] Replicate 文档参数不兼容，自动降级为最小输入重试`,
+    );
+    payload = await createReplicatePrediction(requestId, normalizedModelId, fallbackInput);
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 文档生成失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const finalPayload =
+    status === "succeeded"
+      ? payload
+      : await (() => {
+          if (!payload.id) {
+            throw new Error("Replicate 返回结果缺少 prediction id。");
+          }
+
+          return waitForReplicatePredictionResult(
+            payload.id,
+            REPLICATE_TEXT_TASK_TIMEOUT_MS,
+            `Replicate 文档生成超时，请稍后重试。prediction_id: ${payload.id}`,
+          );
+        })();
+
+  const content = extractReplicateTextOutput(finalPayload.output);
+  if (!content.trim()) {
+    throw new Error("Replicate 文档生成未返回可解析内容。");
+  }
+
+  return parseGeneratedDocumentFromRawText(content, prompt, requireSpreadsheet);
+}
+
+function resolveDashScopeDocumentEditModelId(modelId: string) {
+  return modelId === "qwen-flash-edit" ? "qwen-flash" : modelId;
+}
+
+function getUploadFileExtension(fileName: string) {
+  const matched = fileName.trim().toLowerCase().match(/\.([a-z0-9]{1,16})$/);
+  return matched?.[1] ?? "";
+}
+
+function decodeXmlEntities(value: string) {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function normalizeEditablePlainText(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractTextFromWordXml(xml: string) {
+  return normalizeEditablePlainText(
+    decodeXmlEntities(xml)
+      .replace(/<w:tab\/>/g, "\t")
+      .replace(/<w:br\/>/g, "\n")
+      .replace(/<w:cr\/>/g, "\n")
+      .replace(/<\/w:p>/g, "\n")
+      .replace(/<\/w:tr>/g, "\n")
+      .replace(/<\/w:tc>/g, "\t")
+      .replace(/<[^>]+>/g, " "),
+  );
+}
+
+async function extractTextFromDocxBuffer(bytes: Uint8Array) {
+  const zip = await JSZip.loadAsync(bytes);
+  const xmlPaths = Object.keys(zip.files).filter((path) =>
+    /^word\/(document|header\d+|footer\d+)\.xml$/i.test(path),
+  );
+
+  const parts = await Promise.all(
+    xmlPaths.map(async (path) => {
+      const file = zip.file(path);
+      return file ? extractTextFromWordXml(await file.async("text")) : "";
+    }),
+  );
+
+  return normalizeEditablePlainText(parts.filter(Boolean).join("\n\n"));
+}
+
+async function extractTextFromXlsxBuffer(bytes: Uint8Array) {
+  const workbook = new ExcelJS.Workbook();
+  const workbookBuffer =
+    Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0];
+  await workbook.xlsx.load(workbookBuffer);
+
+  const sections = workbook.worksheets
+    .map((sheet) => {
+      const rows = sheet
+        .getSheetValues()
+        .slice(1, 61)
+        .map((row) => {
+          if (!Array.isArray(row)) {
+            return "";
+          }
+
+          return row
+            .slice(1, 21)
+            .map((cell) => {
+              if (cell == null) {
+                return "";
+              }
+              if (typeof cell === "object" && "text" in cell) {
+                return String((cell as { text?: unknown }).text ?? "").trim();
+              }
+              return String(cell).trim();
+            })
+            .filter(Boolean)
+            .join("\t");
+        })
+        .filter(Boolean);
+
+      if (rows.length === 0) {
+        return "";
+      }
+
+      return [`工作表：${sheet.name}`, ...rows].join("\n");
+    })
+    .filter(Boolean);
+
+  return normalizeEditablePlainText(sections.join("\n\n"));
+}
+
+async function extractEditableDocumentText(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const extension = getUploadFileExtension(file.name);
+
+  if (extension === "txt" || extension === "md") {
+    return normalizeEditablePlainText(Buffer.from(bytes).toString("utf8"));
+  }
+
+  if (extension === "docx") {
+    return extractTextFromDocxBuffer(bytes);
+  }
+
+  if (extension === "xlsx") {
+    return extractTextFromXlsxBuffer(bytes);
+  }
+
+  throw new Error("当前文档编辑仅支持 TXT、MD、DOCX、XLSX 文件。");
+}
+
+function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFormat[] {
+  const extension = getUploadFileExtension(fileName);
+  if (extension === "txt") {
+    return ["txt"];
+  }
+
+  if (extension === "md") {
+    return ["md"];
+  }
+
+  if (extension === "xlsx") {
+    return ["xlsx"];
+  }
+
+  return ["docx"];
+}
+
+function buildDocumentEditingSystemPrompt(requireSpreadsheet: boolean) {
+  return [
+    ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
+    "You edit uploaded documents instead of drafting from scratch.",
+    "Preserve core facts from the source document unless the user explicitly asks to rewrite them.",
+    requireSpreadsheet
+      ? "Return at least one spreadsheet when the output format includes xlsx."
+      : "Return an empty spreadsheets array unless tabular data is genuinely useful.",
+    "Respond with raw JSON only.",
+  ].join("\n");
+}
+
+function buildDocumentEditingPrompt(input: {
+  fileName: string;
+  instruction: string;
+  sourceText: string;
+  requireSpreadsheet: boolean;
+}) {
+  return [
+    `Source file: ${input.fileName}`,
+    "Editing instructions:",
+    input.instruction,
+    "",
+    "Source content:",
+    truncateText(input.sourceText, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
+    "",
+    "Output requirements:",
+    "- Keep the result faithful to the uploaded file while applying the requested edits.",
+    "- Return one complete edited document package.",
+    input.requireSpreadsheet
+      ? "- Include one useful spreadsheet in the result."
+      : "- Keep the spreadsheets array empty unless the edited result clearly needs tabular data.",
+  ].join("\n");
+}
+
+function buildReplicateDocumentEditingPrompt(input: {
+  fileName: string;
+  instruction: string;
+  sourceText: string;
+  requireSpreadsheet: boolean;
+}) {
+  return [
+    buildDocumentEditingSystemPrompt(input.requireSpreadsheet),
+    buildDocumentEditingPrompt(input),
+  ].join("\n\n");
+}
+
+async function editDocumentWithDashScope(input: {
+  requestId: string;
+  modelId: string;
+  prompt: string;
+  file: File;
+  requireSpreadsheet: boolean;
+}) {
+  const sourceText = await extractEditableDocumentText(input.file);
+  if (!sourceText.trim()) {
+    throw new Error("上传文档未解析出可编辑文本，请更换文件后重试。");
+  }
+
+  const actualModelId = resolveDashScopeDocumentEditModelId(input.modelId);
+  const baseRequest = {
+    model: actualModelId,
+    messages: [
+      {
+        role: "system",
+        content: buildDocumentEditingSystemPrompt(input.requireSpreadsheet),
+      },
+      {
+        role: "user",
+        content: buildDocumentEditingPrompt({
+          fileName: input.file.name,
+          instruction: input.prompt,
+          sourceText,
+          requireSpreadsheet: input.requireSpreadsheet,
+        }),
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+  };
+
+  let payload: DashScopeChatCompletionPayload;
+  let completionMode: DashScopeDocumentResponseMode = "prompt_only";
+  const candidateModes = buildDashScopeDocumentResponseCandidates(actualModelId);
+  let lastError: unknown;
+
+  for (const candidateMode of candidateModes) {
+    try {
+      console.log(
+        `[Generate][${input.requestId}][DashScope][document-edit] 发起 chat/completions，请求模式: ${candidateMode}，超时: ${DASHSCOPE_CHAT_COMPLETION_TIMEOUT_MS}ms`,
+      );
+      payload = await requestDashScopeChatCompletion(
+        buildDashScopeDocumentRequest(
+          baseRequest,
+          actualModelId,
+          candidateMode,
+          input.requireSpreadsheet,
+        ),
+      );
+      completionMode = candidateMode;
+      cachedDashScopeDocumentResponseMode.set(actualModelId, candidateMode);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (getErrorStatusCode(error) !== 400 && getErrorStatusCode(error) !== 422) {
+        throw error;
+      }
+    }
+  }
+
+  if (!payload!) {
+    throw lastError ?? new Error(`阿里云百炼文档编辑失败，模型 ${actualModelId} 未返回有效结果。`);
+  }
+
+  console.log(
+    `[Generate][${input.requestId}][DashScope][document-edit] chat/completions 完成，模式: ${completionMode}`,
+  );
+
+  const content = extractChatMessageText(payload.choices?.[0]?.message?.content);
+  if (!content.trim()) {
+    throw new Error("阿里云百炼文档编辑未返回可解析内容。");
   }
 
   const rawDocument = JSON.parse(stripMarkdownCodeFence(content));
-  const documentSchema = getGeneratedDocumentSchema({ requireSpreadsheet });
+  const documentSchema = getGeneratedDocumentSchema({
+    requireSpreadsheet: input.requireSpreadsheet,
+  });
   const directResult = documentSchema.safeParse(rawDocument);
   if (directResult.success) {
     return directResult.data;
   }
 
-  const normalizedDocument = normalizeGeneratedDocumentPayload(rawDocument, prompt, requireSpreadsheet);
+  const normalizedDocument = normalizeGeneratedDocumentPayload(
+    rawDocument,
+    input.prompt,
+    input.requireSpreadsheet,
+  );
   const normalizedResult = documentSchema.safeParse(normalizedDocument);
   if (normalizedResult.success) {
-    console.warn(
-      `[Generate][${requestId}][DashScope][document] 原始结构未完全命中 schema，已自动归一化。字段: ${directResult.error.issues
-        .map((issue) => issue.path.join("."))
-        .join(", ")}`,
-    );
     return normalizedResult.data;
   }
 
   throw normalizedResult.error;
+}
+
+async function editDocumentWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  prompt: string;
+  file: File;
+  requireSpreadsheet: boolean;
+}) {
+  const sourceText = await extractEditableDocumentText(input.file);
+  if (!sourceText.trim()) {
+    throw new Error("上传文档未解析出可编辑文本，请更换文件后重试。");
+  }
+
+  const normalizedModelId = normalizeReplicateTextModelId(input.modelId);
+  const documentPrompt = buildReplicateDocumentEditingPrompt({
+    fileName: input.file.name,
+    instruction: input.prompt,
+    sourceText,
+    requireSpreadsheet: input.requireSpreadsheet,
+  });
+  const primaryInput = {
+    prompt: documentPrompt,
+    max_new_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+    temperature: 0.2,
+    top_p: 0.95,
+  };
+  const fallbackInput = {
+    prompt: documentPrompt,
+  };
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(input.requestId, normalizedModelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(
+      `[Generate][${input.requestId}] Replicate 文档编辑参数不兼容，自动降级为最小输入重试`,
+    );
+    payload = await createReplicatePrediction(input.requestId, normalizedModelId, fallbackInput);
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 文档编辑失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const finalPayload =
+    status === "succeeded"
+      ? payload
+      : await (() => {
+          if (!payload.id) {
+            throw new Error("Replicate 返回结果缺少 prediction id。");
+          }
+
+          return waitForReplicatePredictionResult(
+            payload.id,
+            REPLICATE_TEXT_TASK_TIMEOUT_MS,
+            `Replicate 文档编辑超时，请稍后重试。prediction_id: ${payload.id}`,
+          );
+        })();
+
+  const content = extractReplicateTextOutput(finalPayload.output);
+  if (!content.trim()) {
+    throw new Error("Replicate 文档编辑未返回可解析内容。");
+  }
+
+  return parseGeneratedDocumentFromRawText(content, input.prompt, input.requireSpreadsheet);
+}
+
+function fileToDataUrl(file: File) {
+  return file.arrayBuffer().then((buffer) => {
+    const mimeType = file.type || "application/octet-stream";
+    return `data:${mimeType};base64,${Buffer.from(buffer).toString("base64")}`;
+  });
 }
 
 function buildDashScopeImagePrompt(prompt: string) {
@@ -1749,7 +2539,7 @@ function buildDashScopeImageTaskConfig(modelId: string, prompt: string) {
           ],
         },
         parameters: {
-          n: 1,
+          n: DEFAULT_IMAGE_OUTPUT_COUNT,
         },
       },
     };
@@ -1761,6 +2551,9 @@ function buildDashScopeImageTaskConfig(modelId: string, prompt: string) {
       model: modelId,
       input: {
         prompt: normalizedPrompt,
+      },
+      parameters: {
+        n: DEFAULT_IMAGE_OUTPUT_COUNT,
       },
     },
   };
@@ -1789,6 +2582,129 @@ async function generateImageWithDashScope(requestId: string, modelId: string, pr
     taskId,
     DASHSCOPE_IMAGE_TASK_TIMEOUT_MS,
     `阿里云百炼图片生成超时，请稍后重试。task_id: ${taskId}`,
+  );
+}
+
+async function editImageWithDashScope(modelId: string, prompt: string, file: File) {
+  const payload = await createDashScopeAsyncTask(
+    "/api/v1/services/aigc/image2image/image-synthesis",
+    {
+      model: modelId,
+      input: {
+        function: "description_edit",
+        prompt: buildDashScopeImagePrompt(prompt),
+        base_image_url: await fileToDataUrl(file),
+      },
+      parameters: {
+        n: DEFAULT_IMAGE_OUTPUT_COUNT,
+      },
+    },
+  );
+
+  const status = getDashScopeTaskStatus(payload);
+  if (status === "SUCCEEDED") {
+    return payload;
+  }
+
+  if (status === "FAILED" || status === "CANCELED") {
+    const detail = extractDashScopeErrorText(payload);
+    throw new Error(`阿里云百炼图片编辑失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const taskId = getDashScopeTaskId(payload);
+  if (!taskId) {
+    throw new Error("阿里云百炼图片编辑未返回 task_id。");
+  }
+
+  return waitForDashScopeTaskResult(
+    taskId,
+    DASHSCOPE_IMAGE_TASK_TIMEOUT_MS,
+    `阿里云百炼图片编辑超时，请稍后重试。task_id: ${taskId}`,
+  );
+}
+
+function buildReplicateImageEditPrompt(userPrompt: string) {
+  const cleanedPrompt = userPrompt.replace(/\s+/g, " ").trim();
+  return [
+    "Edit the uploaded image according to the user's request.",
+    "Preserve the main subject and overall composition unless the user explicitly asks to change them.",
+    `User request: ${cleanedPrompt}`,
+    "If the request is in Chinese, understand and execute it correctly.",
+  ].join("\n");
+}
+
+function buildReplicateImageEditInputs(modelId: string, promptForModel: string, imageUrl: string) {
+  if (modelId === "espressotechie/qwen-imgedit-4bit") {
+    return {
+      primaryInput: {
+        image: imageUrl,
+        prompt: promptForModel,
+        steps: 4,
+        output_format: "png",
+        output_quality: 95,
+      },
+      fallbackInput: {
+        image: imageUrl,
+        prompt: promptForModel,
+      },
+    };
+  }
+
+  return {
+    primaryInput: {
+      image: imageUrl,
+      prompt: promptForModel,
+    },
+    fallbackInput: {
+      image: imageUrl,
+      prompt: promptForModel,
+    },
+  };
+}
+
+async function editImageWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  prompt: string;
+  file: File;
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+}) {
+  const uploaded = await uploadInputFileForEditing(input.db, input.requestId, "image-edit", input.file);
+  const promptForModel = buildReplicateImageEditPrompt(input.prompt);
+  const { primaryInput, fallbackInput } = buildReplicateImageEditInputs(
+    input.modelId,
+    promptForModel,
+    uploaded.publicUrl,
+  );
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(input.requestId, input.modelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(`[Generate][${input.requestId}] Replicate 图片编辑参数不兼容，自动降级为最小输入重试`);
+    payload = await createReplicatePrediction(input.requestId, input.modelId, fallbackInput);
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "succeeded") {
+    return payload;
+  }
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 图片编辑失败${detail ? `: ${detail}` : ""}`);
+  }
+  if (!payload.id) {
+    throw new Error("Replicate 返回结果缺少 prediction id。");
+  }
+
+  return waitForReplicatePredictionResult(
+    payload.id,
+    REPLICATE_IMAGE_TASK_TIMEOUT_MS,
+    `Replicate 图片编辑超时，请稍后重试。prediction_id: ${payload.id}`,
   );
 }
 
@@ -1834,14 +2750,182 @@ async function createDashScopeVideoTask(modelId: string, prompt: string, imageUr
   throw lastError ?? new Error("阿里云百炼视频任务创建失败。");
 }
 
-async function generateVideoWithDashScope(requestId: string, modelId: string, prompt: string) {
-  const keyframePayload = await generateImageWithDashScope(requestId, "wan2.6-t2i", prompt);
-  const imageUrls = extractReplicateOutputUrls(keyframePayload.output).slice(0, 1);
-  if (imageUrls.length === 0) {
-    throw new Error("阿里云百炼文生视频未获取到可用首帧图片链接。");
+async function createDashScopeTextToVideoTask(modelId: string, prompt: string) {
+  const promptText = buildDashScopeVideoPrompt(prompt);
+  const inputCandidates: Record<string, unknown>[] = [
+    {
+      prompt: promptText,
+    },
+    {
+      text: promptText,
+    },
+  ];
+
+  let lastError: unknown = null;
+  for (const input of inputCandidates) {
+    try {
+      return await createDashScopeAsyncTask(
+        "/api/v1/services/aigc/video-generation/video-synthesis",
+        {
+          model: modelId,
+          input,
+        },
+      );
+    } catch (error) {
+      lastError = error;
+      const statusCode = getErrorStatusCode(error);
+      if (statusCode !== 400 && statusCode !== 422) {
+        throw error;
+      }
+    }
   }
 
-  const payload = await createDashScopeVideoTask(modelId, prompt, imageUrls[0]);
+  throw lastError ?? new Error("阿里云百炼文生视频任务创建失败。");
+}
+
+async function editVideoWithDashScope(
+  modelId: string,
+  prompt: string,
+  keyframeFile: File,
+) {
+  const payload = await createDashScopeAsyncTask(
+    "/api/v1/services/aigc/image2video/video-synthesis",
+    {
+      model: modelId,
+      input: {
+        prompt: buildDashScopeVideoPrompt(prompt),
+        first_frame_url: await fileToDataUrl(keyframeFile),
+      },
+    },
+  );
+
+  const status = getDashScopeTaskStatus(payload);
+  if (status === "SUCCEEDED") {
+    return payload;
+  }
+
+  if (status === "FAILED" || status === "CANCELED") {
+    const detail = extractDashScopeErrorText(payload);
+    throw new Error(`阿里云百炼视频编辑失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const taskId = getDashScopeTaskId(payload);
+  if (!taskId) {
+    throw new Error("阿里云百炼视频编辑未返回 task_id。");
+  }
+
+  return waitForDashScopeTaskResult(
+    taskId,
+    DASHSCOPE_VIDEO_TASK_TIMEOUT_MS,
+    `阿里云百炼视频编辑超时，请稍后重试。task_id: ${taskId}`,
+  );
+}
+
+function buildReplicateVideoEditPrompt(userPrompt: string) {
+  return [
+    "Edit the uploaded video according to the user's request.",
+    "Preserve the main subject, motion continuity, and overall scene coherence unless the user explicitly asks to change them.",
+    `User request: ${userPrompt.trim()}`,
+    "If the request is in Chinese, understand and execute it correctly.",
+  ].join("\n");
+}
+
+function buildReplicateVideoEditInputs(modelId: string, promptForModel: string, videoUrl: string) {
+  if (modelId === "lightricks/ltx-video-0.9.7-distilled") {
+    return {
+      primaryInput: {
+        prompt: promptForModel,
+        video: videoUrl,
+        go_fast: true,
+        num_frames: 121,
+        fps: 24,
+        conditioning_frames: 21,
+        denoise_strength: 0.4,
+        num_inference_steps: 24,
+        final_inference_steps: 10,
+      },
+      fallbackInput: {
+        prompt: promptForModel,
+        video: videoUrl,
+      },
+    };
+  }
+
+  return {
+    primaryInput: {
+      prompt: promptForModel,
+      video: videoUrl,
+    },
+    fallbackInput: {
+      prompt: promptForModel,
+      video: videoUrl,
+    },
+  };
+}
+
+async function editVideoWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  prompt: string;
+  file: File;
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+}) {
+  const uploaded = await uploadInputFileForEditing(input.db, input.requestId, "video-edit", input.file);
+  const promptForModel = buildReplicateVideoEditPrompt(input.prompt);
+  const { primaryInput, fallbackInput } = buildReplicateVideoEditInputs(
+    input.modelId,
+    promptForModel,
+    uploaded.publicUrl,
+  );
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(input.requestId, input.modelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(`[Generate][${input.requestId}] Replicate 视频编辑参数不兼容，自动降级为最小输入重试`);
+    payload = await createReplicatePrediction(input.requestId, input.modelId, fallbackInput);
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "succeeded") {
+    return payload;
+  }
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 视频编辑失败${detail ? `: ${detail}` : ""}`);
+  }
+  if (!payload.id) {
+    throw new Error("Replicate 返回结果缺少 prediction id。");
+  }
+
+  return waitForReplicatePredictionResult(
+    payload.id,
+    getReplicateVideoTaskTimeoutMs(input.modelId),
+    buildReplicateVideoEditingTimeoutMessage(input.modelId, payload.id),
+  );
+}
+
+async function generateVideoWithDashScope(requestId: string, modelId: string, prompt: string) {
+  const payload =
+    modelId === "wan2.2-t2v-plus"
+      ? await createDashScopeTextToVideoTask(modelId, prompt)
+      : await (async () => {
+          const keyframePayload = await generateImageWithDashScope(
+            requestId,
+            "wanx2.0-t2i-turbo",
+            prompt,
+          );
+          const imageUrls = extractReplicateOutputUrls(keyframePayload.output).slice(0, 1);
+          if (imageUrls.length === 0) {
+            throw new Error("阿里云百炼文生视频未获取到可用首帧图片链接。");
+          }
+
+          return createDashScopeVideoTask(modelId, prompt, imageUrls[0]);
+        })();
   const status = getDashScopeTaskStatus(payload);
   if (status === "SUCCEEDED") {
     return payload;
@@ -1906,11 +2990,486 @@ function decodeBase64ToUint8Array(base64: string) {
 }
 
 function normalizeDashScopeAudioModelId(modelId: string) {
-  if (modelId === "qwen3-tts-instruct-flash-realtime") {
-    return "qwen3-tts-instruct-flash";
+  if (
+    modelId === "qwen3-tts-instruct-flash-realtime" ||
+    modelId === "qwen3-tts-instruct-flash"
+  ) {
+    return "qwen3-tts-flash";
   }
 
   return modelId;
+}
+
+function getAudioEditingPipelineModelIds(modelId: string) {
+  if (modelId === "paraformer-v2-qwen3-tts-flash") {
+    return {
+      transcriptionModelId: "paraformer-v2",
+      synthesisModelId: "qwen3-tts-flash",
+      rewriteModelId: "qwen-flash",
+    };
+  }
+
+  return {
+    transcriptionModelId: "paraformer-v2",
+    synthesisModelId: normalizeDashScopeAudioModelId(modelId),
+    rewriteModelId: "qwen-flash",
+  };
+}
+
+function getReplicateAudioEditingPipelineModelIds(modelId: string) {
+  return {
+    transcriptionModelId: "vaibhavs10/incredibly-fast-whisper",
+    synthesisModelId:
+      modelId === "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo"
+        ? "codeplugtech/minimax-speech-02-turbo"
+        : modelId,
+    rewriteModelId: "lucataco/qwen1.5-1.8b-chat",
+  };
+}
+
+function sanitizeObjectKeySegment(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "file";
+}
+
+async function getUploadedInputFileUrl(
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>,
+  bucketName: string,
+  objectPath: string,
+) {
+  if (db.backend === "supabase") {
+    if (!supabaseAdmin) {
+      throw new Error("服务端缺少 Supabase 配置，无法生成编辑源文件签名地址。");
+    }
+
+    const { data, error } = await supabaseAdmin.storage
+      .from(bucketName)
+      .createSignedUrl(objectPath, GENERATED_INPUT_SIGNED_URL_TTL_SECONDS);
+    if (error) {
+      throw new Error(`生成编辑源文件签名地址失败: ${error.message}`);
+    }
+
+    const signedUrl = typeof data?.signedUrl === "string" ? data.signedUrl.trim() : "";
+    if (!signedUrl) {
+      throw new Error("编辑源文件上传成功但未获取到签名地址。");
+    }
+
+    return signedUrl;
+  }
+
+  const { data, error } = await db.storage.from(bucketName).getPublicUrl(objectPath);
+  if (error) {
+    throw new Error(`读取编辑源文件地址失败: ${error.message}`);
+  }
+
+  const publicUrl = typeof data?.publicUrl === "string" ? data.publicUrl.trim() : "";
+  if (!publicUrl) {
+    throw new Error("编辑源文件上传成功但未获取到可访问地址。");
+  }
+
+  return publicUrl;
+}
+
+async function uploadInputFileForEditing(
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>,
+  requestId: string,
+  folder: string,
+  file: File,
+) {
+  const extension = getUploadFileExtension(file.name) || "bin";
+  const objectPath = [
+    "inputs",
+    requestId,
+    folder,
+    `${Date.now()}-${sanitizeObjectKeySegment(file.name.replace(/\.[^.]+$/, ""))}.${extension}`,
+  ].join("/");
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  const uploadResult = await db.storage.from(GENERATED_INPUT_BUCKET).upload(objectPath, buffer, {
+    contentType: file.type || "application/octet-stream",
+    upsert: true,
+  });
+
+  if (uploadResult.error) {
+    throw new Error(`上传编辑源文件失败: ${uploadResult.error.message}`);
+  }
+
+  return {
+    objectPath,
+    publicUrl: await getUploadedInputFileUrl(db, GENERATED_INPUT_BUCKET, objectPath),
+  };
+}
+
+function extractDashScopeTaskResultUrls(payload: DashScopeTaskPayload) {
+  const results = payload.output?.results;
+  if (!Array.isArray(results)) {
+    return [];
+  }
+
+  return results
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+
+      const record = item as Record<string, unknown>;
+      return [
+        typeof record.transcription_url === "string" ? record.transcription_url.trim() : "",
+        typeof record.url === "string" ? record.url.trim() : "",
+        typeof record.file_url === "string" ? record.file_url.trim() : "",
+      ].filter(Boolean);
+    })
+    .slice(0, 4);
+}
+
+function extractDashScopeTranscriptionText(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const record = payload as Record<string, unknown>;
+  const transcriptCandidates = [
+    ...extractTextFragments(record.text),
+    ...extractTextFragments(record.transcript),
+    ...extractTextFragments(record.transcripts),
+    ...extractTextFragments(record.sentences),
+    ...extractTextFragments(record.segments),
+    ...extractTextFragments(record.result),
+    ...extractTextFragments(record.results),
+  ];
+
+  return normalizeEditablePlainText(uniqueTexts(transcriptCandidates, 200, 500).join("\n"));
+}
+
+async function transcribeAudioWithDashScope(
+  requestId: string,
+  modelId: string,
+  fileUrl: string,
+) {
+  const payload = await createDashScopeAsyncTask(
+    "/api/v1/services/audio/asr/transcription",
+    {
+      model: modelId,
+      input: {
+        file_urls: [fileUrl],
+      },
+    },
+  );
+
+  const status = getDashScopeTaskStatus(payload);
+  const finalPayload =
+    status === "SUCCEEDED"
+      ? payload
+      : await (async () => {
+          if (status === "FAILED" || status === "CANCELED") {
+            const detail = extractDashScopeErrorText(payload);
+            throw new Error(`阿里云百炼音频转写失败${detail ? `: ${detail}` : ""}`);
+          }
+
+          const taskId = getDashScopeTaskId(payload);
+          if (!taskId) {
+            throw new Error("阿里云百炼音频转写未返回 task_id。");
+          }
+
+          return waitForDashScopeTaskResult(
+            taskId,
+            DASHSCOPE_AUDIO_TASK_TIMEOUT_MS,
+            `阿里云百炼音频转写超时，请稍后重试。task_id: ${taskId}`,
+          );
+        })();
+
+  const transcriptionUrls = extractDashScopeTaskResultUrls(finalPayload);
+  if (transcriptionUrls.length === 0) {
+    throw new Error("阿里云百炼音频转写未返回 transcription_url。");
+  }
+
+  const response = await providerFetch("aliyun", transcriptionUrls[0], {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  const transcriptionPayload = await readDashScopeJson<Record<string, unknown>>(response);
+  const transcriptionText = extractDashScopeTranscriptionText(transcriptionPayload);
+  if (!transcriptionText) {
+    throw new Error("阿里云百炼音频转写结果为空。");
+  }
+
+  console.log(`[Generate][${requestId}][DashScope][audio-edit] 音频转写完成`);
+  return transcriptionText;
+}
+
+async function rewriteAudioTranscriptWithDashScope(
+  instruction: string,
+  transcript: string,
+  modelId: string,
+) {
+  const payload = await requestDashScopeChatCompletion({
+    model: modelId,
+    enable_thinking: false,
+    temperature: 0.2,
+    max_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+    messages: [
+      {
+        role: "system",
+        content:
+          "你是一个口播音频编辑助手。请根据用户要求改写转写稿，输出最终要朗读的文本。只返回最终文本，不要解释。",
+      },
+      {
+        role: "user",
+        content: [
+          "编辑要求：",
+          instruction,
+          "",
+          "原始转写：",
+          truncateText(transcript, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const rewrittenText = extractChatMessageText(payload.choices?.[0]?.message?.content).trim();
+  if (!rewrittenText) {
+    throw new Error("音频编辑文案改写失败，未返回有效文本。");
+  }
+
+  return rewrittenText;
+}
+
+async function editAudioWithDashScope(input: {
+  requestId: string;
+  modelId: string;
+  prompt: string;
+  file: File;
+  origin: string;
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+}) {
+  const pipeline = getAudioEditingPipelineModelIds(input.modelId);
+  const uploaded = await uploadInputFileForEditing(
+    input.db,
+    input.requestId,
+    "audio-edit",
+    input.file,
+  );
+  const transcript = await transcribeAudioWithDashScope(
+    input.requestId,
+    pipeline.transcriptionModelId,
+    uploaded.publicUrl,
+  );
+  const rewrittenScript = await rewriteAudioTranscriptWithDashScope(
+    input.prompt,
+    transcript,
+    pipeline.rewriteModelId,
+  );
+  const synthesized = await generateAudioWithDashScope(
+    pipeline.synthesisModelId,
+    rewrittenScript,
+    input.origin,
+  );
+
+  return {
+    ...synthesized,
+    rewrittenScript,
+    transcript,
+  };
+}
+
+function extractReplicateTranscriptionText(output: unknown) {
+  const record = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
+  const fragments = uniqueTexts(
+    [
+      extractReplicateTextOutput(output),
+      ...extractTextFragments(output),
+      ...extractTextFragments(record?.text),
+      ...extractTextFragments(record?.transcript),
+      ...extractTextFragments(record?.transcription),
+      ...extractTextFragments(record?.segments),
+      ...extractTextFragments(record?.chunks),
+      ...extractTextFragments(record?.output),
+      ...extractTextFragments(record?.data),
+    ],
+    400,
+    500,
+  );
+
+  return normalizeEditablePlainText(fragments.join("\n"));
+}
+
+async function transcribeAudioWithReplicate(
+  requestId: string,
+  modelId: string,
+  fileUrl: string,
+) {
+  const primaryInput = {
+    audio: fileUrl,
+    task: "transcribe",
+    language: "None",
+    timestamp: "chunk",
+    batch_size: 24,
+  };
+  const fallbackInput = {
+    audio: fileUrl,
+  };
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(requestId, modelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(`[Generate][${requestId}] Replicate 音频转写参数不兼容，自动降级为最小输入重试`);
+    payload = await createReplicatePrediction(requestId, modelId, fallbackInput);
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 音频转写失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const finalPayload =
+    status === "succeeded"
+      ? payload
+      : await (() => {
+          if (!payload.id) {
+            throw new Error("Replicate 返回结果缺少 prediction id。");
+          }
+
+          return waitForReplicatePredictionResult(
+            payload.id,
+            REPLICATE_AUDIO_TASK_TIMEOUT_MS,
+            `Replicate 音频转写超时，请稍后重试。prediction_id: ${payload.id}`,
+          );
+        })();
+
+  const transcriptionText = extractReplicateTranscriptionText(finalPayload.output);
+  if (!transcriptionText) {
+    throw new Error("Replicate 音频转写结果为空。");
+  }
+
+  return transcriptionText;
+}
+
+function buildReplicateAudioEditingPrompt(instruction: string, transcript: string) {
+  return [
+    "You are an audio script editor.",
+    "Rewrite the transcript into the final narration script that should be spoken.",
+    "Keep the meaning faithful unless the user explicitly asks to change it.",
+    "Return only the final script. Do not add explanations or markdown.",
+    "If the instruction is in Chinese, understand and execute it correctly.",
+    "",
+    "Editing requirements:",
+    instruction,
+    "",
+    "Original transcript:",
+    truncateText(transcript, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
+  ].join("\n");
+}
+
+async function rewriteAudioTranscriptWithReplicate(input: {
+  requestId: string;
+  instruction: string;
+  transcript: string;
+  modelId: string;
+}) {
+  const normalizedModelId = normalizeReplicateTextModelId(input.modelId);
+  const prompt = buildReplicateAudioEditingPrompt(input.instruction, input.transcript);
+  const primaryInput = {
+    prompt,
+    max_new_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+    temperature: 0.2,
+    top_p: 0.95,
+  };
+  const fallbackInput = {
+    prompt,
+  };
+
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(input.requestId, normalizedModelId, primaryInput);
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    console.warn(`[Generate][${input.requestId}] Replicate 音频改写参数不兼容，自动降级为最小输入重试`);
+    payload = await createReplicatePrediction(input.requestId, normalizedModelId, fallbackInput);
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 音频改写失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const finalPayload =
+    status === "succeeded"
+      ? payload
+      : await (() => {
+          if (!payload.id) {
+            throw new Error("Replicate 返回结果缺少 prediction id。");
+          }
+
+          return waitForReplicatePredictionResult(
+            payload.id,
+            REPLICATE_TEXT_TASK_TIMEOUT_MS,
+            `Replicate 音频改写超时，请稍后重试。prediction_id: ${payload.id}`,
+          );
+        })();
+
+  const rewrittenText = extractReplicateTextOutput(finalPayload.output).trim();
+  if (!rewrittenText) {
+    throw new Error("音频编辑文案改写失败，未返回有效文本。");
+  }
+
+  return rewrittenText;
+}
+
+async function editAudioWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  prompt: string;
+  file: File;
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+}) {
+  const pipeline = getReplicateAudioEditingPipelineModelIds(input.modelId);
+  const uploaded = await uploadInputFileForEditing(input.db, input.requestId, "audio-edit", input.file);
+  const transcript = await transcribeAudioWithReplicate(
+    input.requestId,
+    pipeline.transcriptionModelId,
+    uploaded.publicUrl,
+  );
+  const rewrittenScript = await rewriteAudioTranscriptWithReplicate({
+    requestId: input.requestId,
+    instruction: input.prompt,
+    transcript,
+    modelId: pipeline.rewriteModelId,
+  });
+  const synthesized = await generateAudioWithReplicate(
+    input.requestId,
+    pipeline.synthesisModelId,
+    rewrittenScript,
+  );
+  const audioUrls = extractReplicateOutputUrls(synthesized.output).slice(0, 4);
+  if (audioUrls.length === 0) {
+    throw new Error("Replicate 音频重配未返回可用音频链接，请稍后重试。");
+  }
+
+  return {
+    audioUrls,
+    downloadLinks: audioUrls.map((url, index) => ({
+      label: `audio-${index + 1}`,
+      url,
+    })),
+    rewrittenScript,
+    transcript,
+  };
 }
 
 function extractDashScopeAudioBase64(payload: unknown) {
@@ -2279,13 +3838,13 @@ function getDbNowBySource(source: "cn" | "global") {
 }
 
 function resolveQuotaTypeByGenerationType(type: string): UserQuotaType {
-  if (type === "image") {
+  if (type.endsWith("image")) {
     return "image";
   }
-  if (type === "video") {
+  if (type.endsWith("video")) {
     return "video";
   }
-  if (type === "audio") {
+  if (type.endsWith("audio")) {
     return "audio";
   }
   return "document";
@@ -2522,6 +4081,9 @@ export async function POST(req: Request) {
   let analyticsGenerationType: string | null = null;
   let analyticsModelId: string | null = null;
   let analyticsModelProvider: string | null = null;
+  let generationStartedAtIso: string | null = null;
+  let runtimeDbClient: Awaited<ReturnType<typeof getRoutedRuntimeDbClient>> | null =
+    null;
 
   const analyticsSource = IS_DOMESTIC_RUNTIME ? "cn" : "global";
   const analyticsMeta = extractRequestAnalyticsMeta(req);
@@ -2531,6 +4093,7 @@ export async function POST(req: Request) {
     eventName: string,
     eventData: Record<string, unknown>,
     ensureSession: boolean,
+    relatedTaskId?: string | null,
   ) => {
     try {
       const sessionId = await trackAnalyticsSessionEvent({
@@ -2540,6 +4103,7 @@ export async function POST(req: Request) {
         ensureSession: ensureSession && Boolean(analyticsUserId),
         eventType,
         eventName,
+        relatedTaskId: relatedTaskId || undefined,
         eventData,
         meta: analyticsMeta,
       });
@@ -2554,16 +4118,63 @@ export async function POST(req: Request) {
     }
   };
 
-  try {
-    const body = (await req.json()) as {
-      prompt?: unknown;
-      type?: unknown;
-      model?: unknown;
-      formats?: unknown;
-    };
+  const persistGenerationResult = async (
+    generation: GenerationItem,
+    requestParams?: Record<string, unknown> | null,
+  ) => {
+    if (!analyticsUserId || !runtimeDbClient) {
+      return generation;
+    }
 
-    const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
-    const type = typeof body.type === "string" ? body.type : "";
+    return persistGenerationHistory({
+      db: runtimeDbClient,
+      source: analyticsSource,
+      userId: analyticsUserId,
+      generation,
+      requestParams,
+      startedAt: generationStartedAtIso,
+      finishedAt: new Date().toISOString(),
+    });
+  };
+
+  const getTrackedTaskId = (generation: GenerationItem) =>
+    analyticsUserId && runtimeDbClient ? generation.id : null;
+
+  const trackGenerateFailure = async (message: string) => {
+    if (!analyticsStartTracked) {
+      return;
+    }
+
+    await trackGenerateEvent(
+      "generate_failed",
+      "generate_request_failed",
+      {
+        type: analyticsGenerationType,
+        model_id: analyticsModelId,
+        model_provider: analyticsModelProvider,
+        duration_ms: requestTimer.getTotalMs(),
+        is_guest: !analyticsUserId,
+        error: message,
+      },
+      false,
+    );
+  };
+
+  const returnTrackedGenerateError = async (
+    message: string,
+    status: number,
+  ) => {
+    await trackGenerateFailure(message);
+    return jsonWithCookie(
+      guestQuotaSnapshot ? { message, guestQuota: guestQuotaSnapshot } : { message },
+      { status },
+      guestSetCookieHeader,
+    );
+  };
+
+  try {
+    const requestPayload = await parseGenerateRequest(req);
+    const { prompt, type, inputFile, keyframeFile } = requestPayload;
     const cloudbaseAccessToken =
       req.headers.get(CLOUDBASE_ACCESS_TOKEN_HEADER)?.trim() || "";
     const supabaseAccessToken = extractBearerToken(req);
@@ -2641,6 +4252,30 @@ export async function POST(req: Request) {
       }
     }
 
+    if (loginUser?.userId) {
+      runtimeDbClient = await getRoutedRuntimeDbClient();
+      if (!runtimeDbClient) {
+        return Response.json(
+          { message: "用户档案初始化失败，请稍后重试。" },
+          { status: 503 },
+        );
+      }
+
+      if (IS_DOMESTIC_RUNTIME) {
+        await ensureDomesticAppUser({
+          db: runtimeDbClient,
+          userId: loginUser.userId,
+          email: loginUser.email,
+        });
+      } else {
+        await ensureGlobalAppUser({
+          db: runtimeDbClient,
+          userId: loginUser.userId,
+          email: loginUser.email,
+        });
+      }
+    }
+
     analyticsUserId = loginUser?.userId || null;
     const isGuestRequest = !loginUser;
 
@@ -2660,7 +4295,7 @@ export async function POST(req: Request) {
       return Response.json({ message: "请输入生成提示词。" }, { status: 400 });
     }
 
-    const modelConfig = getGenerationModelConfig(type, body.model);
+    const modelConfig = getGenerationModelConfig(type, requestPayload.model);
     if (!isGenerationModelEnabled(modelConfig.id)) {
       return Response.json(
         { message: getGenerationModelDisabledMessage(modelConfig.id, "zh") },
@@ -2692,6 +4327,7 @@ export async function POST(req: Request) {
     analyticsGenerationType = type;
     analyticsModelId = modelConfig.id;
     analyticsModelProvider = modelConfig.provider;
+    generationStartedAtIso = new Date().toISOString();
 
     await trackGenerateEvent(
       "generate_start",
@@ -2715,28 +4351,24 @@ export async function POST(req: Request) {
     if (modelConfig.mode === "file-generation") {
       let requestedFormats: readonly DocumentFileFormat[] = DOCUMENT_FILE_FORMATS;
 
-      if (body.formats !== undefined) {
-        if (!Array.isArray(body.formats)) {
-          return Response.json({ message: "文档格式参数无效。" }, { status: 400 });
+      if (requestPayload.formats !== undefined) {
+        if (!Array.isArray(requestPayload.formats)) {
+          return returnTrackedGenerateError("文档格式参数无效。", 400);
         }
 
         const filteredFormats = Array.from(
-          new Set(body.formats.filter(isDocumentFileFormat)),
+          new Set(requestPayload.formats.filter(isDocumentFileFormat)),
         );
 
         if (filteredFormats.length === 0) {
-          return Response.json({ message: "请至少选择一种文档格式。" }, { status: 400 });
+          return returnTrackedGenerateError("请至少选择一种文档格式。", 400);
         }
 
         requestedFormats = filteredFormats;
       }
 
       if (isGuestRequest && requestedFormats.length !== 1) {
-        return jsonWithCookie(
-          { message: "未登录用户每次仅能选择一种文档格式。" },
-          { status: 400 },
-          guestSetCookieHeader,
-        );
+        return returnTrackedGenerateError("未登录用户每次仅能选择一种文档格式。", 400);
       }
 
       if (isGuestRequest) {
@@ -2745,13 +4377,9 @@ export async function POST(req: Request) {
         guestSetCookieHeader = guestConsumeResult.setCookieHeader;
 
         if (!guestConsumeResult.allowed) {
-          return jsonWithCookie(
-            {
-              message: "游客本月文档生成额度已用完，请登录后继续使用。",
-              guestQuota: guestQuotaSnapshot,
-            },
-            { status: 429 },
-            guestSetCookieHeader,
+          return returnTrackedGenerateError(
+            "游客本月文档生成额度已用完，请登录后继续使用。",
+            429,
           );
         }
 
@@ -2760,11 +4388,10 @@ export async function POST(req: Request) {
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
       if (userQuotaError) {
-        return Response.json({ message: userQuotaError }, { status: 429 });
+        return returnTrackedGenerateError(userQuotaError, 429);
       }
 
       const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
-      const documentSchema = getGeneratedDocumentSchema({ requireSpreadsheet });
 
       const generationStartedAt = Date.now();
       const object =
@@ -2775,22 +4402,12 @@ export async function POST(req: Request) {
               prompt,
               requireSpreadsheet,
             )
-          : await (async () => {
-              getMistralApiKeyOrThrow();
-              const result = await generateObject({
-                model: mistral(modelConfig.id),
-                schema: documentSchema,
-                schemaName: "generated_document",
-                schemaDescription:
-                  "Structured content for exporting PDF, Excel, Word, TXT and Markdown files.",
-                system: buildFileGenerationSystemPrompt(requireSpreadsheet),
-                prompt: buildFileGenerationPrompt(prompt, requireSpreadsheet),
-                temperature: 0.3,
-                maxTokens: DOCUMENT_GENERATION_MAX_TOKENS,
-                maxRetries: 0,
-              });
-              return result.object;
-            })();
+          : await generateDocumentWithReplicate(
+              requestId,
+              modelConfig.id,
+              prompt,
+              requireSpreadsheet,
+            );
       requestTimer.phase(
         "文档内容生成完成",
         generationStartedAt,
@@ -2839,6 +4456,17 @@ ${object.summary}`,
         result.guestQuota = guestQuotaSnapshot;
       }
 
+      const persistedResult = await persistGenerationResult(result, {
+        requested_formats: requestedFormats,
+        require_spreadsheet: requireSpreadsheet,
+      });
+      const responsePayload: GenerateResponsePayload = guestQuotaSnapshot
+        ? {
+            ...persistedResult,
+            guestQuota: guestQuotaSnapshot,
+          }
+        : persistedResult;
+
       requestTimer.total("文档请求完成");
       await trackGenerateEvent(
         "generate_success",
@@ -2853,14 +4481,253 @@ ${object.summary}`,
           is_guest: isGuestRequest,
         },
         false,
+        getTrackedTaskId(persistedResult),
       );
-      return jsonWithCookie(result, undefined, guestSetCookieHeader);
+      return jsonWithCookie(responsePayload, undefined, guestSetCookieHeader);
+    }
+
+    if (modelConfig.mode === "file-editing") {
+      if (!(inputFile instanceof File)) {
+        return returnTrackedGenerateError("请先上传需要编辑的文档。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const requestedFormats = getDocumentEditOutputFormats(inputFile.name);
+      const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
+      const object =
+        modelConfig.provider === "aliyun"
+          ? await editDocumentWithDashScope({
+              requestId,
+              modelId: modelConfig.id,
+              prompt,
+              file: inputFile,
+              requireSpreadsheet,
+            })
+          : await editDocumentWithReplicate({
+              requestId,
+              modelId: modelConfig.id,
+              prompt,
+              file: inputFile,
+              requireSpreadsheet,
+            });
+
+      const origin = new URL(req.url).origin;
+      const generatedFiles = await generateDocumentFiles(object, requestedFormats);
+      const downloadLinks = generatedFiles.map((file) => {
+        const stored = storeGeneratedFile({
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          bytes: file.bytes,
+        });
+
+        return {
+          label: file.fileName,
+          url: buildGeneratedFileUrl(origin, stored.id, file.fileName),
+        };
+      });
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: `已完成文档编辑并导出 ${generatedFiles.length} 个文件`,
+        text: `${object.title}\n${object.summary}`,
+        downloadLinks,
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        requested_formats: requestedFormats,
+        source_file_name: inputFile.name,
+        require_spreadsheet: requireSpreadsheet,
+      });
+
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_document_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: generatedFiles.length,
+          formats: requestedFormats,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+      return Response.json(persistedResult);
+    }
+
+    if (modelConfig.mode === "audio-editing") {
+      if (!(inputFile instanceof File)) {
+        return returnTrackedGenerateError("请先上传需要编辑的音频。", 400);
+      }
+
+      if (!runtimeDbClient) {
+        return returnTrackedGenerateError("编辑上传服务暂时不可用，请稍后重试。", 503);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const origin = new URL(req.url).origin;
+      const audioEditResult =
+        modelConfig.provider === "aliyun"
+          ? await editAudioWithDashScope({
+              requestId,
+              modelId: modelConfig.id,
+              prompt,
+              file: inputFile,
+              origin,
+              db: runtimeDbClient,
+            })
+          : await editAudioWithReplicate({
+              requestId,
+              modelId: modelConfig.id,
+              prompt,
+              file: inputFile,
+              db: runtimeDbClient,
+            });
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: `已完成音频转写与重配，共输出 ${audioEditResult.audioUrls.length} 条音频`,
+        text: audioEditResult.rewrittenScript,
+        audioUrls: audioEditResult.audioUrls,
+        downloadLinks: audioEditResult.downloadLinks,
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile.name,
+        transcript_preview: truncateText(audioEditResult.transcript, 1200),
+      });
+
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_audio_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: audioEditResult.audioUrls.length,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+      return Response.json(persistedResult);
+    }
+
+    if (modelConfig.mode === "image-editing") {
+      if (!(inputFile instanceof File)) {
+        return returnTrackedGenerateError("请先上传需要编辑的图片。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const imagePayload =
+        modelConfig.provider === "aliyun"
+          ? await editImageWithDashScope(modelConfig.id, prompt, inputFile)
+          : await (() => {
+              if (!runtimeDbClient) {
+                throw new Error("编辑上传服务暂时不可用，请稍后重试。");
+              }
+
+              return editImageWithReplicate({
+                requestId,
+                modelId: modelConfig.id,
+                prompt,
+                file: inputFile,
+                db: runtimeDbClient,
+              });
+            })();
+      const imageUrls = extractReplicateOutputUrls(imagePayload.output).slice(
+        0,
+        DEFAULT_IMAGE_OUTPUT_COUNT,
+      );
+      if (imageUrls.length === 0) {
+        throw new Error(
+          modelConfig.provider === "aliyun"
+            ? "阿里云百炼图片编辑未返回可用图片链接，请稍后重试。"
+            : "Replicate 图片编辑未返回可用图片链接，请稍后重试。",
+        );
+      }
+
+      const origin = new URL(req.url).origin;
+      const localImages = await Promise.all(
+        imageUrls.map((sourceUrl, index) =>
+          storeRemoteImageAsGeneratedFile({
+            origin,
+            requestId,
+            sourceUrl,
+            provider: modelConfig.provider,
+            index,
+          }),
+        ),
+      );
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: `已完成 ${localImages.length} 张图片编辑`,
+        imageUrls: localImages.map((item) => item.previewUrl),
+        downloadLinks: localImages.map((item) => ({
+          label: item.fileName,
+          url: item.downloadUrl,
+        })),
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile.name,
+      });
+
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_image_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: localImages.length,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+      return Response.json(persistedResult);
     }
 
     if (modelConfig.mode === "audio-generation") {
       const userQuotaError = await reserveUserQuotaIfNeeded();
       if (userQuotaError) {
-        return Response.json({ message: userQuotaError }, { status: 429 });
+        return returnTrackedGenerateError(userQuotaError, 429);
       }
 
       const origin = new URL(req.url).origin;
@@ -2898,6 +4765,7 @@ ${object.summary}`,
         downloadLinks,
         createdAt: new Date().toISOString(),
       };
+      const persistedResult = await persistGenerationResult(result, null);
 
       await trackGenerateEvent(
         "generate_success",
@@ -2911,14 +4779,15 @@ ${object.summary}`,
           is_guest: isGuestRequest,
         },
         false,
+        getTrackedTaskId(persistedResult),
       );
-      return Response.json(result);
+      return Response.json(persistedResult);
     }
 
     if (modelConfig.mode === "image-generation") {
       const userQuotaError = await reserveUserQuotaIfNeeded();
       if (userQuotaError) {
-        return Response.json({ message: userQuotaError }, { status: 429 });
+        return returnTrackedGenerateError(userQuotaError, 429);
       }
 
       const imagePayload =
@@ -2928,7 +4797,10 @@ ${object.summary}`,
               getReplicateApiKeyOrThrow();
               return generateImageWithReplicate(requestId, modelConfig.id, prompt);
             })();
-      const imageUrls = extractReplicateOutputUrls(imagePayload.output).slice(0, 4);
+      const imageUrls = extractReplicateOutputUrls(imagePayload.output).slice(
+        0,
+        DEFAULT_IMAGE_OUTPUT_COUNT,
+      );
       if (imageUrls.length === 0) {
         throw new Error(
           modelConfig.provider === "aliyun"
@@ -2966,6 +4838,7 @@ ${object.summary}`,
         })),
         createdAt: new Date().toISOString(),
       };
+      const persistedResult = await persistGenerationResult(result, null);
 
       await trackGenerateEvent(
         "generate_success",
@@ -2979,13 +4852,97 @@ ${object.summary}`,
           is_guest: isGuestRequest,
         },
         false,
+        getTrackedTaskId(persistedResult),
       );
-      return Response.json(result);
+      return Response.json(persistedResult);
+    }
+
+    if (modelConfig.mode === "video-editing") {
+      if (modelConfig.provider === "aliyun" && !(keyframeFile instanceof File)) {
+        return returnTrackedGenerateError(
+          "请重新上传视频，系统需要提取首帧后再执行视频编辑。",
+          400,
+        );
+      }
+
+      if (modelConfig.provider === "replicate" && !(inputFile instanceof File)) {
+        return returnTrackedGenerateError("请先上传需要编辑的视频。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const videoPayload =
+        modelConfig.provider === "aliyun"
+          ? await editVideoWithDashScope(modelConfig.id, prompt, keyframeFile!)
+          : await (() => {
+              if (!runtimeDbClient || !(inputFile instanceof File)) {
+                throw new Error("编辑上传服务暂时不可用，请稍后重试。");
+              }
+
+              return editVideoWithReplicate({
+                requestId,
+                modelId: modelConfig.id,
+                prompt,
+                file: inputFile,
+                db: runtimeDbClient,
+              });
+            })();
+      const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(0, 2);
+      if (videoUrls.length === 0) {
+        throw new Error(
+          modelConfig.provider === "aliyun"
+            ? "阿里云百炼视频编辑未返回可用视频链接，请稍后重试。"
+            : "Replicate 视频编辑未返回可用视频链接，请稍后重试。",
+        );
+      }
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary:
+          modelConfig.provider === "aliyun"
+            ? `已基于首帧重生成 ${videoUrls.length} 条视频`
+            : `已完成 ${videoUrls.length} 条视频编辑`,
+        videoUrls,
+        downloadLinks: videoUrls.map((url, index) => ({
+          label: `video-${index + 1}`,
+          url,
+        })),
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile?.name || null,
+        keyframe_file_name: keyframeFile?.name || null,
+      });
+
+      await trackGenerateEvent(
+        "generate_success",
+        "generate_video_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          output_count: videoUrls.length,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+      return Response.json(persistedResult);
     }
 
     const userQuotaError = await reserveUserQuotaIfNeeded();
     if (userQuotaError) {
-      return Response.json({ message: userQuotaError }, { status: 429 });
+      return returnTrackedGenerateError(userQuotaError, 429);
     }
 
     const videoPayload =
@@ -3020,6 +4977,7 @@ ${object.summary}`,
       })),
       createdAt: new Date().toISOString(),
     };
+    const persistedResult = await persistGenerationResult(result, null);
 
     await trackGenerateEvent(
       "generate_success",
@@ -3033,8 +4991,9 @@ ${object.summary}`,
         is_guest: isGuestRequest,
       },
       false,
+      getTrackedTaskId(persistedResult),
     );
-    return Response.json(result);
+    return Response.json(persistedResult);
   } catch (error) {
     if (guestQuotaReservation) {
       try {
@@ -3062,21 +5021,7 @@ ${object.summary}`,
       error,
     );
 
-    if (analyticsStartTracked) {
-      await trackGenerateEvent(
-        "generate_failed",
-        "generate_request_failed",
-        {
-          type: analyticsGenerationType,
-          model_id: analyticsModelId,
-          model_provider: analyticsModelProvider,
-          duration_ms: requestTimer.getTotalMs(),
-          is_guest: !analyticsUserId,
-          error: message,
-        },
-        false,
-      );
-    }
+    await trackGenerateFailure(message);
 
     return jsonWithCookie(
       guestQuotaSnapshot ? { message, guestQuota: guestQuotaSnapshot } : { message },

@@ -8,6 +8,7 @@ import {
   extractRequestAnalyticsMeta,
   trackAnalyticsSessionEvent,
 } from "@/lib/analytics/tracker";
+import { syncGlobalAuthUser } from "@/lib/server/supabase-auth-user-sync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,6 +123,10 @@ export async function GET(request: NextRequest) {
     } = await supabase.auth.getUser();
 
     if (!userError && user?.id) {
+      await syncGlobalAuthUser(user, {
+        touchLastLoginAt: true,
+      });
+
       const provider =
         typeof user.app_metadata?.provider === "string"
           ? user.app_metadata.provider

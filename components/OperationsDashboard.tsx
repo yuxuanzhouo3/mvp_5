@@ -353,7 +353,9 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                 </p>
               )}
 
-              {generation.type === "text" && generation.downloadLinks && generation.downloadLinks.length > 0 && (
+              {(generation.type === "text" || generation.type === "edit_text") &&
+                generation.downloadLinks &&
+                generation.downloadLinks.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {generation.downloadLinks.map((link) => (
                     <a

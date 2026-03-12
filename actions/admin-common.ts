@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getAdminSession } from "@/lib/admin/session";
+import { type AdminSession, getAdminSession } from "@/lib/admin/session";
 import { getAdminSourceScope } from "@/lib/admin/source-scope";
 import { getRoutedAdminDbClient } from "@/lib/server/database-routing";
 
@@ -36,6 +36,53 @@ export function parseDecimalOr(input: string | number | null | undefined, fallba
   return Number.isFinite(value) ? value : fallback;
 }
 
+async function findAdminUserId(
+  db: any,
+  field: "id" | "username",
+  value: string | null | undefined,
+) {
+  const normalizedValue = String(value || "").trim();
+  if (!normalizedValue) {
+    return null;
+  }
+
+  try {
+    const { data, error } = await db
+      .from("admin_users")
+      .select("id")
+      .eq(field, normalizedValue)
+      .maybeSingle();
+
+    if (error) {
+      console.warn(`[AdminAudit] 查询管理员记录失败（${field}=${normalizedValue}）:`, error);
+      return null;
+    }
+
+    return typeof data?.id === "string" && data.id.trim() ? data.id : null;
+  } catch (error) {
+    console.warn(`[AdminAudit] 查询管理员记录异常（${field}=${normalizedValue}）:`, error);
+    return null;
+  }
+}
+
+async function resolveAdminAuditUserId(db: any, session: AdminSession) {
+  const byId = await findAdminUserId(db, "id", session.userId);
+  if (byId) {
+    return byId;
+  }
+
+  const byUsername = await findAdminUserId(db, "username", session.username);
+  if (byUsername) {
+    return byUsername;
+  }
+
+  console.warn("[AdminAudit] 当前管理员未在后台库中找到对应记录，将降级为匿名审计日志写入。", {
+    sessionUserId: session.userId,
+    sessionUsername: session.username,
+  });
+  return null;
+}
+
 export async function writeAdminAuditLog(params: {
   action: string;
   targetType: string;
@@ -44,20 +91,35 @@ export async function writeAdminAuditLog(params: {
   beforeJson?: unknown;
   afterJson?: unknown;
 }) {
-  const { session, db } = await requireAdminContext();
+  const { session, db, sourceScope } = await requireAdminContext();
   if (!session || !db) {
     return;
   }
 
-  await db.from("admin_audit_logs").insert({
-    id: createTextId("audit"),
-    admin_user_id: session.userId,
-    action: params.action,
-    target_type: params.targetType,
-    target_id: params.targetId || null,
-    source: params.source || null,
-    before_json: params.beforeJson ?? null,
-    after_json: params.afterJson ?? null,
-    created_at: new Date().toISOString(),
-  });
+  try {
+    const adminUserId = await resolveAdminAuditUserId(db, session);
+    const { error } = await db.from("admin_audit_logs").insert({
+      id: createTextId("audit"),
+      admin_user_id: adminUserId,
+      action: params.action,
+      target_type: params.targetType,
+      target_id: params.targetId || null,
+      source: params.source || sourceScope,
+      before_json: params.beforeJson ?? null,
+      after_json: params.afterJson ?? null,
+      created_at: new Date().toISOString(),
+    });
+
+    if (error) {
+      throw error;
+    }
+  } catch (error) {
+    console.warn("[AdminAudit] 写入审计日志失败，已跳过，不影响主流程。", {
+      sourceScope,
+      action: params.action,
+      targetType: params.targetType,
+      targetId: params.targetId || null,
+      error,
+    });
+  }
 }

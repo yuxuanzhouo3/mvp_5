@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Check, Crown, Loader2, Rocket, Shield, Sparkles, Star, Zap } from "lucide-react";
+import { getCloudbaseAuth } from "@/lib/cloudbase/client";
 import { getUIText, type UILanguage } from "@/lib/ui-text";
 
 export type PlanKey = "free" | "pro" | "enterprise";
@@ -37,13 +38,29 @@ type PaymentPlansPayload = {
   addons: PaymentAddon[];
 };
 
+type PaymentQuotePayload = {
+  success?: boolean;
+  error?: string;
+  productType?: "ADDON" | "SUBSCRIPTION";
+  planCode?: PlanKey;
+  billingPeriod?: BillingPeriod;
+  addonCode?: AddonKey;
+  amount?: number;
+  originalAmount?: number | null;
+  currency?: "CNY" | "USD";
+  isUpgrade?: boolean;
+};
+
+type PaymentQuoteState = {
+  selectionKey: string;
+  payload: PaymentQuotePayload;
+};
+
 interface PaymentSystemProps {
   currentLanguage: UILanguage;
   isDomesticVersion: boolean;
-  selectedPlan: PlanKey;
-  setSelectedPlan: (plan: PlanKey) => void;
-  billingPeriod: BillingPeriod;
-  setBillingPeriod: (period: BillingPeriod) => void;
+  initialSelectedPlan?: PlanKey;
+  initialBillingPeriod?: BillingPeriod;
   onSubscribe: (paymentMethod: PaymentMethod, selection: PurchaseSelection) => void;
   isLoggedIn: boolean;
 }
@@ -115,7 +132,14 @@ function theme(key: PlanKey | AddonKey) {
   return { g: "from-amber-500 to-orange-600", b: "border-amber-200/80 dark:border-amber-800/60", s: "border-amber-500 ring-amber-500/30", t: "text-amber-600 dark:text-amber-400", i: <Shield className="w-5 h-5" /> };
 }
 
-const PaymentSystem: React.FC<PaymentSystemProps> = ({ currentLanguage, isDomesticVersion, selectedPlan, setSelectedPlan, billingPeriod, setBillingPeriod, onSubscribe, isLoggedIn }) => {
+const PaymentSystem: React.FC<PaymentSystemProps> = ({
+  currentLanguage,
+  isDomesticVersion,
+  initialSelectedPlan = "pro",
+  initialBillingPeriod = "monthly",
+  onSubscribe,
+  isLoggedIn,
+}) => {
   const text = getUIText(currentLanguage);
   const [plans, setPlans] = useState<PaymentPlan[]>([]);
   const [addons, setAddons] = useState<PaymentAddon[]>([]);
@@ -125,7 +149,10 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({ currentLanguage, isDomest
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState<PaymentMethod>(isDomesticVersion ? "alipay" : "stripe");
   const [mode, setMode] = useState<"subscription" | "addon">("subscription");
+  const [selectedPlan, setSelectedPlan] = useState<PlanKey>(initialSelectedPlan);
+  const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>(initialBillingPeriod);
   const [selectedAddon, setSelectedAddon] = useState<AddonKey>("standard");
+  const [paymentQuote, setPaymentQuote] = useState<PaymentQuoteState | null>(null);
 
   useEffect(() => setSelectedPayment(isDomesticVersion ? "alipay" : "stripe"), [isDomesticVersion]);
   useEffect(() => {
@@ -164,6 +191,131 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({ currentLanguage, isDomest
   const plan = plans.find((item) => item.planCode === selectedPlan) || null;
   const addon = addons.find((item) => item.addonCode === selectedAddon) || null;
   const canBuy = isLoggedIn && agreeTerms && !loading && (mode === "subscription" ? selectedPlan !== "free" && Boolean(plan) : Boolean(addon));
+  const selectionKey = useMemo(
+    () => mode === "subscription"
+      ? `subscription:${selectedPlan}:${billingPeriod}`
+      : `addon:${selectedAddon}`,
+    [billingPeriod, mode, selectedAddon, selectedPlan],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadQuote = async () => {
+      if (!isLoggedIn) {
+        setPaymentQuote(null);
+        return;
+      }
+
+      if (mode === "subscription" && selectedPlan === "free") {
+        setPaymentQuote(null);
+        return;
+      }
+
+      if (mode === "subscription" && !plan) {
+        setPaymentQuote(null);
+        return;
+      }
+
+      if (mode === "addon" && !addon) {
+        setPaymentQuote(null);
+        return;
+      }
+
+      setPaymentQuote((current) => current?.selectionKey === selectionKey ? current : null);
+
+      try {
+        const endpoint = isDomesticVersion
+          ? "/api/domestic/payment/quote"
+          : "/api/payment/quote";
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+
+        if (isDomesticVersion) {
+          const tokenResult = await getCloudbaseAuth().getAccessToken();
+          const accessToken = tokenResult?.accessToken?.trim() || "";
+          if (!accessToken) {
+            throw new Error("missing_cloudbase_access_token");
+          }
+          headers["x-cloudbase-access-token"] = accessToken;
+        }
+
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          credentials: "include",
+          body: JSON.stringify(
+            mode === "subscription"
+              ? {
+                  planName: selectedPlan,
+                  billingPeriod,
+                }
+              : {
+                  productType: "ADDON",
+                  addonPackageId: selectedAddon,
+                },
+          ),
+        });
+        const payload = (await response.json()) as PaymentQuotePayload;
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.error || "payment_quote_failed");
+        }
+
+        if (!cancelled) {
+          setPaymentQuote({
+            selectionKey,
+            payload,
+          });
+        }
+      } catch (error) {
+        console.warn("[PaymentSystem] 加载支付报价失败:", error);
+        if (!cancelled) {
+          setPaymentQuote(null);
+        }
+      }
+    };
+
+    void loadQuote();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addon,
+    billingPeriod,
+    isDomesticVersion,
+    isLoggedIn,
+    mode,
+    plan,
+    selectionKey,
+    selectedAddon,
+    selectedPlan,
+  ]);
+  const activeQuote = paymentQuote?.selectionKey === selectionKey ? paymentQuote.payload : null;
+  const fallbackAmount = mode === "subscription"
+    ? (plan ? (billingPeriod === "monthly" ? plan.prices.monthly : plan.prices.yearly) : null)
+    : (addon?.price ?? null);
+  const payAmount = activeQuote?.amount ?? fallbackAmount;
+  const payCurrency = activeQuote?.currency ?? currency;
+  const paySymbol = payCurrency === "USD" ? "$" : "¥";
+  const payAmountText = typeof payAmount === "number" ? `${paySymbol}${fmt.format(payAmount)}` : null;
+  const buyButtonText = mode === "subscription"
+    ? selectedPlan === "free"
+      ? (currentLanguage === "zh" ? "免费版无需订阅" : "Free plan does not require subscription")
+      : currentLanguage === "zh"
+        ? payAmountText
+          ? `立即订阅（实付 ${payAmountText}）`
+          : text.subscribeNow
+        : payAmountText
+          ? `Subscribe Now (${payAmountText})`
+          : text.subscribeNow
+    : currentLanguage === "zh"
+      ? payAmountText
+        ? `立即购买加油包（实付 ${payAmountText}）`
+        : "立即购买加油包"
+      : payAmountText
+        ? `Buy Add-on (${payAmountText})`
+        : "Buy Add-on";
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-gray-200/80 dark:border-gray-700/80 bg-gradient-to-br from-slate-50 via-white to-blue-50/40 dark:from-[#10141c] dark:via-[#141b26] dark:to-[#0f172a] shadow-2xl p-5 sm:p-6 md:p-7">
@@ -235,7 +387,7 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({ currentLanguage, isDomest
           <button type="button" disabled={!canBuy} onClick={() => {
             if (mode === "subscription" && plan) onSubscribe(selectedPayment, { productType: "subscription", planCode: plan.planCode, billingPeriod, displayName: currentLanguage === "zh" ? plan.displayNameCn : plan.displayNameEn });
             if (mode === "addon" && addon) onSubscribe(selectedPayment, { productType: "addon", addonCode: addon.addonCode, addonDisplayName: currentLanguage === "zh" ? addon.displayNameCn : addon.displayNameEn, amount: addon.price });
-          }} className="w-full h-11 rounded-xl bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 hover:from-blue-600 hover:via-indigo-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm shadow-lg transition">{mode === "subscription" ? (selectedPlan === "free" ? (currentLanguage === "zh" ? "免费版无需订阅" : "Free plan does not require subscription") : text.subscribeNow) : (currentLanguage === "zh" ? "立即购买加油包" : "Buy Add-on")}</button>
+          }} className="w-full h-11 rounded-xl bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600 hover:from-blue-600 hover:via-indigo-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm shadow-lg transition">{buyButtonText}</button>
           {!isLoggedIn && <p className="text-center text-xs text-amber-600 dark:text-amber-400">{text.subscribeHint}</p>}
         </div>
       </div>
