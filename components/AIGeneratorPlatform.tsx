@@ -534,14 +534,6 @@ async function extractVideoFrameFiles(
   }
 }
 
-async function extractVideoKeyframeFile(file: File) {
-  const frames = await extractVideoFrameFiles(file, { frameCount: 1, maxDimension: 1024 });
-  if (frames.length === 0) {
-    throw new Error("视频首帧提取失败，请更换文件后重试。");
-  }
-  return frames[0];
-}
-
 const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayName }) => {
   const router = useRouter();
   const { currentLanguage, setCurrentLanguage, isDomesticVersion } =
@@ -1613,7 +1605,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
               ? currentLanguage === "zh"
                 ? "暂未开放"
                 : "Coming Soon"
-              : getGenerationModelLabel(modelId),
+              : getGenerationModelLabel(modelId, activeTab as GenerationTab),
           provider: "system",
           status: "error",
           summary: currentLanguage === "zh" ? "生成失败" : "Generation failed",
@@ -1686,8 +1678,18 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         formData.set("file", uploadFile);
 
         if (activeTab === "edit_video" && isDomesticVersion) {
-          const keyframe = await extractVideoKeyframeFile(selectedOperationFile!);
-          formData.set("keyframe", keyframe);
+          const frames = await extractVideoFrameFiles(selectedOperationFile!, {
+            frameCount: 3,
+            maxDimension: 1024,
+          });
+          if (frames.length === 0) {
+            throw new Error("视频关键帧提取失败，请更换文件后重试。");
+          }
+
+          frames.forEach((frame) => {
+            formData.append("frames", frame);
+          });
+          formData.set("keyframe", frames[Math.min(1, frames.length - 1)] ?? frames[0]);
         }
 
         if (activeTab === "detect_video") {
@@ -1772,7 +1774,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
           type: activeTab as GenerationTab,
           prompt: trimmedPrompt,
           modelId,
-          modelLabel: getGenerationModelLabel(modelId),
+          modelLabel: getGenerationModelLabel(modelId, activeTab as GenerationTab),
           provider: "system",
           status: "error",
           summary: currentLanguage === "zh" ? "生成失败" : "Generation failed",

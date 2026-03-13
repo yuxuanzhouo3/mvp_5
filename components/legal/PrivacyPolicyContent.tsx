@@ -4,6 +4,11 @@ import React, { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+const MarkdownRenderer = ReactMarkdown as unknown as React.ComponentType<{
+  children: string;
+  remarkPlugins?: unknown[];
+}>;
+
 interface PrivacyPolicyContentProps {
   isDomestic: boolean;
 }
@@ -36,7 +41,7 @@ export function PrivacyPolicyContent({ isDomestic }: PrivacyPolicyContentProps) 
 
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <MarkdownRenderer remarkPlugins={[remarkGfm]}>{content}</MarkdownRenderer>
     </div>
   );
 }

@@ -57,6 +57,7 @@ export type GenerationModelConfig = {
   optionLabelEn: string;
   autoLabelZh: string;
   autoLabelEn: string;
+  legacy?: boolean;
 };
 
 const GENERATION_MODELS: readonly GenerationModelConfig[] = [
@@ -83,6 +84,18 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     optionLabelEn: "Wanx 2.0 Turbo · Text to Image",
     autoLabelZh: "Wanx 2.0 文生图",
     autoLabelEn: "Wanx 2.0 T2I",
+  },
+  {
+    id: "wan2.2-i2v-flash",
+    label: "Wanx 2.0 T2I Turbo + Wan 2.2 I2V Flash via DashScope",
+    provider: "aliyun",
+    mode: "video-generation",
+    tabs: ["video"],
+    region: "domestic",
+    optionLabelZh: "Wanx 2.0 Turbo + Wan 2.2 Flash · 文生视频",
+    optionLabelEn: "Wanx 2.0 Turbo + Wan 2.2 Flash · Text to Video",
+    autoLabelZh: "Wan 首帧+视频",
+    autoLabelEn: "Wan Keyframe + Video",
   },
   {
     id: "wan2.2-t2v-plus",
@@ -134,15 +147,15 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
   },
   {
     id: "wan2.2-i2v-flash",
-    label: "Wan 2.2 I2V Flash via DashScope",
+    label: "Qwen3 VL Flash + Qwen Flash + Wan 2.2 I2V Flash via DashScope",
     provider: "aliyun",
     mode: "video-editing",
     tabs: ["edit_video"],
     region: "domestic",
-    optionLabelZh: "Wan 2.2 I2V Flash · 视频编辑",
-    optionLabelEn: "Wan 2.2 I2V Flash · Video Editing",
-    autoLabelZh: "Wan 视频编辑",
-    autoLabelEn: "Wan Video Edit",
+    optionLabelZh: "Qwen3 VL Flash + Qwen Flash + Wan 2.2 Flash · 视频编辑",
+    optionLabelEn: "Qwen3 VL Flash + Qwen Flash + Wan 2.2 Flash · Video Editing",
+    autoLabelZh: "Qwen + Wan 视频编辑",
+    autoLabelEn: "Qwen + Wan Video Edit",
   },
   {
     id: "paraformer-v2-qwen3-tts-flash",
@@ -181,6 +194,19 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "Qwen Image Detect",
   },
   {
+    id: "qwen-vl-plus-image-detect",
+    label: "Qwen VL Plus Image Detection via DashScope (Legacy)",
+    provider: "aliyun",
+    mode: "image-detection",
+    tabs: ["detect_image"],
+    region: "domestic",
+    optionLabelZh: "Qwen VL Plus · 图片检测（旧版兼容）",
+    optionLabelEn: "Qwen VL Plus · Image Detection (Legacy)",
+    autoLabelZh: "Qwen 图片检测",
+    autoLabelEn: "Qwen Image Detect",
+    legacy: true,
+  },
+  {
     id: "qwen3-vl-flash-video-detect",
     label: "Qwen3 VL Flash Video Detection via DashScope",
     provider: "aliyun",
@@ -191,6 +217,19 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     optionLabelEn: "Qwen3 VL Flash · Video Detection",
     autoLabelZh: "Qwen 视频检测",
     autoLabelEn: "Qwen Video Detect",
+  },
+  {
+    id: "qwen-vl-plus-video-detect",
+    label: "Qwen VL Plus Video Detection via DashScope (Legacy)",
+    provider: "aliyun",
+    mode: "video-detection",
+    tabs: ["detect_video"],
+    region: "domestic",
+    optionLabelZh: "Qwen VL Plus · 视频检测（旧版兼容）",
+    optionLabelEn: "Qwen VL Plus · Video Detection (Legacy)",
+    autoLabelZh: "Qwen 视频检测",
+    autoLabelEn: "Qwen Video Detect",
+    legacy: true,
   },
   {
     id: "qwen3-omni-flash-realtime-detect",
@@ -239,6 +278,19 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     optionLabelEn: "MiniMax Speech 02 Turbo · Text to Speech",
     autoLabelZh: "MiniMax 语音",
     autoLabelEn: "MiniMax Speech",
+  },
+  {
+    id: "codeplugtech/minimax-speech-02-turbo",
+    label: "MiniMax Speech 02 Turbo via Replicate (Legacy Alias)",
+    provider: "replicate",
+    mode: "audio-generation",
+    tabs: ["audio"],
+    region: "international",
+    optionLabelZh: "MiniMax Speech 02 Turbo · 语音合成（旧别名兼容）",
+    optionLabelEn: "MiniMax Speech 02 Turbo · Text to Speech (Legacy Alias)",
+    autoLabelZh: "MiniMax 语音",
+    autoLabelEn: "MiniMax Speech",
+    legacy: true,
   },
   {
     id: "ji4chenli/t2v-turbo",
@@ -301,6 +353,19 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "Whisper Audio Redub",
   },
   {
+    id: "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo",
+    label: "Whisper + MiniMax Speech 02 Turbo via Replicate (Legacy Alias)",
+    provider: "replicate",
+    mode: "audio-editing",
+    tabs: ["edit_audio"],
+    region: "international",
+    optionLabelZh: "Whisper + MiniMax Speech 02 Turbo · 音频编辑（旧别名兼容）",
+    optionLabelEn: "Whisper + MiniMax Speech 02 Turbo · Audio Editing (Legacy Alias)",
+    autoLabelZh: "Whisper 音频重配",
+    autoLabelEn: "Whisper Audio Redub",
+    legacy: true,
+  },
+  {
     id: "lucataco/qwen1.5-1.8b-chat-detect",
     label: "Qwen 1.5 1.8B Chat Detection via Replicate",
     provider: "replicate",
@@ -353,7 +418,7 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
 const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
   text: DEFAULT_LANGUAGE === "zh" ? "qwen-flash" : "lucataco/qwen1.5-1.8b",
   image: DEFAULT_LANGUAGE === "zh" ? "wanx2.0-t2i-turbo" : "nvidia/sana-sprint-1.6b",
-  video: DEFAULT_LANGUAGE === "zh" ? "wan2.2-t2v-plus" : "ji4chenli/t2v-turbo",
+  video: DEFAULT_LANGUAGE === "zh" ? "wan2.2-i2v-flash" : "ji4chenli/t2v-turbo",
   audio:
     DEFAULT_LANGUAGE === "zh"
       ? "qwen3-tts-flash"
@@ -385,6 +450,21 @@ const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
       ? "qwen3-vl-flash-video-detect"
       : "lucataco/qwen-vl-chat-video-detect",
 };
+
+function shouldIncludeGenerationModel(
+  model: GenerationModelConfig,
+  options?: { includeDisabled?: boolean; includeLegacy?: boolean },
+) {
+  if (!options?.includeLegacy && model.legacy) {
+    return false;
+  }
+
+  if (options?.includeDisabled) {
+    return true;
+  }
+
+  return isGenerationModelAvailable(model);
+}
 
 export type GenerationDownloadLink = {
   label: string;
@@ -492,14 +572,11 @@ export function getDefaultModelIdForTab(tab: GenerationTab) {
 
 export function getGenerationModelsForTab(
   tab: GenerationTab,
-  options?: { includeDisabled?: boolean },
+  options?: { includeDisabled?: boolean; includeLegacy?: boolean },
 ) {
-  const models = GENERATION_MODELS.filter((model) => model.tabs.includes(tab));
-  if (options?.includeDisabled) {
-    return models;
-  }
-
-  return models.filter(isGenerationModelAvailable);
+  return GENERATION_MODELS.filter(
+    (model) => model.tabs.includes(tab) && shouldIncludeGenerationModel(model, options),
+  );
 }
 
 export function hasAvailableGenerationModelsForTab(tab: GenerationTab) {
@@ -535,7 +612,10 @@ export function getGenerationModelConfig(
   tab: GenerationTab,
   requestedModel: unknown,
 ): GenerationModelConfig {
-  const models = getGenerationModelsForTab(tab, { includeDisabled: true });
+  const models = getGenerationModelsForTab(tab, {
+    includeDisabled: true,
+    includeLegacy: true,
+  });
   if (models.length === 0) {
     throw new Error("当前类型暂无可用模型。");
   }
@@ -591,7 +671,16 @@ export function getGenerationUnavailableMessage(
     : getNoAvailableGenerationModelMessage(language);
 }
 
-export function getGenerationModelLabel(modelId: string) {
+export function getGenerationModelLabel(modelId: string, tab?: GenerationTab) {
+  if (tab) {
+    const tabMatchedModel = GENERATION_MODELS.find(
+      (model) => model.id === modelId && model.tabs.includes(tab),
+    );
+    if (tabMatchedModel) {
+      return tabMatchedModel.label;
+    }
+  }
+
   return (
     GENERATION_MODELS.find((model) => model.id === modelId)?.label ?? modelId
   );

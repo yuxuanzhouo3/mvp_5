@@ -230,6 +230,12 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
       }
 
       if (mode === "addon") {
+        if (!addon) {
+          setPaymentQuote(null);
+          setQuoteLoading(false);
+          return;
+        }
+
         setPaymentQuote({
           selectionKey,
           payload: {

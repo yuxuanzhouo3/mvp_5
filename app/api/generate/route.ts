@@ -54,30 +54,67 @@ const IS_DOMESTIC_RUNTIME = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
   .toLowerCase()
   .startsWith("zh");
 
-const FILE_GENERATION_SYSTEM_PROMPT_LINES = [
-  "You generate structured documents for export to PDF, Excel, Word, TXT, and Markdown.",
-  "Return content that follows the provided schema exactly.",
-  "Default to Simplified Chinese unless the user explicitly requests another language.",
-  "",
-  "CRITICAL: You MUST return JSON in this exact format:",
-  "{",
-  '  "title": "Document title (string, 1-120 chars)",',
-  '  "summary": "Brief summary (string, 1-1200 chars)",',
-  '  "sections": [',
-  "    {",
-  '      "heading": "Section heading (string, 1-80 chars)",',
-  '      "paragraphs": ["Paragraph text (string, 1-1500 chars)"],',
-  '      "bullets": ["Optional bullet point (string, max 200 chars)"],',
-  '      "table": {',
-  '        "title": "Optional table title",',
-  '        "columns": ["Column 1", "Column 2"],',
-  '        "rows": [["Cell 1", "Cell 2"]]',
-  "      }",
-  "    }",
-  "  ],",
-  '  "spreadsheets": []',
-  "}",
-];
+type PromptLocale = "zh" | "en";
+
+function joinPromptLines(lines: readonly string[]) {
+  return lines.filter(Boolean).join("\n");
+}
+
+function buildFileGenerationSchemaPromptLines(locale: PromptLocale) {
+  if (locale === "zh") {
+    return [
+      "你是专业的结构化文档生成助手，负责输出可导出为 PDF、Excel、Word、TXT、Markdown 的完整文档包。",
+      "必须严格遵守给定 schema，字段名、层级、数据类型都不能改动，也不能输出 schema 之外的解释或附加文本。",
+      "默认输出简体中文，除非用户明确要求其他语言。",
+      "内容必须直接可用、信息完整、结构清晰，避免空话、套话和无意义占位内容。",
+      "",
+      "必须只返回 JSON，且必须严格符合以下结构：",
+      "{",
+      '  "title": "文档标题（string, 1-120 chars）",',
+      '  "summary": "文档摘要（string, 1-1200 chars）",',
+      '  "sections": [',
+      "    {",
+      '      "heading": "章节标题（string, 1-80 chars）",',
+      '      "paragraphs": ["段落文本（string, 1-1500 chars）"],',
+      '      "bullets": ["可选要点（string, max 200 chars）"],',
+      '      "table": {',
+      '        "title": "可选表格标题",',
+      '        "columns": ["列1", "列2"],',
+      '        "rows": [["单元格1", "单元格2"]]',
+      "      }",
+      "    }",
+      "  ],",
+      '  "spreadsheets": []',
+      "}",
+    ] as const;
+  }
+
+  return [
+    "You are a professional structured document generation assistant for exportable PDF, Excel, Word, TXT, and Markdown content.",
+    "You must follow the provided schema exactly: do not rename keys, change nesting, alter data types, or output any extra commentary outside the JSON payload.",
+    "Default to English unless the user explicitly requests another language.",
+    "The result must be directly usable, content-complete, well-structured, and free of filler or placeholder text.",
+    "",
+    "You must return JSON only in this exact structure:",
+    "{",
+    '  "title": "Document title (string, 1-120 chars)",',
+    '  "summary": "Brief summary (string, 1-1200 chars)",',
+    '  "sections": [',
+    "    {",
+    '      "heading": "Section heading (string, 1-80 chars)",',
+    '      "paragraphs": ["Paragraph text (string, 1-1500 chars)"],',
+    '      "bullets": ["Optional bullet point (string, max 200 chars)"],',
+    '      "table": {',
+    '        "title": "Optional table title",',
+    '        "columns": ["Column 1", "Column 2"],',
+    '        "rows": [["Cell 1", "Cell 2"]]',
+    "      }",
+    "    }",
+    "  ],",
+    '  "spreadsheets": []',
+    "}",
+  ] as const;
+}
 
 const REPLICATE_POLL_INTERVAL_MS = 1200;
 const REPLICATE_IMAGE_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
@@ -98,7 +135,7 @@ const REPLICATE_AUDIO_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
 );
 const REPLICATE_TEXT_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
   "REPLICATE_TEXT_TASK_TIMEOUT_MS",
-  120000,
+  300000,
 );
 const REPLICATE_CREATE_MAX_RETRIES = 2;
 const REPLICATE_CREATE_BASE_DELAY_MS = 1500;
@@ -853,28 +890,32 @@ function resolveReplicateAudioDetectionModelId(modelId: string) {
 
 function buildReplicateImagePrompt(userPrompt: string) {
   const cleanedPrompt = userPrompt.replace(/\s+/g, " ").trim();
-  return [
-    `Create one image based on this request: ${cleanedPrompt}.`,
-    "Keep composition simple and make the requested subject dominant.",
-    "No visible text, letters, logos, subtitles, signs, or watermarks in the image.",
-  ].join("\n");
+  return joinPromptLines([
+    "Generate exactly one high-quality image that faithfully executes the user's request.",
+    "Make the requested subject, scene, style, lighting, and composition cues visually explicit and dominant.",
+    "Preserve clean anatomy, realistic perspective, coherent materials, consistent lighting, and strong local detail.",
+    "Do not add extra subjects, text, letters, logos, subtitles, frames, or watermarks unless the user explicitly requests them.",
+    `User request: ${cleanedPrompt}`,
+    "If the request is in Chinese, understand and execute it correctly.",
+  ]);
 }
 
 function buildReplicateVideoPrompt(userPrompt: string) {
-  return [
-    "Generate exactly one short video that strictly follows the user's request.",
-    "Keep the requested main subject as the dominant subject in every shot.",
-    "Keep motion simple, stable, and visually coherent.",
+  return joinPromptLines([
+    "Generate exactly one short video that faithfully executes the user's request.",
+    "Keep the requested main subject, scene logic, style, and time continuity stable across the whole clip.",
+    "Use coherent motion, natural physics, stable identity, and visually consistent lighting and materials.",
+    "Do not add unrelated scene changes, subject swaps, text, logos, subtitles, or watermarks unless the user explicitly requests them.",
     `User request: ${userPrompt.trim()}`,
     "If the request is in Chinese, understand and execute it correctly.",
-  ].join("\n");
+  ]);
 }
 
 function buildReplicateDocumentPrompt(userPrompt: string, targetFormat: DocumentFileFormat) {
   const requireSpreadsheet = targetFormat === "xlsx";
 
-  return [
-    buildFileGenerationSystemPrompt(targetFormat),
+  return joinPromptLines([
+    buildFileGenerationSystemPrompt(targetFormat, "en"),
     "Return raw JSON only.",
     "Output JSON keys: title, summary, sections, spreadsheets.",
     "Each section must include heading, paragraphs, bullets, and may include table.",
@@ -883,8 +924,8 @@ function buildReplicateDocumentPrompt(userPrompt: string, targetFormat: Document
       ? "Return at least one useful spreadsheet."
       : "Return an empty spreadsheets array unless tabular data is explicitly requested.",
     "",
-    buildFileGenerationPrompt(userPrompt, targetFormat),
-  ].join("\n");
+    buildFileGenerationPrompt(userPrompt, targetFormat, "en"),
+  ]);
 }
 
 function extractReplicateErrorText(error: unknown) {
@@ -1211,8 +1252,20 @@ async function generateImageWithReplicate(requestId: string, modelId: string, pr
   );
 }
 
-function buildReplicateAudioPrompt(prompt: string) {
-  return prompt.trim();
+function buildReplicateAudioPrompt(modelId: string, prompt: string) {
+  const cleanedPrompt = prompt.trim();
+
+  if (normalizeReplicateAudioModelId(modelId) === "minimax/speech-02-turbo") {
+    return cleanedPrompt;
+  }
+
+  return joinPromptLines([
+    "Generate exactly one high-quality audio output that faithfully follows the user's request.",
+    "Prioritize coherent pacing, stable mood, clean timbre, and strong perceptual quality.",
+    "Do not add unrelated voices, spoken instructions, text readouts, or artifacts unless the user explicitly requests them.",
+    `User request: ${cleanedPrompt}`,
+    "If the request is in Chinese, understand and execute it correctly.",
+  ]);
 }
 
 function buildReplicateAudioInputs(modelId: string, promptForModel: string) {
@@ -1261,7 +1314,7 @@ function buildReplicateAudioTimeoutMessage(modelId: string, predictionId: string
 }
 
 async function generateAudioWithReplicate(requestId: string, modelId: string, prompt: string) {
-  const promptForModel = buildReplicateAudioPrompt(prompt);
+  const promptForModel = buildReplicateAudioPrompt(modelId, prompt);
   const { primaryInput, fallbackInput } = buildReplicateAudioInputs(modelId, promptForModel);
 
   let payload: ReplicatePredictionPayload;
@@ -1299,6 +1352,8 @@ const DEFAULT_VIDEO_DURATION_SECONDS = 5;
 const T2V_TURBO_DEFAULT_FPS = 8;
 const T2V_TURBO_DEFAULT_FRAME_COUNT =
   DEFAULT_VIDEO_DURATION_SECONDS * T2V_TURBO_DEFAULT_FPS;
+const DASHSCOPE_VIDEO_EDIT_FRAME_COUNT = 3;
+const DASHSCOPE_VIDEO_EDIT_ASPECT_RATIO_TOLERANCE = 0.03;
 
 function buildReplicateVideoInputs(modelId: string, promptForModel: string) {
   if (modelId === "ji4chenli/t2v-turbo") {
@@ -1612,19 +1667,27 @@ function extractJsonObjectText(rawText: string) {
   const cleaned = stripMarkdownCodeFence(rawText);
   const firstBrace = cleaned.indexOf("{");
   const lastBrace = cleaned.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return cleaned.slice(firstBrace, lastBrace + 1);
-  }
+  let json = "";
 
-  // 处理截断的 JSON
-  if (firstBrace >= 0) {
-    let json = cleaned.slice(firstBrace);
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    json = cleaned.slice(firstBrace, lastBrace + 1);
+  } else if (firstBrace >= 0) {
+    // 处理截断的 JSON
+    json = cleaned.slice(firstBrace);
     const openBrackets = (json.match(/\[/g) || []).length;
     const closeBrackets = (json.match(/\]/g) || []).length;
     if (openBrackets > closeBrackets) {
       json += "]".repeat(openBrackets - closeBrackets);
     }
     json += "}";
+  }
+
+  // 修复常见的键名大小写错误
+  if (json) {
+    json = json.replace(/"Sections":/g, '"sections":');
+  }
+
+  if (json) {
     return json;
   }
 
@@ -1886,50 +1949,54 @@ function buildDetectionText(
 
 function buildStructuredDetectionInstruction(target: "document" | "image" | "audio" | "video", locale: "zh" | "en") {
   if (locale === "zh") {
-    return [
-      `你是专业的${target === "document" ? "文档" : target === "image" ? "图片" : target === "audio" ? "音频" : "视频"}AI检测专家，具备深厚的专业知识。`,
+    return joinPromptLines([
+      `你是专业的${target === "document" ? "文档" : target === "image" ? "图片" : target === "audio" ? "音频" : "视频"} AI 检测专家。`,
+      "你的职责是基于可观察证据做保守、可解释、低误报的判断，不要为了给出高分而夸大可疑性。",
+      "只根据当前输入中真正可观察到的内容下结论，不要编造无法看到、听到或验证的细节。",
+      "当证据不足、特征不明显或存在多种合理解释时，优先返回 uncertain，并降低 probability 与 confidence。",
       "",
-      "评分标准：",
-      "90-100分：几乎确定AI生成，有多个明显特征",
-      "70-89分：很可能AI生成，有典型特征",
-      "50-69分：不确定，特征不明显",
-      "30-49分：更像人工创作，但有少量可疑点",
-      "0-29分：几乎确定人工创作",
+      "probability 评分标准：",
+      "90-100：几乎确定为 AI 生成，且存在多个强特征",
+      "70-89：较大概率为 AI 生成，存在典型特征",
+      "50-69：证据不足，无法稳定判断",
+      "30-49：更像人工创作，但仍有少量可疑点",
+      "0-29：几乎确定为人工创作",
       "",
-      "置信度标准：",
-      "80-100：有充分证据支持判断",
-      "60-79：有一定证据但不够充分",
-      "0-59：证据不足，主要靠经验判断",
+      "confidence 评分标准：",
+      "80-100：证据充分且一致",
+      "60-79：有一定证据，但仍存在不确定性",
+      "0-59：证据有限，判断主要依赖经验",
       "",
-      "返回严格JSON格式（不要Markdown代码块）：",
-      '{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["具体依据1","具体依据2","具体依据3"]}',
+      "必须返回严格 JSON（不要 Markdown 代码块，不要附加解释）：",
+      '{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["具体可观察依据1","具体可观察依据2","具体可观察依据3"]}',
       target === "video" ? '如果收到多张关键帧，请额外返回 "frame_probabilities": [0-100,0-100,...]' : "",
-      "",
-      "重要：reasons必须具体，不要泛泛而谈；如果特征不明显，诚实地降低probability和confidence；不要编造无法观察到的细节。",
-    ].filter(Boolean).join("\n");
+      "reasons 必须具体、可观察、可解释，避免泛泛而谈；不要只写“像 AI”“很自然”这类空话。",
+    ].filter(Boolean));
   }
 
-  return [
-    `You are a professional AI detection expert for ${target} with deep expertise.`,
+  return joinPromptLines([
+    `You are a professional AI detection expert for ${target}.`,
+    "Your job is to make conservative, evidence-based, low-false-positive judgments.",
+    "Only rely on observable evidence in the current input. Do not fabricate details that cannot be directly seen, heard, or verified.",
+    "When evidence is weak, ambiguous, or explainable by normal human production, prefer uncertain and lower both probability and confidence.",
     "",
-    "Scoring criteria:",
-    "90-100: Almost certain AI, multiple obvious traits",
-    "70-89: Likely AI, typical characteristics present",
-    "50-69: Uncertain, features unclear",
-    "30-49: More likely human, few suspicious points",
-    "0-29: Almost certain human creation",
+    "Probability scoring:",
+    "90-100: Almost certainly AI-generated with multiple strong indicators",
+    "70-89: Likely AI-generated with typical indicators",
+    "50-69: Insufficient evidence for a stable conclusion",
+    "30-49: More likely human-made, with a few suspicious points",
+    "0-29: Almost certainly human-made",
     "",
-    "Confidence criteria:",
-    "80-100: Strong evidence supports judgment",
-    "60-79: Some evidence but insufficient",
-    "0-59: Insufficient evidence, mainly experience-based",
+    "Confidence scoring:",
+    "80-100: Strong, consistent evidence",
+    "60-79: Some evidence, but still uncertain",
+    "0-59: Limited evidence; judgment is largely heuristic",
     "",
-    "Return strict JSON (no markdown blocks):",
-    '{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["specific evidence 1","specific evidence 2","specific evidence 3"]}',
-    target === "video" ? 'If multiple keyframes, also return "frame_probabilities": [0-100, ...]' : "",
-    "",
-    "Important: Reasons must be specific, not generic; if features unclear, honestly lower probability and confidence; do not fabricate unobservable details.",
-  ].filter(Boolean).join("\n");
+    "Return strict JSON only (no markdown blocks, no extra explanation):",
+    '{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["specific observable evidence 1","specific observable evidence 2","specific observable evidence 3"]}',
+    target === "video" ? 'If multiple keyframes are provided, also return "frame_probabilities": [0-100, ...]' : "",
+    "Reasons must be concrete and observable, not generic. If evidence is unclear, lower probability and confidence honestly.",
+  ].filter(Boolean));
 }
 
 function resolveDetectionTargetType(type: string): "text" | "image" | "audio" | "video" {
@@ -2515,57 +2582,98 @@ function shouldRequireSpreadsheet(formats: readonly DocumentFileFormat[]) {
   return formats.includes("xlsx");
 }
 
-function getDocumentFormatGenerationGuidance(targetFormat: DocumentFileFormat) {
+function getDocumentFormatGenerationGuidance(
+  targetFormat: DocumentFileFormat,
+  locale: PromptLocale,
+) {
   if (targetFormat === "xlsx") {
-    return [
-      "Target export format: Excel (.xlsx).",
-      "Focus on structured spreadsheet data.",
-      "Include at least one spreadsheet with a clear sheet name, useful columns, and complete rows.",
-      "Keep sections concise; the spreadsheet is the primary deliverable.",
-    ];
+    return locale === "zh"
+      ? [
+          "目标导出格式：Excel（.xlsx）。",
+          "重点输出结构化表格数据。",
+          "至少生成一个工作表，工作表名称明确，列名有意义，行数据完整可用。",
+          "章节说明可以简洁，但表格必须是主要交付内容。",
+        ]
+      : [
+          "Target export format: Excel (.xlsx).",
+          "Focus on structured spreadsheet data.",
+          "Include at least one spreadsheet with a clear sheet name, useful columns, and complete rows.",
+          "Keep sections concise; the spreadsheet is the primary deliverable.",
+        ];
   }
 
   if (targetFormat === "docx") {
-    return [
-      "Target export format: Word (.docx).",
-      "Focus on prose sections, readable headings, and polished paragraphs.",
-      "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
-    ];
+    return locale === "zh"
+      ? [
+          "目标导出格式：Word（.docx）。",
+          "重点输出可读性强的章节结构、清晰标题和完整段落。",
+          "除非用户明确要求表格型输出，否则 spreadsheets 数组保持为空。",
+        ]
+      : [
+          "Target export format: Word (.docx).",
+          "Focus on prose sections, readable headings, and polished paragraphs.",
+          "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+        ];
   }
 
   if (targetFormat === "pdf") {
-    return [
-      "Target export format: PDF.",
-      "Focus on clean narrative structure with concise headings and readable paragraphs.",
-      "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
-    ];
+    return locale === "zh"
+      ? [
+          "目标导出格式：PDF。",
+          "重点输出叙述清晰、结构干净、便于阅读的正文内容。",
+          "除非用户明确要求表格型输出，否则 spreadsheets 数组保持为空。",
+        ]
+      : [
+          "Target export format: PDF.",
+          "Focus on clean narrative structure with concise headings and readable paragraphs.",
+          "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+        ];
   }
 
   if (targetFormat === "md") {
-    return [
-      "Target export format: Markdown (.md).",
-      "Use a markdown-friendly structure with clear headings and concise paragraphs.",
-      "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
-    ];
+    return locale === "zh"
+      ? [
+          "目标导出格式：Markdown（.md）。",
+          "使用适合 Markdown 的层级标题、简洁段落和清晰结构。",
+          "除非用户明确要求表格型输出，否则 spreadsheets 数组保持为空。",
+        ]
+      : [
+          "Target export format: Markdown (.md).",
+          "Use a markdown-friendly structure with clear headings and concise paragraphs.",
+          "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+        ];
   }
 
-  return [
-    "Target export format: TXT (.txt).",
-    "Use plain-text-friendly structure with simple headings and readable paragraphs.",
-    "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
-  ];
+  return locale === "zh"
+    ? [
+        "目标导出格式：TXT（.txt）。",
+        "使用适合纯文本的简单标题、清晰段落和可直接阅读的结构。",
+        "除非用户明确要求表格型输出，否则 spreadsheets 数组保持为空。",
+      ]
+    : [
+        "Target export format: TXT (.txt).",
+        "Use plain-text-friendly structure with simple headings and readable paragraphs.",
+        "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+      ];
 }
 
-function buildFileGenerationSystemPrompt(targetFormat: DocumentFileFormat) {
+function buildFileGenerationSystemPrompt(
+  targetFormat: DocumentFileFormat,
+  locale: PromptLocale = "en",
+) {
   const requireSpreadsheet = targetFormat === "xlsx";
 
-  return [
-    ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
-    ...getDocumentFormatGenerationGuidance(targetFormat),
-    requireSpreadsheet
-      ? "Include at least one meaningful spreadsheet that matches the user's request."
-      : "Return an empty spreadsheets array unless tabular data is explicitly requested.",
-  ].join("\n");
+  return joinPromptLines([
+    ...buildFileGenerationSchemaPromptLines(locale),
+    ...getDocumentFormatGenerationGuidance(targetFormat, locale),
+    locale === "zh"
+      ? requireSpreadsheet
+        ? "必须包含至少一个与用户需求匹配、可直接使用的有效工作表。"
+        : "除非用户明确要求表格数据，否则必须返回空的 spreadsheets 数组。"
+      : requireSpreadsheet
+        ? "Include at least one meaningful spreadsheet that matches the user's request."
+        : "Return an empty spreadsheets array unless tabular data is explicitly requested.",
+  ]);
 }
 
 function parseGeneratedDocumentFromRawText(
@@ -2600,7 +2708,7 @@ async function generateDocumentWithDashScope(
   targetFormat: DocumentFileFormat,
 ) {
   const requireSpreadsheet = targetFormat === "xlsx";
-  const systemPrompt = `${buildFileGenerationSystemPrompt(targetFormat)} Respond with raw JSON only.`;
+  const systemPrompt = `${buildFileGenerationSystemPrompt(targetFormat, "zh")} 只返回原始 JSON，不要返回 Markdown 或解释。`;
   const baseRequest = {
     model: modelId,
     messages: [
@@ -2610,7 +2718,7 @@ async function generateDocumentWithDashScope(
       },
       {
         role: "user",
-        content: buildFileGenerationPrompt(prompt, targetFormat),
+        content: buildFileGenerationPrompt(prompt, targetFormat, "zh"),
       },
     ],
     temperature: 0.3,
@@ -2691,7 +2799,7 @@ async function generateDocumentWithDashScope(
     }
 
     console.warn(
-      `[Generate][${requestId}] Replicate ???????????????????`,
+      `[Generate][${requestId}] Replicate 文档生成参数不兼容，自动降级为最小输入重试`,
     );
     payload = await createReplicatePrediction(requestId, normalizedModelId, fallbackInput);
   }
@@ -2699,7 +2807,7 @@ async function generateDocumentWithDashScope(
   const status = (payload.status ?? "").toLowerCase();
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate ??????${detail ? `: ${detail}` : ""}`);
+    throw new Error(`Replicate 文档生成失败${detail ? `: ${detail}` : ""}`);
   }
 
   const finalPayload =
@@ -2707,19 +2815,19 @@ async function generateDocumentWithDashScope(
       ? payload
       : await (() => {
           if (!payload.id) {
-            throw new Error("Replicate ?????? prediction id?");
+            throw new Error("Replicate 文档生成失败 prediction id?");
           }
 
           return waitForReplicatePredictionResult(
             payload.id,
             REPLICATE_TEXT_TASK_TIMEOUT_MS,
-            `Replicate ?????????????prediction_id: ${payload.id}`,
+            `Replicate 文档生成超时，请稍后重试。prediction_id: ${payload.id}`,
           );
         })();
 
   const content = extractReplicateTextOutput(finalPayload.output);
   if (!content.trim()) {
-    throw new Error("Replicate ?????????????");
+    throw new Error("Replicate 文档生成未返回可解析内容。");
   }
 
   return parseGeneratedDocumentFromRawText(content, prompt, requireSpreadsheet);
@@ -2866,124 +2974,116 @@ function buildDocumentDetectionPrompt(input: {
   locale: "zh" | "en";
 }) {
   if (input.locale === "zh") {
-    return [
+    return joinPromptLines([
       `文件名：${input.fileName}`,
-      "请从以下8个维度深度分析该文档是否为AI生成：",
-      "1. 语言重复度：句式、词汇、表达方式的重复程度",
-      "2. 结构均匀性：段落长度、结构是否过于规整统一",
-      "3. 信息密度：内容是否空洞、缺乏具体细节和数据",
-      "4. 措辞风格：是否有模板化、机械化的表达",
-      "5. 逻辑连贯性：论证是否有跳跃、缺乏深度推理",
-      "6. 个性化特征：是否缺乏个人风格、口语化、情感色彩",
-      "7. 错误类型：AI常见错误（事实错误、逻辑矛盾）vs人类错误（拼写、语法）",
-      "8. 创新性：观点是否新颖还是常见套话",
+      "请仅基于文档文本本身可观察到的语言、结构和信息特征进行判断，不要臆测作者身份或写作过程。",
+      "重点从以下维度评估该文档是否可能为 AI 生成：",
+      "1. 语言重复度：句式、词汇、表达方式是否过度重复",
+      "2. 结构均匀性：段落长度和组织方式是否过于整齐机械",
+      "3. 信息密度：是否空泛、缺乏具体细节、数据或上下文约束",
+      "4. 措辞风格：是否存在模板化、机械化、过度标准化表达",
+      "5. 逻辑连贯性：推理是否跳跃、浅层、缺乏真实写作痕迹",
+      "6. 个性化特征：是否缺乏个人语气、习惯表达、自然口语感",
+      "7. 错误类型：更接近 AI 的事实/逻辑问题，还是更接近人工的拼写/语法/口误",
+      "8. 新颖性：观点是否具体、有针对性，还是流于常见套话",
+      "如果文本很短、信息很少或证据不充分，请保守判断并降低 probability 与 confidence。",
       "",
       "文档内容：",
       truncateText(input.extractedText, DETECTION_SOURCE_MAX_CHARS),
-    ].join("\n");
+    ]);
   }
 
-  return [
+  return joinPromptLines([
     `File: ${input.fileName}`,
-    "Deeply analyze if this document is AI-generated across 8 dimensions:",
-    "1. Repetition: sentence patterns, vocabulary, expression repetition",
-    "2. Structural uniformity: overly regular paragraph lengths and structure",
-    "3. Information density: shallow content, lack of specific details and data",
-    "4. Phrasing style: templated, mechanical expressions",
-    "5. Logical coherence: reasoning jumps, lack of depth",
-    "6. Personalization: lack of personal style, colloquialisms, emotional tone",
-    "7. Error types: AI errors (factual, logical) vs human errors (spelling, grammar)",
-    "8. Originality: novel insights vs common platitudes",
+    "Judge only from observable textual evidence in the document itself; do not speculate about the author or unseen writing process.",
+    "Assess whether the document may be AI-generated across these dimensions:",
+    "1. Repetition: repeated sentence patterns, wording, or expressions",
+    "2. Structural uniformity: overly regular paragraph lengths or organization",
+    "3. Information density: shallow content, lack of concrete details, data, or constraints",
+    "4. Phrasing style: templated, mechanical, or overly standardized wording",
+    "5. Logical coherence: shallow reasoning, abrupt jumps, or weak argumentative depth",
+    "6. Personalization: lack of personal voice, colloquialisms, or natural human texture",
+    "7. Error types: more AI-like factual/logical issues vs more human-like spelling/grammar slips",
+    "8. Originality: specific insight vs generic platitudes",
+    "If the text is short or evidence is insufficient, be conservative and lower both probability and confidence.",
     "",
     "Document content:",
     truncateText(input.extractedText, DETECTION_SOURCE_MAX_CHARS),
-  ].join("\n");
+  ]);
 }
 
 function buildVisualDetectionPrompt(target: "image" | "video", locale: "zh" | "en") {
   if (locale === "zh") {
     if (target === "video") {
-      return [
-        "⚠️ 关键：真实视频允许有场景切换、镜头切换、UI界面、光线自然变化。这些都是正常现象，不是AI特征！",
+      return joinPromptLines([
+        "⚠️ 关键：真实视频允许存在场景切换、镜头切换、UI 覆层、曝光波动、自然光变化和焦距变化，这些本身不是 AI 特征。",
+        "请重点观察同一主体、同一镜头或同一场景内部的一致性，而不是简单把‘不连续’误判为 AI。",
         "",
-        "只有以下情况才是AI生成的特征：",
+        "只有以下类型的现象才更像 AI 生成证据：",
+        "1. 同一镜头内的人脸、肢体、手指、物体轮廓持续漂移、扭曲或突然变形",
+        "2. 同一场景内的纹理、材质、背景结构反复重绘、模糊、重复或不真实",
+        "3. 光影、反射、透视、重力或运动规律明显违背物理常识",
+        "4. 主体身份、服装、关键道具或空间关系在无合理剪辑依据下突然变化",
+        "5. 明显的生成伪影、闪烁、边缘抖动、局部糊化或结构崩坏",
         "",
-        "1. 同一场景内的异常：",
-        "   - 人物面部在同一镜头内扭曲、五官漂移",
-        "   - 物体形状在同一场景内突变",
-        "   - 纹理在同一画面内模糊、重复、不真实",
+        "⚠️ 以下情况通常是正常现象，不要误判为 AI：",
+        "- 正常剪辑造成的场景跳转、角度切换、时间变化",
+        "- 视频播放器或录屏带来的 UI 界面、字幕层、进度条",
+        "- 自然天气/光照变化、对焦变化、镜头焦距变化",
+        "- 不同关键帧来自不同片段或不同镜头",
         "",
-        "2. 物理违背：",
-        "   - 光影方向明显错误（如两个相反方向的阴影）",
-        "   - 重力、运动违背常识",
-        "",
-        "3. 明显的生成伪影：",
-        "   - 人物手指、肢体明显畸形",
-        "   - 画面有明显的AI生成痕迹（模糊、扭曲）",
-        "",
-        "⚠️ 以下情况是正常的，不要误判为AI：",
-        "- 场景切换（从海洋切换到界面）= 正常剪辑",
-        "- 镜头切换（不同角度、不同时间）= 正常拍摄",
-        "- 光线变化（日出日落、云层）= 自然现象",
-        "- UI界面出现 = 正常的视频播放器界面",
-        "- 月亮大小变化 = 正常的镜头焦距变化",
-        "",
-        "如果帧来自不同场景或包含UI界面，请将probability设为30-40（更像真实视频），不要因为场景不连续就判断为AI。"
-      ].join("\n");
+        "如果提供的关键帧明显来自不同场景或包含 UI 覆层，不能仅凭场景不连续就判为 AI；若缺少明确伪影，应保守降低 probability。",
+      ]);
     }
-    return [
-      "请从以下8个维度深度分析该图片是否为AI生成：",
-      "1. 纹理细节：局部纹理是否重复、不自然、过于完美",
-      "2. 边缘质量：物体边缘是否模糊、有伪影、不清晰",
-      "3. 光影一致性：光源方向、阴影、高光是否符合物理规律",
-      "4. 人体解剖：手指、五官、肢体比例、关节是否正常",
-      "5. 文字内容：文字是否清晰、有无乱码、变形",
-      "6. 透视关系：空间透视、物体大小比例是否合理",
-      "7. 对称性：是否过度对称（AI特征）或自然不对称",
-      "8. 细节连贯性：放大后细节是否经得起推敲、有无穿帮"
-    ].join("\n");
+    return joinPromptLines([
+      "请仅基于图片中可观察到的视觉证据进行判断，不要臆测生成过程。",
+      "重点从以下维度分析该图片是否可能为 AI 生成：",
+      "1. 纹理细节：局部纹理是否重复、不自然、过于干净或过度平滑",
+      "2. 边缘质量：主体边缘是否模糊、断裂、粘连或带有伪影",
+      "3. 光影一致性：光源方向、阴影、高光、反射是否符合物理规律",
+      "4. 解剖与结构：人脸、手指、肢体、器物结构是否自然合理",
+      "5. 文字与符号：文字、标识、图案是否变形、乱码或不连贯",
+      "6. 透视关系：空间透视、尺度比例、重叠关系是否真实",
+      "7. 对称与重复：是否存在不自然的过度对称或细节复制",
+      "8. 放大一致性：放大后细节是否经得起推敲，是否出现局部崩坏或穿帮",
+      "如果图片证据不足或只是风格化较强但没有明确伪影，请保守判断并降低 probability 与 confidence。",
+    ]);
   }
 
   if (target === "video") {
-    return [
-      "⚠️ KEY: Real videos allow scene cuts, camera switches, UI overlays, natural lighting changes. These are NORMAL, not AI traits!",
+    return joinPromptLines([
+      "⚠️ KEY: Real videos may contain scene cuts, camera switches, UI overlays, exposure changes, natural lighting changes, and focal-length shifts. These alone are NOT AI indicators.",
+      "Focus on within-shot and within-subject consistency instead of over-penalizing normal editing discontinuity.",
       "",
-      "Only these indicate AI generation:",
+      "Signs that more strongly support AI generation include:",
+      "1. Persistent face, limb, finger, or object deformation within the same shot",
+      "2. Repainting, unstable textures, repeated details, or structural drift within one scene",
+      "3. Clearly impossible lighting, reflection, gravity, motion, or perspective behavior",
+      "4. Sudden identity, clothing, prop, or spatial-layout changes without a plausible edit boundary",
+      "5. Obvious generation artifacts such as flicker, edge shimmer, local blur collapse, or geometry failure",
       "",
-      "1. Within-scene anomalies:",
-      "   - Facial distortion/feature drift within same shot",
-      "   - Object shape changes within same scene",
-      "   - Blurry, repetitive, unreal textures in same frame",
+      "⚠️ Usually normal and should not be over-counted as AI evidence:",
+      "- Ordinary scene cuts or angle changes",
+      "- Screen-recording or player UI overlays",
+      "- Natural weather, time-of-day, focus, or exposure changes",
+      "- Different keyframes coming from different segments or shots",
       "",
-      "2. Physics violations:",
-      "   - Clearly wrong lighting direction (e.g., two opposite shadows)",
-      "   - Gravity/motion defying common sense",
-      "",
-      "3. Obvious generation artifacts:",
-      "   - Clearly deformed fingers/limbs",
-      "   - Obvious AI generation traces (blur, distortion)",
-      "",
-      "⚠️ These are NORMAL, do NOT misjudge as AI:",
-      "- Scene cuts (ocean to UI) = normal editing",
-      "- Camera switches (different angles/times) = normal filming",
-      "- Lighting changes (sunrise/sunset, clouds) = natural phenomena",
-      "- UI overlay appearance = normal video player interface",
-      "- Moon size changes = normal lens focal length change",
-      "",
-      "If frames are from different scenes or contain UI, set probability=30-40 (more likely real), don't judge as AI just because scenes are discontinuous."
-    ].join("\n");
+      "If keyframes clearly come from different scenes or include UI overlays, do not classify as AI merely because continuity is broken; stay conservative unless explicit artifacts are visible.",
+    ]);
   }
-  return [
-    "Deeply analyze if this image is AI-generated across 8 dimensions:",
-    "1. Texture details: repetitive, unnatural, overly perfect local textures",
-    "2. Edge quality: blurry edges, artifacts, unclear boundaries",
-    "3. Lighting consistency: light direction, shadows, highlights follow physics",
-    "4. Human anatomy: fingers, facial features, body proportions, joints normal",
-    "5. Text content: text clarity, presence of gibberish, distortion",
-    "6. Perspective: spatial perspective, object size ratios reasonable",
-    "7. Symmetry: over-symmetry (AI trait) vs natural asymmetry",
-    "8. Detail coherence: details hold up under magnification, no inconsistencies"
-  ].join("\n");
+  return joinPromptLines([
+    "Judge only from observable visual evidence in the image itself; do not speculate about the hidden generation process.",
+    "Assess whether the image may be AI-generated across these dimensions:",
+    "1. Texture details: repeated, unstable, overly smooth, or unnatural local textures",
+    "2. Edge quality: blurry borders, broken contours, sticking artifacts, or unclear separations",
+    "3. Lighting consistency: whether light direction, shadows, highlights, and reflections obey physics",
+    "4. Anatomy and structure: whether faces, fingers, limbs, tools, and object structures look natural",
+    "5. Text and symbols: whether text, logos, signs, or patterns are garbled or structurally inconsistent",
+    "6. Perspective relations: whether depth, scale, overlap, and geometry are realistic",
+    "7. Symmetry and repetition: unnatural over-symmetry or duplicated detail patterns",
+    "8. Zoomed-in coherence: whether details remain consistent under closer inspection",
+    "If evidence is weak or the image is simply stylized without clear artifacts, stay conservative and lower both probability and confidence.",
+  ]);
 }
 
 async function detectDocumentWithDashScope(input: {
@@ -3540,18 +3640,33 @@ function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFo
   return ["docx"];
 }
 
-function buildDocumentEditingSystemPrompt(requireSpreadsheet: boolean) {
-  return [
-    ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
-    "You edit uploaded documents instead of drafting from scratch.",
-    "Preserve core facts from the source document unless the user explicitly asks to rewrite them.",
-    "Do not summarize, compress, or rewrite unaffected content.",
-    "Keep paragraph order and wording unchanged wherever no edit is requested.",
-    requireSpreadsheet
-      ? "Return at least one spreadsheet when the output format includes xlsx."
-      : "Return an empty spreadsheets array unless tabular data is genuinely useful.",
-    "Respond with raw JSON only.",
-  ].join("\n");
+function buildDocumentEditingSystemPrompt(
+  requireSpreadsheet: boolean,
+  locale: PromptLocale = "en",
+) {
+  return joinPromptLines([
+    ...buildFileGenerationSchemaPromptLines(locale),
+    locale === "zh"
+      ? "你的任务是编辑用户上传的文档，而不是从零重写。"
+      : "You edit uploaded documents instead of drafting them from scratch.",
+    locale === "zh"
+      ? "除非用户明确要求，否则必须保留原文的核心事实、结构顺序和未修改内容。"
+      : "Preserve core facts, structure order, and unaffected content unless the user explicitly asks to change them.",
+    locale === "zh"
+      ? "不要总结、压缩、删减、弱化或改写未被要求修改的内容。"
+      : "Do not summarize, compress, omit, soften, or rewrite content that was not requested to change.",
+    locale === "zh"
+      ? "如果是局部替换类编辑，尽量保持其余句子逐字不变。"
+      : "For local replacement requests, keep all other sentences as close to verbatim as possible.",
+    locale === "zh"
+      ? requireSpreadsheet
+        ? "当输出格式包含 xlsx 时，必须返回至少一个有效工作表。"
+        : "除非结果确实需要表格数据，否则 spreadsheets 数组保持为空。"
+      : requireSpreadsheet
+        ? "Return at least one spreadsheet when the output format includes xlsx."
+        : "Return an empty spreadsheets array unless tabular data is genuinely needed.",
+    locale === "zh" ? "只返回原始 JSON，不要返回 Markdown 或解释。" : "Respond with raw JSON only.",
+  ]);
 }
 
 function buildDocumentEditingPrompt(input: {
@@ -3559,8 +3674,31 @@ function buildDocumentEditingPrompt(input: {
   instruction: string;
   sourceText: string;
   requireSpreadsheet: boolean;
+  locale?: PromptLocale;
 }) {
-  return [
+  const locale = input.locale ?? "en";
+
+  if (locale === "zh") {
+    return joinPromptLines([
+      `源文件：${input.fileName}`,
+      "编辑要求：",
+      input.instruction,
+      "",
+      "原始内容：",
+      truncateText(input.sourceText, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
+      "",
+      "输出要求：",
+      "- 在忠于上传文档的前提下执行编辑要求。",
+      "- 返回一份完整的编辑后文档包。",
+      "- 不要省略章节、压缩段落、总结未修改内容。",
+      "- 如果是局部替换请求，其余句子尽量保持原样。",
+      input.requireSpreadsheet
+        ? "- 结果中必须包含至少一个有效工作表。"
+        : "- 除非编辑结果明显需要表格，否则 spreadsheets 数组保持为空。",
+    ]);
+  }
+
+  return joinPromptLines([
     `Source file: ${input.fileName}`,
     "Editing instructions:",
     input.instruction,
@@ -3572,11 +3710,11 @@ function buildDocumentEditingPrompt(input: {
     "- Keep the result faithful to the uploaded file while applying the requested edits.",
     "- Return one complete edited document package.",
     "- Do not omit sections, shorten paragraphs, or summarize unchanged passages.",
-    "- If the request is a local phrase replacement, keep every other sentence exactly as-is.",
+    "- If the request is a local phrase replacement, keep every other sentence as close to the source as possible.",
     input.requireSpreadsheet
-      ? "- Include one useful spreadsheet in the result."
+      ? "- Include at least one useful spreadsheet in the result."
       : "- Keep the spreadsheets array empty unless the edited result clearly needs tabular data.",
-  ].join("\n");
+  ]);
 }
 
 function buildReplicateDocumentEditingPrompt(input: {
@@ -3585,10 +3723,11 @@ function buildReplicateDocumentEditingPrompt(input: {
   sourceText: string;
   requireSpreadsheet: boolean;
 }) {
-  return [
-    buildDocumentEditingSystemPrompt(input.requireSpreadsheet),
-    buildDocumentEditingPrompt(input),
-  ].join("\n\n");
+  return joinPromptLines([
+    buildDocumentEditingSystemPrompt(input.requireSpreadsheet, "en"),
+    "",
+    buildDocumentEditingPrompt({ ...input, locale: "en" }),
+  ]);
 }
 
 async function editDocumentWithDashScope(input: {
@@ -3609,7 +3748,7 @@ async function editDocumentWithDashScope(input: {
     messages: [
       {
         role: "system",
-        content: buildDocumentEditingSystemPrompt(input.requireSpreadsheet),
+        content: buildDocumentEditingSystemPrompt(input.requireSpreadsheet, "zh"),
       },
       {
         role: "user",
@@ -3618,6 +3757,7 @@ async function editDocumentWithDashScope(input: {
           instruction: input.prompt,
           sourceText,
           requireSpreadsheet: input.requireSpreadsheet,
+          locale: "zh",
         }),
       },
     ],
@@ -3768,8 +3908,798 @@ function fileToDataUrl(file: File) {
   });
 }
 
-function buildDashScopeImagePrompt(prompt: string) {
-  return prompt.replace(/\s+/g, " ").trim();
+function buildDashScopeImagePrompt(prompt: string, mode: "generation" | "editing" = "generation") {
+  const cleanedPrompt = prompt.replace(/\s+/g, " ").trim();
+
+  if (mode === "editing") {
+    return joinPromptLines([
+      "请基于输入图片执行精确编辑，严格落实用户要求。",
+      "除非用户明确要求改变，否则必须保留主体身份、整体构图、镜头视角、空间关系、画幅比例和未修改区域。",
+      "只修改用户明确提到的部分，不要擅自新增、删除、替换或改动其他元素。",
+      "结果必须像同一张图片的自然编辑版本，不得无故更换主体、重建场景或重构画面。",
+      `用户要求：${cleanedPrompt}`,
+    ]);
+  }
+
+  return joinPromptLines([
+    "请生成 1 张高质量图片，严格执行用户要求。",
+    "优先落实用户指定的主体、场景、风格、时间、天气、镜头、构图、颜色与材质特征。",
+    "确保主体清晰突出，解剖自然，透视正确，光影一致，局部细节真实可信。",
+    "除非用户明确要求，否则不得出现可见文字、字母、标志、字幕、边框或水印。",
+    `用户要求：${cleanedPrompt}`,
+  ]);
+}
+
+type DashScopeVideoEditPlan = {
+  requiresReferenceRebuild: boolean;
+  mustKeep: string[];
+  referenceChanges: string[];
+  mustAvoid: string[];
+  keyframePrompt: string;
+  regeneratedKeyframePrompt: string;
+  videoPrompt: string;
+};
+
+type DashScopeVideoKeyframeVerification = {
+  passed: boolean;
+  confidence: number;
+  missingRequirements: string[];
+  correctedKeyframePrompt: string;
+};
+
+type DashScopeEditedVideoVerification = {
+  passed: boolean;
+  confidence: number;
+  missingRequirements: string[];
+  correctedVideoPrompt: string;
+};
+
+function normalizeDashScopePlanStringArray(value: unknown, limit = 8) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function buildDashScopeFallbackVideoEditPlan(
+  videoSummary: string,
+  userPrompt: string,
+  partial?: Partial<DashScopeVideoEditPlan>,
+): DashScopeVideoEditPlan {
+  const mustKeep = partial?.mustKeep?.filter(Boolean) ?? [];
+  const referenceChanges = partial?.referenceChanges?.filter(Boolean) ?? [];
+  const mustAvoid = partial?.mustAvoid?.filter(Boolean) ?? [];
+  const requiresReferenceRebuild =
+    partial?.requiresReferenceRebuild ?? referenceChanges.length > 0;
+
+  return {
+    requiresReferenceRebuild,
+    mustKeep,
+    referenceChanges,
+    mustAvoid,
+    keyframePrompt:
+      partial?.keyframePrompt?.trim() ||
+      [
+        "请基于原视频关键帧生成一张适合后续5秒视频重生成的编辑后首帧。",
+        "优先保留主体身份、服饰、姿态、构图、镜头角度和空间关系的连续性。",
+        "用户明确要求改变的可见视觉属性必须真正改变，不可继续沿用原参考帧。",
+        `原视频摘要：${videoSummary}`,
+        `编辑要求：${buildDashScopeImagePrompt(userPrompt)}`,
+        ...(mustKeep.length > 0
+          ? ["必须保留：", ...mustKeep.map((item) => `- ${item}`)]
+          : []),
+        ...(referenceChanges.length > 0
+          ? ["必须落实的可见改动：", ...referenceChanges.map((item) => `- ${item}`)]
+          : []),
+        ...(mustAvoid.length > 0
+          ? ["禁止保留：", ...mustAvoid.map((item) => `- ${item}`)]
+          : []),
+      ].join("\n"),
+    regeneratedKeyframePrompt:
+      partial?.regeneratedKeyframePrompt?.trim() ||
+      [
+        "请直接生成一张适合后续5秒视频重生成的参考首帧。",
+        "画面要保留原视频主体身份、服饰、构图和空间关系中的核心特征，同时严格落实用户要求的可见改动。",
+        `原视频摘要：${videoSummary}`,
+        `编辑要求：${buildDashScopeImagePrompt(userPrompt)}`,
+        ...(mustKeep.length > 0
+          ? ["必须保留：", ...mustKeep.map((item) => `- ${item}`)]
+          : []),
+        ...(referenceChanges.length > 0
+          ? ["必须落实的可见改动：", ...referenceChanges.map((item) => `- ${item}`)]
+          : []),
+        ...(mustAvoid.length > 0
+          ? ["禁止出现：", ...mustAvoid.map((item) => `- ${item}`)]
+          : []),
+      ].join("\n"),
+    videoPrompt:
+      partial?.videoPrompt?.trim() ||
+      [
+        "基于编辑后的参考首帧生成一个稳定、连贯、真实的5秒短视频。",
+        "保持主体清晰、动作自然、镜头稳定，并延续合理的时序。",
+        `原视频摘要：${videoSummary}`,
+        `编辑要求：${userPrompt.trim()}`,
+        ...(mustKeep.length > 0
+          ? ["必须保留：", ...mustKeep.map((item) => `- ${item}`)]
+          : []),
+        ...(referenceChanges.length > 0
+          ? ["必须落实的改动：", ...referenceChanges.map((item) => `- ${item}`)]
+          : []),
+        ...(mustAvoid.length > 0
+          ? ["禁止出现：", ...mustAvoid.map((item) => `- ${item}`)]
+          : []),
+      ].join("\n"),
+  };
+}
+
+function normalizeDashScopeVideoEditPlan(
+  rawText: string,
+  videoSummary: string,
+  userPrompt: string,
+) {
+  try {
+    const parsed = JSON.parse(extractJsonObjectText(rawText)) as Record<string, unknown>;
+    const mustKeep = normalizeDashScopePlanStringArray(parsed.must_keep);
+    const referenceChanges = normalizeDashScopePlanStringArray(
+      parsed.reference_changes,
+    );
+    const mustAvoid = normalizeDashScopePlanStringArray(parsed.must_avoid);
+
+    return buildDashScopeFallbackVideoEditPlan(videoSummary, userPrompt, {
+      requiresReferenceRebuild:
+        typeof parsed.requires_reference_rebuild === "boolean"
+          ? parsed.requires_reference_rebuild
+          : referenceChanges.length > 0,
+      mustKeep,
+      referenceChanges,
+      mustAvoid,
+      keyframePrompt:
+        typeof parsed.keyframe_prompt === "string" ? parsed.keyframe_prompt : "",
+      regeneratedKeyframePrompt:
+        typeof parsed.regenerated_keyframe_prompt === "string"
+          ? parsed.regenerated_keyframe_prompt
+          : "",
+      videoPrompt:
+        typeof parsed.video_prompt === "string" ? parsed.video_prompt : "",
+    });
+  } catch (error) {
+    console.warn("[Generate][video-edit] parse structured plan failed:", error);
+    return buildDashScopeFallbackVideoEditPlan(videoSummary, userPrompt);
+  }
+}
+
+async function buildDashScopeVideoEditPlan(
+  videoSummary: string,
+  userPrompt: string,
+): Promise<DashScopeVideoEditPlan> {
+  const requestBody = {
+    model: "qwen-flash",
+    enable_thinking: false,
+    temperature: 0.1,
+    max_tokens: 800,
+    response_format: {
+      type: "json_object",
+    },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "你是视频编辑规划器，负责把“原视频摘要 + 用户编辑要求”转换成稳定、可执行的结构化编辑计划。",
+          "核心原则：优先保留主体身份、叙事连续性、构图逻辑与时序线索；但用户明确要求改变的内容优先级更高，必须真正落地。",
+          "请判断用户要求是否会改变参考关键帧中可见的视觉锚点；如果会，requires_reference_rebuild 必须为 true。",
+          "可见视觉锚点包括但不限于：时间、天气、季节、光线、背景、场景、室内外、服饰、发型、颜色、风格、构图、镜头角度、道具、主体外观、画幅与视角。",
+          "如果用户只要求改变动作节奏、情绪、镜头运动或轻微表演，而不改变参考帧视觉锚点，则 requires_reference_rebuild 可为 false。",
+          "reference_changes 只写需要覆盖参考关键帧的可见视觉改动，不要把纯动作变化写进去。",
+          "must_keep 只写必须保留的主体、构图、关系、身份特征和核心叙事线索。",
+          "must_avoid 只写与用户要求冲突、必须在结果中去除的元素。",
+          "keyframe_prompt 必须适合单张关键帧编辑；video_prompt 必须适合基于参考图继续生成 5 秒视频；regenerated_keyframe_prompt 必须适合在原关键帧难以修正时直接重建新的参考首帧。",
+          "提示词必须直接、具体、可执行，避免空泛描述、重复要求和与用户需求无关的修饰。",
+          "只返回 JSON，不要解释，不要输出 schema 之外的字段。",
+          "JSON schema:",
+          '{"requires_reference_rebuild":boolean,"must_keep":string[],"reference_changes":string[],"must_avoid":string[],"keyframe_prompt":string,"regenerated_keyframe_prompt":string,"video_prompt":string}',
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `原视频摘要：${videoSummary}`,
+          `用户编辑要求：${userPrompt.trim()}`,
+        ].join("\n"),
+      },
+    ],
+  };
+
+  let payload: DashScopeChatCompletionPayload;
+  try {
+    payload = await requestDashScopeChatCompletion(requestBody);
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    if (statusCode !== 400 && statusCode !== 422) {
+      throw error;
+    }
+
+    const { response_format, ...fallbackRequestBody } = requestBody;
+    void response_format;
+    payload = await requestDashScopeChatCompletion(fallbackRequestBody);
+  }
+
+  const rawText = extractChatMessageText(payload.choices?.[0]?.message?.content).trim();
+  if (!rawText) {
+    return buildDashScopeFallbackVideoEditPlan(videoSummary, userPrompt);
+  }
+
+  return normalizeDashScopeVideoEditPlan(rawText, videoSummary, userPrompt);
+}
+
+function buildFallbackDashScopeVideoKeyframeVerification(
+  plan: DashScopeVideoEditPlan,
+): DashScopeVideoKeyframeVerification {
+  return {
+    passed: plan.referenceChanges.length === 0,
+    confidence: plan.referenceChanges.length === 0 ? 60 : 35,
+    missingRequirements: plan.referenceChanges,
+    correctedKeyframePrompt: plan.keyframePrompt,
+  };
+}
+
+function buildFallbackDashScopeEditedVideoVerification(
+  plan: DashScopeVideoEditPlan,
+): DashScopeEditedVideoVerification {
+  return {
+    passed: false,
+    confidence: 35,
+    missingRequirements: plan.referenceChanges,
+    correctedVideoPrompt: [
+      plan.videoPrompt,
+      ...(plan.referenceChanges.length > 0
+        ? ["再次强化以下必须可见的改动：", ...plan.referenceChanges.map((item) => `- ${item}`)]
+        : []),
+      ...(plan.mustAvoid.length > 0
+        ? ["严格禁止以下内容继续出现：", ...plan.mustAvoid.map((item) => `- ${item}`)]
+        : []),
+    ].join("\n"),
+  };
+}
+
+function normalizeDashScopeVideoKeyframeVerification(
+  rawText: string,
+  plan: DashScopeVideoEditPlan,
+): DashScopeVideoKeyframeVerification {
+  try {
+    const parsed = JSON.parse(extractJsonObjectText(rawText)) as Record<string, unknown>;
+    const missingRequirements = normalizeDashScopePlanStringArray(
+      parsed.missing_requirements,
+    );
+
+    return {
+      passed: typeof parsed.passed === "boolean" ? parsed.passed : false,
+      confidence:
+        typeof parsed.confidence === "number"
+          ? clampPercentage(parsed.confidence, 50)
+          : 50,
+      missingRequirements,
+      correctedKeyframePrompt:
+        typeof parsed.corrected_keyframe_prompt === "string" &&
+        parsed.corrected_keyframe_prompt.trim()
+          ? parsed.corrected_keyframe_prompt.trim()
+          : [
+              plan.keyframePrompt,
+              ...(missingRequirements.length > 0
+                ? ["补充修正要求：", ...missingRequirements.map((item) => `- ${item}`)]
+                : []),
+            ].join("\n"),
+    };
+  } catch (error) {
+    console.warn("[Generate][video-edit] parse keyframe verification failed:", error);
+    return buildFallbackDashScopeVideoKeyframeVerification(plan);
+  }
+}
+
+async function verifyDashScopeVideoEditKeyframe(
+  imageUrl: string,
+  userPrompt: string,
+  plan: DashScopeVideoEditPlan,
+): Promise<DashScopeVideoKeyframeVerification> {
+  const requestBody = {
+    model: "qwen3-vl-flash",
+    enable_thinking: false,
+    temperature: 0.1,
+    max_tokens: 500,
+    response_format: {
+      type: "json_object",
+    },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "你是视频编辑参考关键帧验收器，负责判断给定图片是否已经满足用户要求中必须体现在画面里的视觉改动。",
+          "只检查单张图片里肉眼可见的内容，不检查动作、节奏、时长或你无法从静态图确认的信息。",
+          "如果图片仍保留了与用户要求冲突的旧视觉属性，或者关键改动不够明显，passed 必须为 false。",
+          "missing_requirements 只写仍未满足的可见要求，必须具体到可执行层面。",
+          "corrected_keyframe_prompt 必须输出一个更强、更直接、只针对缺失项的关键帧编辑提示词。",
+          "如果无法确认某项改动已经清晰落实，应保守判定为未满足。",
+          "只返回 JSON，不要解释，不要输出额外字段。",
+          'JSON schema: {"passed":boolean,"confidence":number,"missing_requirements":string[],"corrected_keyframe_prompt":string}',
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: [
+              `用户编辑要求：${userPrompt.trim()}`,
+              ...(plan.mustKeep.length > 0
+                ? ["必须保留：", ...plan.mustKeep.map((item) => `- ${item}`)]
+                : []),
+              ...(plan.referenceChanges.length > 0
+                ? ["必须落实的可见改动：", ...plan.referenceChanges.map((item) => `- ${item}`)]
+                : []),
+              ...(plan.mustAvoid.length > 0
+                ? ["禁止出现：", ...plan.mustAvoid.map((item) => `- ${item}`)]
+                : []),
+            ].join("\n"),
+          },
+          {
+            type: "image_url",
+            image_url: {
+              url: imageUrl,
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  let payload: DashScopeChatCompletionPayload;
+  try {
+    payload = await requestDashScopeChatCompletion(requestBody);
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    if (statusCode !== 400 && statusCode !== 422) {
+      throw error;
+    }
+
+    const { response_format, ...fallbackRequestBody } = requestBody;
+    void response_format;
+    payload = await requestDashScopeChatCompletion(fallbackRequestBody);
+  }
+
+  const rawText = extractChatMessageText(payload.choices?.[0]?.message?.content).trim();
+  if (!rawText) {
+    return buildFallbackDashScopeVideoKeyframeVerification(plan);
+  }
+
+  return normalizeDashScopeVideoKeyframeVerification(rawText, plan);
+}
+
+function normalizeDashScopeEditedVideoVerification(
+  rawText: string,
+  plan: DashScopeVideoEditPlan,
+): DashScopeEditedVideoVerification {
+  try {
+    const parsed = JSON.parse(extractJsonObjectText(rawText)) as Record<string, unknown>;
+    const missingRequirements = normalizeDashScopePlanStringArray(
+      parsed.missing_requirements,
+    );
+
+    return {
+      passed: typeof parsed.passed === "boolean" ? parsed.passed : false,
+      confidence:
+        typeof parsed.confidence === "number"
+          ? clampPercentage(parsed.confidence, 50)
+          : 50,
+      missingRequirements,
+      correctedVideoPrompt:
+        typeof parsed.corrected_video_prompt === "string" &&
+        parsed.corrected_video_prompt.trim()
+          ? parsed.corrected_video_prompt.trim()
+          : [
+              plan.videoPrompt,
+              ...(missingRequirements.length > 0
+                ? ["补充修正要求：", ...missingRequirements.map((item) => `- ${item}`)]
+                : []),
+            ].join("\n"),
+    };
+  } catch (error) {
+    console.warn("[Generate][video-edit] parse video verification failed:", error);
+    return buildFallbackDashScopeEditedVideoVerification(plan);
+  }
+}
+
+async function verifyDashScopeEditedVideo(
+  videoUrl: string,
+  userPrompt: string,
+  plan: DashScopeVideoEditPlan,
+): Promise<DashScopeEditedVideoVerification> {
+  const requestBody = {
+    model: "qwen3-omni-flash",
+    enable_thinking: false,
+    temperature: 0.1,
+    max_tokens: 500,
+    response_format: {
+      type: "json_object",
+    },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "你是视频编辑成片验收器，负责判断最终视频是否满足用户要求中必须显性体现的结果。",
+          "只检查最终视频里肉眼可见的结果，不检查底层推理过程，也不要臆测不可观察的信息。",
+          "如果视频仍保留了与用户要求冲突的视觉属性，或关键改动不够明显，passed 必须为 false。",
+          "missing_requirements 只写仍未满足的可见要求，必须具体、可执行。",
+          "corrected_video_prompt 必须输出一个更强、更直接、专门用于下一次重试的视频重生成提示词。",
+          "如果无法确认关键改动已经稳定呈现，应保守判定为未满足。",
+          "只返回 JSON，不要解释，不要输出额外字段。",
+          'JSON schema: {"passed":boolean,"confidence":number,"missing_requirements":string[],"corrected_video_prompt":string}',
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: [
+              `用户编辑要求：${userPrompt.trim()}`,
+              ...(plan.mustKeep.length > 0
+                ? ["必须保留：", ...plan.mustKeep.map((item) => `- ${item}`)]
+                : []),
+              ...(plan.referenceChanges.length > 0
+                ? ["必须落实的改动：", ...plan.referenceChanges.map((item) => `- ${item}`)]
+                : []),
+              ...(plan.mustAvoid.length > 0
+                ? ["禁止出现：", ...plan.mustAvoid.map((item) => `- ${item}`)]
+                : []),
+            ].join("\n"),
+          },
+          {
+            type: "video",
+            video: videoUrl,
+          },
+        ],
+      },
+    ],
+  };
+
+  let payload: DashScopeChatCompletionPayload;
+  try {
+    payload = await requestDashScopeChatCompletion(requestBody);
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    if (statusCode !== 400 && statusCode !== 422) {
+      throw error;
+    }
+
+    const { response_format, ...fallbackRequestBody } = requestBody;
+    void response_format;
+    payload = await requestDashScopeChatCompletion(fallbackRequestBody);
+  }
+
+  const rawText = extractChatMessageText(payload.choices?.[0]?.message?.content).trim();
+  if (!rawText) {
+    return buildFallbackDashScopeEditedVideoVerification(plan);
+  }
+
+  return normalizeDashScopeEditedVideoVerification(rawText, plan);
+}
+
+type DashScopeImageDimensions = {
+  width: number;
+  height: number;
+};
+
+type DashScopeEditedKeyframeCandidateCheck = {
+  accepted: boolean;
+  verification: DashScopeVideoKeyframeVerification | null;
+  rejectionReason: string | null;
+  candidateDimensions: DashScopeImageDimensions | null;
+};
+
+function readAsciiFromBytes(bytes: Uint8Array, start: number, length: number) {
+  return Buffer.from(bytes.subarray(start, start + length)).toString("ascii");
+}
+
+function readPngImageDimensions(bytes: Uint8Array): DashScopeImageDimensions | null {
+  if (
+    bytes.length < 24 ||
+    bytes[0] !== 0x89 ||
+    bytes[1] !== 0x50 ||
+    bytes[2] !== 0x4e ||
+    bytes[3] !== 0x47
+  ) {
+    return null;
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint32(16);
+  const height = view.getUint32(20);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function readGifImageDimensions(bytes: Uint8Array): DashScopeImageDimensions | null {
+  if (bytes.length < 10) {
+    return null;
+  }
+
+  const signature = readAsciiFromBytes(bytes, 0, 6);
+  if (signature !== "GIF87a" && signature !== "GIF89a") {
+    return null;
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const width = view.getUint16(6, true);
+  const height = view.getUint16(8, true);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function readWebpImageDimensions(bytes: Uint8Array): DashScopeImageDimensions | null {
+  if (
+    bytes.length < 30 ||
+    readAsciiFromBytes(bytes, 0, 4) !== "RIFF" ||
+    readAsciiFromBytes(bytes, 8, 4) !== "WEBP"
+  ) {
+    return null;
+  }
+
+  const chunkType = readAsciiFromBytes(bytes, 12, 4);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  if (chunkType === "VP8X" && bytes.length >= 30) {
+    const width = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
+    const height = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+
+  if (chunkType === "VP8 " && bytes.length >= 30) {
+    const width = view.getUint16(26, true) & 0x3fff;
+    const height = view.getUint16(28, true) & 0x3fff;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+
+  if (chunkType === "VP8L" && bytes.length >= 25) {
+    const width = 1 + (((bytes[22] & 0x3f) << 8) | bytes[21]);
+    const height =
+      1 + (((bytes[24] & 0x0f) << 10) | (bytes[23] << 2) | ((bytes[22] & 0xc0) >> 6));
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+
+  return null;
+}
+
+function readJpegImageDimensions(bytes: Uint8Array): DashScopeImageDimensions | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+    return null;
+  }
+
+  let offset = 2;
+  while (offset + 8 < bytes.length) {
+    while (offset < bytes.length && bytes[offset] != 0xff) {
+      offset += 1;
+    }
+
+    if (offset + 3 >= bytes.length) {
+      break;
+    }
+
+    const marker = bytes[offset + 1];
+    if (marker === 0xd8 || marker === 0x01) {
+      offset += 2;
+      continue;
+    }
+
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+
+    const segmentLength = (bytes[offset + 2] << 8) | bytes[offset + 3];
+    if (segmentLength < 2 || offset + 2 + segmentLength > bytes.length) {
+      break;
+    }
+
+    const isStartOfFrame =
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc;
+    if (isStartOfFrame) {
+      const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
+      const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+
+    offset += 2 + segmentLength;
+  }
+
+  return null;
+}
+
+function readImageDimensionsFromBytes(bytes: Uint8Array): DashScopeImageDimensions | null {
+  return (
+    readPngImageDimensions(bytes) ||
+    readJpegImageDimensions(bytes) ||
+    readWebpImageDimensions(bytes) ||
+    readGifImageDimensions(bytes)
+  );
+}
+
+async function readImageDimensionsFromFile(file: File) {
+  return readImageDimensionsFromBytes(new Uint8Array(await file.arrayBuffer()));
+}
+
+async function readImageDimensionsFromUrl(url: string) {
+  if (url.startsWith("data:")) {
+    const separatorIndex = url.indexOf(",");
+    if (separatorIndex < 0) {
+      return null;
+    }
+
+    const meta = url.slice(0, separatorIndex);
+    const body = url.slice(separatorIndex + 1);
+    const buffer = meta.includes(";base64")
+      ? Buffer.from(body, "base64")
+      : Buffer.from(decodeURIComponent(body), "utf8");
+    return readImageDimensionsFromBytes(new Uint8Array(buffer));
+  }
+
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`读取候选关键帧尺寸失败: HTTP ${response.status}`);
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return readImageDimensionsFromBytes(bytes);
+}
+
+function greatestCommonDivisor(left: number, right: number): number {
+  let a = Math.max(1, Math.round(Math.abs(left)));
+  let b = Math.max(1, Math.round(Math.abs(right)));
+
+  while (b !== 0) {
+    const rest = a % b;
+    a = b;
+    b = rest;
+  }
+
+  return a;
+}
+
+function describeImageAspectRatio(dimensions: DashScopeImageDimensions) {
+  const width = Math.max(1, Math.round(dimensions.width));
+  const height = Math.max(1, Math.round(dimensions.height));
+  const divisor = greatestCommonDivisor(width, height);
+  const ratioWidth = Math.max(1, Math.round(width / divisor));
+  const ratioHeight = Math.max(1, Math.round(height / divisor));
+  const orientationText = width === height ? "方图" : width > height ? "横版" : "竖版";
+
+  return {
+    ratioText: `${ratioWidth}:${ratioHeight}`,
+    orientationText,
+    sizeText: `${width}×${height}`,
+    aspectValue: width / height,
+  };
+}
+
+function isAspectRatioPreserved(
+  originalDimensions: DashScopeImageDimensions,
+  candidateDimensions: DashScopeImageDimensions,
+) {
+  const originalAspect = originalDimensions.width / originalDimensions.height;
+  const candidateAspect = candidateDimensions.width / candidateDimensions.height;
+  return (
+    Math.abs(candidateAspect - originalAspect) / Math.max(originalAspect, Number.EPSILON) <=
+    DASHSCOPE_VIDEO_EDIT_ASPECT_RATIO_TOLERANCE
+  );
+}
+
+function appendPromptRequirements(prompt: string, requirements: string[]) {
+  const normalizedPrompt = prompt.trim();
+  const normalizedRequirements = requirements.map((item) => item.trim()).filter(Boolean);
+  return [normalizedPrompt, ...normalizedRequirements].filter(Boolean).join("\n");
+}
+
+function buildDashScopeAspectRatioLockLines(
+  dimensions: DashScopeImageDimensions,
+  target: "image" | "video",
+) {
+  const { ratioText, orientationText, sizeText } = describeImageAspectRatio(dimensions);
+  const incompatibleModes =
+    orientationText === "横版"
+      ? "竖版或方图"
+      : orientationText === "竖版"
+        ? "横版或方图"
+        : "横版或竖版";
+
+  if (target === "image") {
+    return [
+      `输出图片必须严格保持原关键帧画幅比例：${ratioText}（${orientationText}，约 ${sizeText}）。`,
+      `必须继续沿用抽帧关键帧的构图边界与镜头视角，不得改成${incompatibleModes}。`,
+      "禁止裁切主体、拉伸变形或随意改动镜头边界。",
+    ];
+  }
+
+  return [
+    `最终视频必须严格保持参考关键帧画幅比例：${ratioText}（${orientationText}）。`,
+    `最终视频必须继续基于抽帧关键帧作为参考首帧生成，不得改成${incompatibleModes}。`,
+    "禁止裁切主体、拉伸变形或改变原始构图边界。",
+  ];
+}
+
+function buildDashScopeAspectRatioRetryLine(dimensions: DashScopeImageDimensions) {
+  const { ratioText, orientationText } = describeImageAspectRatio(dimensions);
+  return `上一张候选图未保持原关键帧比例，这次必须严格输出 ${ratioText} ${orientationText} 画幅，不能变比。`;
+}
+
+function buildDashScopeKeyframeAttemptPrompt(
+  prompt: string,
+  dimensions: DashScopeImageDimensions,
+  enforceAspectRetry = false,
+) {
+  return appendPromptRequirements(prompt, [
+    ...buildDashScopeAspectRatioLockLines(dimensions, "image"),
+    ...(enforceAspectRetry ? [buildDashScopeAspectRatioRetryLine(dimensions)] : []),
+    "本次编辑必须仍然基于抽帧关键帧继续修改，不能脱离该关键帧重新构图。",
+  ]);
+}
+
+function buildDashScopeVideoAttemptPrompt(prompt: string, dimensions: DashScopeImageDimensions) {
+  return appendPromptRequirements(prompt, buildDashScopeAspectRatioLockLines(dimensions, "video"));
+}
+
+async function validateDashScopeEditedKeyframeCandidate(input: {
+  candidateUrl: string;
+  originalDimensions: DashScopeImageDimensions;
+  prompt: string;
+  plan: DashScopeVideoEditPlan;
+}): Promise<DashScopeEditedKeyframeCandidateCheck> {
+  try {
+    const candidateDimensions = await readImageDimensionsFromUrl(input.candidateUrl);
+    if (!candidateDimensions) {
+      return {
+        accepted: false,
+        verification: null,
+        rejectionReason: "无法解析候选关键帧尺寸。",
+        candidateDimensions: null,
+      };
+    }
+
+    if (!isAspectRatioPreserved(input.originalDimensions, candidateDimensions)) {
+      const originalAspect = describeImageAspectRatio(input.originalDimensions);
+      const candidateAspect = describeImageAspectRatio(candidateDimensions);
+      return {
+        accepted: false,
+        verification: null,
+        rejectionReason:
+          `候选关键帧画幅比例变更为 ${candidateAspect.ratioText}（${candidateAspect.orientationText}，${candidateAspect.sizeText}），` +
+          `原关键帧为 ${originalAspect.ratioText}（${originalAspect.orientationText}，${originalAspect.sizeText}）。`,
+        candidateDimensions,
+      };
+    }
+
+    const verification = await verifyDashScopeVideoEditKeyframe(
+      input.candidateUrl,
+      input.prompt,
+      input.plan,
+    );
+
+    return {
+      accepted: true,
+      verification,
+      rejectionReason: null,
+      candidateDimensions,
+    };
+  } catch (error) {
+    return {
+      accepted: false,
+      verification: null,
+      rejectionReason: error instanceof Error ? error.message : "候选关键帧校验失败。",
+      candidateDimensions: null,
+    };
+  }
 }
 
 function buildDashScopeImageTaskConfig(modelId: string, prompt: string) {
@@ -3839,15 +4769,19 @@ async function generateImageWithDashScope(requestId: string, modelId: string, pr
   );
 }
 
-async function editImageWithDashScope(modelId: string, prompt: string, file: File) {
+async function editImageWithDashScopeBaseImage(
+  modelId: string,
+  prompt: string,
+  baseImageUrl: string,
+) {
   const payload = await createDashScopeAsyncTask(
     "/api/v1/services/aigc/image2image/image-synthesis",
     {
       model: modelId,
       input: {
         function: "description_edit",
-        prompt: buildDashScopeImagePrompt(prompt),
-        base_image_url: await fileToDataUrl(file),
+        prompt: buildDashScopeImagePrompt(prompt, "editing"),
+        base_image_url: baseImageUrl,
       },
       parameters: {
         n: DEFAULT_IMAGE_OUTPUT_COUNT,
@@ -3877,14 +4811,20 @@ async function editImageWithDashScope(modelId: string, prompt: string, file: Fil
   );
 }
 
+async function editImageWithDashScope(modelId: string, prompt: string, file: File) {
+  return editImageWithDashScopeBaseImage(modelId, prompt, await fileToDataUrl(file));
+}
+
 function buildReplicateImageEditPrompt(userPrompt: string) {
   const cleanedPrompt = userPrompt.replace(/\s+/g, " ").trim();
-  return [
-    "Edit the uploaded image according to the user's request.",
-    "Preserve the main subject and overall composition unless the user explicitly asks to change them.",
+  return joinPromptLines([
+    "Edit the uploaded image strictly according to the user's request.",
+    "Preserve subject identity, aspect ratio, composition, camera perspective, spatial layout, and untouched regions unless the user explicitly asks to change them.",
+    "Only modify what the user explicitly mentions. Do not add, remove, restyle, or replace unrelated elements.",
+    "The result should look like a natural edit of the same image, not a new image with a different subject or scene.",
     `User request: ${cleanedPrompt}`,
     "If the request is in Chinese, understand and execute it correctly.",
-  ].join("\n");
+  ]);
 }
 
 function buildReplicateImageEditInputs(modelId: string, promptForModel: string, imageUrl: string) {
@@ -3962,22 +4902,120 @@ async function editImageWithReplicate(input: {
   );
 }
 
-function buildDashScopeVideoPrompt(prompt: string) {
-  return [
-    "根据用户要求生成一个简洁、稳定、连贯的短视频。",
-    "保持主体清晰，动作自然，镜头稳定。",
+function buildDashScopeVideoPrompt(
+  prompt: string,
+  plan?: Pick<DashScopeVideoEditPlan, "mustKeep" | "referenceChanges" | "mustAvoid">,
+) {
+  return joinPromptLines([
+    "根据用户要求生成 1 条简洁、稳定、连贯的短视频。",
+    "保持主体清晰、身份稳定、动作自然、镜头稳定、时序连贯、物理合理。",
+    "用户明确要求改变的内容优先级高于参考图中的原始属性，必须真正体现在结果中。",
+    ...(plan
+      ? ["必须保持与参考关键帧一致的画幅比例、构图边界和镜头视角，不裁切、不拉伸、不随意切换画幅。"]
+      : []),
+    ...(plan?.mustKeep?.length
+      ? ["必须保留：", ...plan.mustKeep.map((item) => `- ${item}`)]
+      : []),
+    ...(plan?.referenceChanges?.length
+      ? ["必须落实的可见改动：", ...plan.referenceChanges.map((item) => `- ${item}`)]
+      : []),
+    ...(plan?.mustAvoid?.length
+      ? ["禁止出现：", ...plan.mustAvoid.map((item) => `- ${item}`)]
+      : []),
+    "除非用户明确要求，否则不要加入文字、logo、水印、无关主体或无关场景变化。",
     `用户要求：${prompt.trim()}`,
-  ].join("\n");
+  ]);
 }
 
-async function createDashScopeVideoTask(modelId: string, prompt: string, imageUrl: string) {
+async function requestDashScopePlainTextWithFallback(
+  modelIds: readonly string[],
+  buildRequestBody: (modelId: string) => Record<string, unknown>,
+  errorMessage: string,
+) {
+  let lastError: unknown = null;
+
+  for (const modelId of modelIds) {
+    try {
+      const payload = await requestDashScopeChatCompletion(buildRequestBody(modelId));
+      const text = extractChatMessageText(payload.choices?.[0]?.message?.content).trim();
+      if (text) {
+        return text;
+      }
+      lastError = new Error(`${errorMessage}（模型 ${modelId} 未返回文本）`);
+    } catch (error) {
+      lastError = error;
+      const statusCode = getErrorStatusCode(error);
+      if (statusCode !== 400 && statusCode !== 404 && statusCode !== 422) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError ?? new Error(errorMessage);
+}
+
+async function summarizeDashScopeVideoFrames(frameFiles: File[]) {
+  const limitedFrames = frameFiles.slice(0, DASHSCOPE_VIDEO_EDIT_FRAME_COUNT);
+  const content = [
+    {
+      type: "text",
+      text: [
+        "你将收到同一条视频的多个关键帧。",
+        "请提炼跨帧稳定的核心信息：主体身份、场景环境、关键动作、镜头语言、视觉风格和整体氛围。",
+        "如果存在轻微机位变化或转场，请总结主线内容，不要逐帧罗列。",
+        "只返回一段中文摘要，不超过120字。",
+      ].join("\n"),
+    },
+    ...(await Promise.all(
+      limitedFrames.map(async (file) => ({
+        type: "image_url",
+        image_url: {
+          url: await fileToDataUrl(file),
+        },
+      })),
+    )),
+  ];
+
+  return truncateText(
+    await requestDashScopePlainTextWithFallback(
+      ["qwen3-vl-flash"],
+      (modelId) => ({
+        model: modelId,
+        enable_thinking: false,
+        temperature: 0.1,
+        max_tokens: 256,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是视频编辑前处理助手。任务是从多帧画面中提炼后续重生成必须保留的主体身份、场景要点、构图特征、时序线索与稳定视觉锚点。只输出简洁摘要，不要解释，不要臆测看不到的信息。",
+          },
+          {
+            role: "user",
+            content,
+          },
+        ],
+      }),
+      "视频关键帧分析失败。",
+    ),
+    240,
+  );
+}
+
+async function createDashScopeVideoTask(
+  modelId: string,
+  prompt: string,
+  imageUrl: string,
+  plan?: Pick<DashScopeVideoEditPlan, "mustKeep" | "referenceChanges" | "mustAvoid">,
+) {
+  const promptText = buildDashScopeVideoPrompt(prompt, plan);
   const inputCandidates: Record<string, unknown>[] = [
     {
-      prompt: buildDashScopeVideoPrompt(prompt),
+      prompt: promptText,
       img_url: imageUrl,
     },
     {
-      prompt: buildDashScopeVideoPrompt(prompt),
+      prompt: promptText,
       image_url: imageUrl,
     },
   ];
@@ -4037,57 +5075,11 @@ async function createDashScopeTextToVideoTask(modelId: string, prompt: string) {
   throw lastError ?? new Error("阿里云百炼文生视频任务创建失败。");
 }
 
-async function editVideoWithDashScope(
-  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>,
-  requestId: string,
-  modelId: string,
-  prompt: string,
-  keyframeFile: File,
+async function waitForCompletedDashScopeVideoTask(
+  payload: DashScopeTaskPayload,
+  failureLabel: string,
+  timeoutLabel: string,
 ) {
-  const imageDataUrl = await fileToDataUrl(keyframeFile);
-
-  // 步骤1: 使用多模态模型理解关键帧内容
-  const understandingPrompt = `请详细描述这张图片的内容，包括：场景、主体、动作、风格、色调、构图等视觉元素。用简洁的语言输出，不超过100字。`;
-
-  const visionPayload = await callDashScopeMultiModal(
-    "qwen-vl-max",
-    [
-      { type: "image", image: imageDataUrl },
-      { type: "text", text: understandingPrompt },
-    ],
-    { temperature: 0.1 },
-  );
-
-  const videoDescription = extractDashScopeMultiModalText(visionPayload);
-
-  // 步骤2: 结合原视频理解 + 用户编辑需求，生成新的视频生成提示词
-  const combinedPrompt = `基于以下视频内容描述和用户的编辑需求，生成一个新的视频生成提示词。
-
-原视频内容：${videoDescription}
-
-用户编辑需求：${prompt}
-
-请生成一个融合了原视频风格和用户需求的视频生成提示词（不超过200字）：`;
-
-  const promptGenPayload = await callDashScopeMultiModal(
-    "qwen-max",
-    [{ type: "text", text: combinedPrompt }],
-    { temperature: 0.3 },
-  );
-
-  const finalPrompt = extractDashScopeMultiModalText(promptGenPayload);
-
-  // 步骤3: 使用文生视频模型生成新视频
-  const payload = await createDashScopeAsyncTask(
-    "/api/v1/services/aigc/text2video/video-synthesis",
-    {
-      model: "wan2.2-t2v-plus",
-      input: {
-        prompt: buildDashScopeVideoPrompt(finalPrompt),
-      },
-    },
-  );
-
   const status = getDashScopeTaskStatus(payload);
   if (status === "SUCCEEDED") {
     return payload;
@@ -4095,28 +5087,199 @@ async function editVideoWithDashScope(
 
   if (status === "FAILED" || status === "CANCELED") {
     const detail = extractDashScopeErrorText(payload);
-    throw new Error(`阿里云百炼视频编辑失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(`${failureLabel}${detail ? `: ${detail}` : ""}`);
   }
 
   const taskId = getDashScopeTaskId(payload);
   if (!taskId) {
-    throw new Error("阿里云百炼视频编辑未返回 task_id。");
+    throw new Error(`${failureLabel}，且未返回 task_id。`);
   }
 
-  return waitForDashScopeTaskResult(
-    taskId,
-    DASHSCOPE_VIDEO_TASK_TIMEOUT_MS,
-    `阿里云百炼视频编辑超时，请稍后重试。task_id: ${taskId}`,
+  return waitForDashScopeTaskResult(taskId, DASHSCOPE_VIDEO_TASK_TIMEOUT_MS, timeoutLabel);
+}
+
+async function editVideoWithDashScope(
+  requestId: string,
+  modelId: string,
+  prompt: string,
+  keyframeFile: File,
+  frameFiles: File[],
+) {
+  const effectiveFrameFiles =
+    frameFiles.length > 0 ? frameFiles.slice(0, DASHSCOPE_VIDEO_EDIT_FRAME_COUNT) : [keyframeFile];
+  const videoSummary = await summarizeDashScopeVideoFrames(effectiveFrameFiles);
+  const editPlan = await buildDashScopeVideoEditPlan(videoSummary, prompt);
+  const finalPrompt = editPlan.videoPrompt || prompt;
+  const originalKeyframeDataUrl = await fileToDataUrl(keyframeFile);
+  const originalKeyframeDimensions = await readImageDimensionsFromFile(keyframeFile);
+  if (!originalKeyframeDimensions) {
+    throw new Error("无法解析关键帧尺寸，请重新上传视频后重试。");
+  }
+
+  const originalAspect = describeImageAspectRatio(originalKeyframeDimensions);
+  let videoInputImageUrl = originalKeyframeDataUrl;
+  let usedEditedKeyframe = false;
+  let strongestVideoPrompt = finalPrompt;
+  let lastKeyframeVerification: DashScopeVideoKeyframeVerification | null = null;
+  let requireAspectRetry = false;
+
+  try {
+    let keyframePrompt = editPlan.keyframePrompt;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const editedKeyframePayload = await editImageWithDashScopeBaseImage(
+        "wanx2.1-imageedit",
+        buildDashScopeKeyframeAttemptPrompt(
+          keyframePrompt,
+          originalKeyframeDimensions,
+          requireAspectRetry,
+        ),
+        originalKeyframeDataUrl,
+      );
+      const editedKeyframeUrl = extractReplicateOutputUrls(editedKeyframePayload.output)[0];
+      if (!editedKeyframeUrl) {
+        console.warn(
+          `[Generate][${requestId}][DashScope][video-edit] 关键帧预编辑未返回可用图片，回退原始关键帧`,
+        );
+        break;
+      }
+
+      const candidateCheck = await validateDashScopeEditedKeyframeCandidate({
+        candidateUrl: editedKeyframeUrl,
+        originalDimensions: originalKeyframeDimensions,
+        prompt,
+        plan: editPlan,
+      });
+      if (!candidateCheck.accepted || !candidateCheck.verification) {
+        requireAspectRetry = true;
+        console.warn(
+          `[Generate][${requestId}][DashScope][video-edit] 候选关键帧未通过比例校验，将保持 ${originalAspect.ratioText} ${originalAspect.orientationText} 重试`,
+          candidateCheck.rejectionReason,
+        );
+        continue;
+      }
+
+      requireAspectRetry = false;
+      videoInputImageUrl = editedKeyframeUrl;
+      usedEditedKeyframe = true;
+
+      const verification = candidateCheck.verification;
+      lastKeyframeVerification = verification;
+      if (verification.passed || verification.missingRequirements.length === 0) {
+        break;
+      }
+
+      keyframePrompt = verification.correctedKeyframePrompt;
+
+      if (attempt === 1) {
+        console.warn(
+          `[Generate][${requestId}][DashScope][video-edit] 关键帧二次修正后仍未完全满足要求，将使用最优候选继续生成`,
+          verification.missingRequirements,
+        );
+      }
+    }
+
+    if (
+      editPlan.referenceChanges.length > 0 &&
+      (!lastKeyframeVerification || !lastKeyframeVerification.passed)
+    ) {
+      const regeneratedKeyframePayload = await editImageWithDashScopeBaseImage(
+        "wanx2.1-imageedit",
+        buildDashScopeKeyframeAttemptPrompt(
+          editPlan.regeneratedKeyframePrompt,
+          originalKeyframeDimensions,
+          true,
+        ),
+        originalKeyframeDataUrl,
+      );
+      const regeneratedKeyframeUrl = extractReplicateOutputUrls(
+        regeneratedKeyframePayload.output,
+      )[0];
+      if (regeneratedKeyframeUrl) {
+        const regeneratedCandidateCheck = await validateDashScopeEditedKeyframeCandidate({
+          candidateUrl: regeneratedKeyframeUrl,
+          originalDimensions: originalKeyframeDimensions,
+          prompt,
+          plan: editPlan,
+        });
+        if (regeneratedCandidateCheck.accepted && regeneratedCandidateCheck.verification) {
+          lastKeyframeVerification = regeneratedCandidateCheck.verification;
+          videoInputImageUrl = regeneratedKeyframeUrl;
+          usedEditedKeyframe = true;
+        } else {
+          console.warn(
+            `[Generate][${requestId}][DashScope][video-edit] 强化关键帧仍未通过比例校验，将保留当前参考图`,
+            regeneratedCandidateCheck.rejectionReason,
+          );
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[Generate][${requestId}][DashScope][video-edit] 关键帧预编辑或验收失败，回退原始关键帧`,
+      error,
+    );
+    videoInputImageUrl = originalKeyframeDataUrl;
+    usedEditedKeyframe = false;
+  }
+
+  console.log(
+    `[Generate][${requestId}][DashScope][video-edit] 基于 ${effectiveFrameFiles.length} 帧生成结构化编辑计划，并以抽帧关键帧 + 提示词继续生成视频，目标画幅 ${originalAspect.ratioText} ${originalAspect.orientationText}${usedEditedKeyframe ? '，已接受比例校验通过的关键帧预编辑' : '，沿用原始关键帧作为参考图'}`,
   );
+
+  const runVideoAttempt = async (videoPrompt: string) => {
+    const createdPayload = await createDashScopeVideoTask(
+      modelId,
+      buildDashScopeVideoAttemptPrompt(videoPrompt, originalKeyframeDimensions),
+      videoInputImageUrl,
+      editPlan,
+    );
+
+    return waitForCompletedDashScopeVideoTask(
+      createdPayload,
+      "阿里云百炼视频编辑失败",
+      `阿里云百炼视频编辑超时，请稍后重试。request_id: ${requestId}`,
+    );
+  };
+
+  let payload = await runVideoAttempt(strongestVideoPrompt);
+
+  let videoUrls = extractReplicateOutputUrls(payload.output).slice(0, DEFAULT_VIDEO_OUTPUT_COUNT);
+  if (videoUrls.length > 0) {
+    try {
+      const verification = await verifyDashScopeEditedVideo(
+        videoUrls[0],
+        prompt,
+        editPlan,
+      );
+      if (!verification.passed && verification.missingRequirements.length > 0) {
+        strongestVideoPrompt = verification.correctedVideoPrompt;
+        payload = await runVideoAttempt(strongestVideoPrompt);
+        videoUrls = extractReplicateOutputUrls(payload.output).slice(
+          0,
+          DEFAULT_VIDEO_OUTPUT_COUNT,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[Generate][${requestId}][DashScope][video-edit] 成片验收失败，保留当前生成结果`,
+        error,
+      );
+    }
+  }
+
+  return payload;
 }
 
 function buildReplicateVideoEditPrompt(userPrompt: string) {
-  return [
-    "Edit the uploaded video according to the user's request.",
-    "Preserve the main subject, motion continuity, and overall scene coherence unless the user explicitly asks to change them.",
+  return joinPromptLines([
+    "Edit the uploaded video strictly according to the user's request.",
+    "Preserve subject identity, aspect ratio, framing, camera perspective, motion continuity, and overall scene coherence unless the user explicitly asks to change them.",
+    "If the user explicitly requests changing time of day, lighting, weather, background, style, or visible scene attributes, those requested changes must override the source video clearly.",
+    "Keep temporal coherence, stable identity, natural physics, and visually consistent materials throughout the clip.",
+    "Do not add text, logos, subtitles, watermarks, unrelated subjects, or unrelated scene changes unless the user explicitly requests them.",
     `User request: ${userPrompt.trim()}`,
     "If the request is in Chinese, understand and execute it correctly.",
-  ].join("\n");
+  ]);
 }
 
 function buildReplicateVideoEditInputs(modelId: string, promptForModel: string, videoUrl: string) {
@@ -4504,8 +5667,12 @@ async function rewriteAudioTranscriptWithDashScope(
     messages: [
       {
         role: "system",
-        content:
-          "你是一个口播音频编辑助手。请根据用户要求改写转写稿，输出最终要朗读的文本。只返回最终文本，不要解释。",
+        content: [
+          "你是口播音频编辑助手。请严格按照用户要求改写转写稿。",
+          "必须保留原转写稿的核心含义、关键信息、专有名词和事实内容，除非用户明确要求删除或改写。",
+          "只修改用户明确提到的部分，不要擅自添加、删除、总结、弱化或改变其他内容。",
+          "输出必须是可直接朗读的最终文案，自然、顺口、简洁，不要添加解释或说明。",
+        ].join("\n"),
       },
       {
         role: "user",
@@ -4645,11 +5812,11 @@ async function transcribeAudioWithReplicate(
 }
 
 function buildReplicateAudioEditingPrompt(instruction: string, transcript: string) {
-  return [
-    "You are an audio script editor.",
-    "Rewrite the transcript into the final narration script that should be spoken.",
-    "Keep the meaning faithful unless the user explicitly asks to change it.",
-    "Return only the final script. Do not add explanations or markdown.",
+  return joinPromptLines([
+    "You are an audio script editor. Rewrite the transcript strictly according to the user's requirements.",
+    "Preserve the core meaning, key facts, named entities, and information density unless the user explicitly requests deletions or rewrites.",
+    "Only modify what the user explicitly mentions. Do not add, delete, summarize, soften, or restyle unrelated content.",
+    "The output must be directly speakable, natural when read aloud, and free of explanations or markdown.",
     "If the instruction is in Chinese, understand and execute it correctly.",
     "",
     "Editing requirements:",
@@ -4657,7 +5824,7 @@ function buildReplicateAudioEditingPrompt(instruction: string, transcript: strin
     "",
     "Original transcript:",
     truncateText(transcript, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
-  ].join("\n");
+  ]);
 }
 
 async function rewriteAudioTranscriptWithReplicate(input: {
@@ -5026,94 +6193,38 @@ function buildReplicateDetectionPrompt(
 
 function buildAudioDetectionPrompt(fileName: string, locale: "zh" | "en") {
   if (locale === "zh") {
-    return [
+    return joinPromptLines([
       `文件名：${fileName}`,
-      "⚠️ 关键：请直接分析音频的声学特征，不要仅依赖转录文字内容判断。",
-      "",
-      "请从以下8个专业维度深度分析该音频是否为AI合成：",
-      "",
-      "1. 音色特征：",
-      "   - AI特征：音色过于完美、稳定、缺乏自然波动",
-      "   - 人声特征：音色有微妙变化、疲劳感、情绪起伏",
-      "",
-      "2. 韵律节奏：",
-      "   - AI特征：语速过于均匀、停顿过于规律、重音机械",
-      "   - 人声特征：语速自然变化、停顿随意、重音自然",
-      "",
-      "3. 呼吸音与口水音：",
-      "   - AI特征：完全缺失或过于规律的呼吸声",
-      "   - 人声特征：自然的呼吸声、口水音、唇齿音",
-      "",
-      "4. 情感表达：",
-      "   - AI特征：情感变化生硬、过度或不足",
-      "   - 人声特征：情感起伏自然、细腻、真实",
-      "",
-      "5. 发音细节：",
-      "   - AI特征：连读、弱读过于标准或缺失",
-      "   - 人声特征：自然的连读、弱读、语气词、口误",
-      "",
-      "6. 频谱特征：",
-      "   - AI特征：高频或低频段异常、频谱过于干净",
-      "   - 人声特征：频谱自然分布、有环境噪声",
-      "",
-      "7. 环境混响：",
-      "   - AI特征：完全干净或混响不自然",
-      "   - 人声特征：有自然的房间混响、环境音",
-      "",
-      "8. 拼接痕迹：",
-      "   - AI特征：音频有明显拼接、突变、不连贯",
-      "   - 人声特征：音频连贯流畅",
-      "",
-      "⚠️ 如果你无法直接感知音频的声学特征（只能看到转录文字），请诚实说明并将probability设为50、confidence设为30。",
-    ].join("\n");
+      "⚠️ 关键：请优先分析音频本身的声学特征，不要只根据转录文本内容做判断。",
+      "请重点观察以下维度：",
+      "1. 音色稳定性：是否过于完美、机械一致，缺乏自然细微波动",
+      "2. 韵律节奏：语速、停顿、重音是否过于规则或模式化",
+      "3. 呼吸与口腔细节：是否缺少自然呼吸声、唇齿音、口水音、轻微杂音",
+      "4. 情感表达：情绪变化是否僵硬、夸张或缺乏真实层次",
+      "5. 发音自然度：连读、弱读、语气词、口误是否像真实人声",
+      "6. 频谱与底噪：频谱是否异常干净、频段分布异常，或缺少真实环境噪声",
+      "7. 环境与混响：是否存在自然房间感、空间反射或环境声",
+      "8. 拼接与连续性：是否存在突变、拼接痕迹、断裂感或不自然衔接",
+      "不要因为音质好、吐字清晰、录音干净就直接判为 AI；专业录音的人声也可能非常干净。",
+      "如果你无法直接感知声学特征，只能看到转录文字，请诚实说明，并将 probability 设为 50、confidence 设为 30 左右。",
+    ]);
   }
 
-  return [
+  return joinPromptLines([
     `File: ${fileName}`,
-    "⚠️ CRITICAL: Analyze the audio's acoustic features directly, not just transcribed text.",
-    "",
-    "Deeply analyze if this audio is AI-synthesized across 8 professional dimensions:",
-    "",
-    "1. Voice characteristics:",
-    "   - AI traits: overly perfect, stable tone, lack of natural variation",
-    "   - Human traits: subtle voice changes, fatigue, emotional fluctuation",
-    "",
-    "2. Prosody and rhythm:",
-    "   - AI traits: overly uniform pace, regular pauses, mechanical stress",
-    "   - Human traits: natural pace variation, random pauses, natural stress",
-    "",
-    "3. Breath and mouth sounds:",
-    "   - AI traits: completely absent or overly regular breathing",
-    "   - Human traits: natural breath sounds, mouth sounds, lip/teeth sounds",
-    "",
-    "4. Emotional expression:",
-    "   - AI traits: stiff, excessive, or insufficient emotion changes",
-    "   - Human traits: natural, nuanced, genuine emotional shifts",
-    "",
-    "5. Pronunciation details:",
-    "   - AI traits: overly standard or missing liaisons, reductions",
-    "   - Human traits: natural liaisons, reductions, fillers, slips",
-    "",
-    "6. Spectral features:",
-    "   - AI traits: abnormal high/low frequencies, overly clean spectrum",
-    "   - Human traits: natural spectrum distribution, ambient noise",
-    "",
-    "7. Room acoustics:",
-    "   - AI traits: completely clean or unnatural reverb",
-    "   - Human traits: natural room reverb, environmental sounds",
-    "",
-    "8. Splicing artifacts:",
-    "   - AI traits: obvious splicing, sudden changes, discontinuity",
-    "   - Human traits: continuous, smooth audio flow",
-    "",
-    "⚠️ If you cannot directly perceive acoustic features (only see transcribed text), honestly state this and set probability=50, confidence=30.",
-    "2. Breathing & pauses: Real speech has natural breath sounds and pause rhythms; AI may lack or regularize these",
-    "3. Spectral artifacts: AI synthesis may show abnormal spectral patterns in high/low frequencies",
-    "4. Room tone: Real recordings have environmental reverb; AI audio may be too clean or have unnatural reverb",
-    "5. Emotional variation: Human speech has natural emotional fluctuations; AI may sound stiff or exaggerated",
-    "6. Pronunciation naturalness: Check for natural liaison, weak forms, and filler words",
-    "If acoustic feature data is unavailable, state this clearly and set probability to 50 (uncertain).",
-  ].join("\n\n");
+    "⚠️ CRITICAL: prioritize acoustic evidence from the audio itself, not just the transcript.",
+    "Assess the likelihood of AI-synthesized audio across these dimensions:",
+    "1. Voice stability: overly perfect, mechanically consistent tone vs natural micro-variation",
+    "2. Prosody and rhythm: overly regular pacing, pauses, and stress vs naturally varying delivery",
+    "3. Breath and mouth detail: missing or overly regular breathing / mouth noises vs natural human artifacts",
+    "4. Emotional expression: stiff, exaggerated, or flat transitions vs nuanced human emotion",
+    "5. Pronunciation naturalness: unnatural liaison/reduction patterns vs authentic spoken flow",
+    "6. Spectrum and noise floor: abnormally clean spectrum or unusual band behavior vs realistic recording texture",
+    "7. Room acoustics: unnatural reverb / spatial cues vs believable room tone and ambience",
+    "8. Splicing and continuity: sudden transitions, stitching artifacts, or synthetic discontinuities",
+    "Do not classify audio as AI merely because it sounds clear, polished, or professionally recorded.",
+    "If you cannot directly access acoustic evidence and only have transcript-like information, say so explicitly and keep the result near probability=50 and confidence=30.",
+  ]);
 }
 
 function mergeDetectionResults(results: NormalizedDetectionResult[]) {
@@ -5358,26 +6469,50 @@ async function detectAudioWithReplicate(input: {
   });
 }
 
-function buildFileGenerationPrompt(userPrompt: string, targetFormat: DocumentFileFormat) {
+function buildFileGenerationPrompt(
+  userPrompt: string,
+  targetFormat: DocumentFileFormat,
+  locale: PromptLocale = "en",
+) {
   const requireSpreadsheet = targetFormat === "xlsx";
 
-  return [
+  if (locale === "zh") {
+    return joinPromptLines([
+      "用户需求：",
+      userPrompt,
+      "",
+      `目标格式：${targetFormat}`,
+      "",
+      "输出要求：",
+      "- 生成一份完整、可直接交付的文档包，准确满足用户需求。",
+      "- 标题简洁明确，摘要准确概括核心内容。",
+      requireSpreadsheet
+        ? "- 优先保证表格结构准确，工作表名、列名、行数据必须清晰且可直接使用。"
+        : "- 优先保证正文结构清晰，标题明确，段落聚焦且信息充分。",
+      requireSpreadsheet
+        ? "- 至少包含一个有实际用途的工作表，如清单、计划、预算、时间表或汇总表。"
+        : "- 只有在确有必要时才使用 spreadsheets，否则保持为空数组。",
+      "- 最终内容中不要提及 schema、提示词或这些说明。",
+    ]);
+  }
+
+  return joinPromptLines([
     "User request:",
     userPrompt,
     "",
     `Target format: ${targetFormat}`,
     "",
     "Output requirements:",
-    "- Create one complete document package that satisfies the request.",
-    "- Keep the title concise and specific.",
+    "- Create one complete, directly usable document package that fully satisfies the request.",
+    "- Keep the title concise and specific, and make the summary accurately reflect the core content.",
     requireSpreadsheet
       ? "- Prioritize accurate spreadsheet structure, sheet names, columns, and rows."
-      : "- Prioritize readable prose structure with clear headings and focused paragraphs.",
+      : "- Prioritize readable prose structure with clear headings and focused, information-dense paragraphs.",
     requireSpreadsheet
-      ? "- Include one useful spreadsheet such as a checklist, plan, budget, schedule, or summary table."
+      ? "- Include at least one useful spreadsheet such as a checklist, plan, budget, schedule, or summary table."
       : "- Keep the spreadsheets array empty unless a spreadsheet is clearly necessary.",
     "- Do not mention the schema or these instructions in the final content.",
-  ].join("\n");
+  ]);
 }
 
 type GenerateResponsePayload = GenerationItem & {
@@ -6457,7 +7592,7 @@ ${object.summary}`,
           }
         : persistedResult;
 
-      requestTimer.total("??????");
+      requestTimer.total("视频编辑");
       await trackGenerateEvent(
         "generate_success",
         "generate_document_success",
@@ -6770,7 +7905,10 @@ ${object.summary}`,
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: `已生成 ${audioUrls.length} 条音频`,
+        summary:
+          modelConfig.provider === "aliyun"
+            ? `已生成 ${audioUrls.length} 条音频`
+            : `Generated ${audioUrls.length} audio file${audioUrls.length > 1 ? "s" : ""}`,
         audioUrls,
         downloadLinks,
         createdAt: new Date().toISOString(),
@@ -6840,7 +7978,10 @@ ${object.summary}`,
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: `已生成 ${localImages.length} 张图片`,
+        summary:
+          modelConfig.provider === "aliyun"
+            ? `已生成 ${localImages.length} 张图片`
+            : `Generated ${localImages.length} image${localImages.length > 1 ? "s" : ""}`,
         imageUrls: localImages.map((item) => item.previewUrl),
         downloadLinks: localImages.map((item) => ({
           label: item.fileName,
@@ -6868,9 +8009,21 @@ ${object.summary}`,
     }
 
     if (modelConfig.mode === "video-editing") {
-      if (modelConfig.provider === "aliyun" && !(keyframeFile instanceof File)) {
+      const domesticFrameFiles =
+        modelConfig.provider === "aliyun"
+          ? frameFiles.slice(0, DASHSCOPE_VIDEO_EDIT_FRAME_COUNT)
+          : [];
+      const domesticKeyframeFile =
+        modelConfig.provider === "aliyun"
+          ? keyframeFile ??
+            domesticFrameFiles[Math.min(1, domesticFrameFiles.length - 1)] ??
+            domesticFrameFiles[0] ??
+            null
+          : null;
+
+      if (modelConfig.provider === "aliyun" && !(domesticKeyframeFile instanceof File)) {
         return returnTrackedGenerateError(
-          "请重新上传视频，系统需要提取首帧后再执行视频编辑。",
+          "请重新上传视频，系统需要提取关键帧后再执行视频编辑。",
           400,
         );
       }
@@ -6884,19 +8037,25 @@ ${object.summary}`,
         return returnTrackedGenerateError(userQuotaError, 429);
       }
 
-      if (!runtimeDbClient) {
+      if (modelConfig.provider === "replicate" && !runtimeDbClient) {
         throw new Error("编辑上传服务暂时不可用，请稍后重试。");
       }
 
       const videoPayload =
         modelConfig.provider === "aliyun"
-          ? await editVideoWithDashScope(runtimeDbClient, requestId, modelConfig.id, prompt, keyframeFile!)
+          ? await editVideoWithDashScope(
+              requestId,
+              modelConfig.id,
+              prompt,
+              domesticKeyframeFile!,
+              domesticFrameFiles,
+            )
           : await editVideoWithReplicate({
               requestId,
               modelId: modelConfig.id,
               prompt,
               file: inputFile as File,
-              db: runtimeDbClient,
+              db: runtimeDbClient!,
             });
       const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(
         0,
@@ -6920,7 +8079,7 @@ ${object.summary}`,
         status: "success",
         summary:
           modelConfig.provider === "aliyun"
-            ? `已基于首帧重生成 ${videoUrls.length} 条视频`
+            ? `已基于抽帧关键帧 + 提示词重生成 ${videoUrls.length} 条视频`
             : `已完成 ${videoUrls.length} 条视频编辑`,
         videoUrls,
         downloadLinks: videoUrls.map((url, index) => ({
@@ -6931,7 +8090,8 @@ ${object.summary}`,
       };
       const persistedResult = await persistGenerationResult(result, {
         source_file_name: inputFile?.name || null,
-        keyframe_file_name: keyframeFile?.name || null,
+        keyframe_file_name: domesticKeyframeFile?.name || null,
+        frame_count: domesticFrameFiles.length || null,
       });
 
       await trackGenerateEvent(
@@ -7044,4 +8204,3 @@ ${object.summary}`,
     );
   }
 }
-
