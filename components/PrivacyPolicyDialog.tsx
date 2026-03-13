@@ -1,16 +1,16 @@
 "use client";
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { SubscriptionTermsContent } from "@/components/legal";
+import { PrivacyPolicyContent } from "@/components/legal";
 
-interface SubscriptionRulesDialogProps {
+interface PrivacyPolicyDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isDomestic: boolean;
 }
 
-export function SubscriptionRulesDialog({ open, onOpenChange, isDomestic }: SubscriptionRulesDialogProps) {
-  const title = isDomestic ? "订阅规则" : "Subscription Terms";
+export function PrivacyPolicyDialog({ open, onOpenChange, isDomestic }: PrivacyPolicyDialogProps) {
+  const title = isDomestic ? "隐私条款" : "Privacy Policy";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -21,7 +21,7 @@ export function SubscriptionRulesDialog({ open, onOpenChange, isDomestic }: Subs
           </DialogTitle>
         </DialogHeader>
         <div className="h-[calc(85vh-100px)] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
-          <SubscriptionTermsContent isDomestic={isDomestic} />
+          <PrivacyPolicyContent isDomestic={isDomestic} />
         </div>
       </DialogContent>
     </Dialog>

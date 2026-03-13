@@ -137,7 +137,7 @@ const DOCUMENT_EDIT_SOURCE_MAX_CHARS = getPositiveIntFromEnv(
 );
 const DETECTION_MAX_TOKENS = getPositiveIntFromEnv(
   "DETECTION_MAX_TOKENS",
-  200,
+  500,
 );
 const DETECTION_SOURCE_MAX_CHARS = getPositiveIntFromEnv(
   "DETECTION_SOURCE_MAX_CHARS",
@@ -1616,6 +1616,18 @@ function extractJsonObjectText(rawText: string) {
     return cleaned.slice(firstBrace, lastBrace + 1);
   }
 
+  // 处理截断的 JSON
+  if (firstBrace >= 0) {
+    let json = cleaned.slice(firstBrace);
+    const openBrackets = (json.match(/\[/g) || []).length;
+    const closeBrackets = (json.match(/\]/g) || []).length;
+    if (openBrackets > closeBrackets) {
+      json += "]".repeat(openBrackets - closeBrackets);
+    }
+    json += "}";
+    return json;
+  }
+
   return cleaned;
 }
 
@@ -1747,9 +1759,12 @@ function normalizeDetectionResult(rawText: string): NormalizedDetectionResult {
   let parsed: Record<string, unknown> = {};
 
   try {
-    parsed = JSON.parse(extractJsonObjectText(rawText)) as Record<string, unknown>;
+    const extracted = extractJsonObjectText(rawText);
+    parsed = JSON.parse(extracted) as Record<string, unknown>;
   } catch (error) {
     console.warn("[Generate][detect] parse detection JSON failed:", error);
+    console.warn("[Generate][detect] raw text:", rawText);
+    console.warn("[Generate][detect] extracted JSON:", extractJsonObjectText(rawText));
   }
 
   const probability = parsePercentageValue(
@@ -1872,25 +1887,49 @@ function buildDetectionText(
 function buildStructuredDetectionInstruction(target: "document" | "image" | "audio" | "video", locale: "zh" | "en") {
   if (locale === "zh") {
     return [
-      `你是专业的${target === "document" ? "文档" : target === "image" ? "图片" : target === "audio" ? "音频" : "视频"} AI 来源检测助手。`,
-      "请仅根据给定内容估计它是 AI 生成的概率，不要编造无法观察到的事实。",
-      "返回严格 JSON，不要输出 Markdown，不要补充解释。",
-      'JSON 格式：{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["依据1","依据2"]}',
-      target === "video"
-        ? '如果收到多张关键帧，请额外返回 "frame_probabilities": [0-100,0-100,...]，并给出整体平均概率。'
-        : "reasons 请控制在 2-4 条，并尽量具体。",
-    ].join("\n");
+      `你是专业的${target === "document" ? "文档" : target === "image" ? "图片" : target === "audio" ? "音频" : "视频"}AI检测专家，具备深厚的专业知识。`,
+      "",
+      "评分标准：",
+      "90-100分：几乎确定AI生成，有多个明显特征",
+      "70-89分：很可能AI生成，有典型特征",
+      "50-69分：不确定，特征不明显",
+      "30-49分：更像人工创作，但有少量可疑点",
+      "0-29分：几乎确定人工创作",
+      "",
+      "置信度标准：",
+      "80-100：有充分证据支持判断",
+      "60-79：有一定证据但不够充分",
+      "0-59：证据不足，主要靠经验判断",
+      "",
+      "返回严格JSON格式（不要Markdown代码块）：",
+      '{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["具体依据1","具体依据2","具体依据3"]}',
+      target === "video" ? '如果收到多张关键帧，请额外返回 "frame_probabilities": [0-100,0-100,...]' : "",
+      "",
+      "重要：reasons必须具体，不要泛泛而谈；如果特征不明显，诚实地降低probability和confidence；不要编造无法观察到的细节。",
+    ].filter(Boolean).join("\n");
   }
 
   return [
-    `You are a professional AI-origin detector for ${target}.`,
-    "Estimate the probability that the content is AI-generated using only the provided evidence.",
-    "Return strict JSON only. No markdown. No extra explanation.",
-    'JSON schema: {"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["reason 1","reason 2"]}',
-    target === "video"
-      ? 'If you receive multiple keyframes, also return "frame_probabilities": [0-100, ...] and set "probability" to the overall mean estimate.'
-      : "Keep reasons concrete and concise.",
-  ].join("\n");
+    `You are a professional AI detection expert for ${target} with deep expertise.`,
+    "",
+    "Scoring criteria:",
+    "90-100: Almost certain AI, multiple obvious traits",
+    "70-89: Likely AI, typical characteristics present",
+    "50-69: Uncertain, features unclear",
+    "30-49: More likely human, few suspicious points",
+    "0-29: Almost certain human creation",
+    "",
+    "Confidence criteria:",
+    "80-100: Strong evidence supports judgment",
+    "60-79: Some evidence but insufficient",
+    "0-59: Insufficient evidence, mainly experience-based",
+    "",
+    "Return strict JSON (no markdown blocks):",
+    '{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["specific evidence 1","specific evidence 2","specific evidence 3"]}',
+    target === "video" ? 'If multiple keyframes, also return "frame_probabilities": [0-100, ...]' : "",
+    "",
+    "Important: Reasons must be specific, not generic; if features unclear, honestly lower probability and confidence; do not fabricate unobservable details.",
+  ].filter(Boolean).join("\n");
 }
 
 function resolveDetectionTargetType(type: string): "text" | "image" | "audio" | "video" {
@@ -2829,32 +2868,122 @@ function buildDocumentDetectionPrompt(input: {
   if (input.locale === "zh") {
     return [
       `文件名：${input.fileName}`,
-      "请判断以下文档内容更像 AI 生成还是人工创作。",
-      "重点观察语言重复度、结构均匀性、信息密度、措辞模板化、论证跳跃等信号。",
+      "请从以下8个维度深度分析该文档是否为AI生成：",
+      "1. 语言重复度：句式、词汇、表达方式的重复程度",
+      "2. 结构均匀性：段落长度、结构是否过于规整统一",
+      "3. 信息密度：内容是否空洞、缺乏具体细节和数据",
+      "4. 措辞风格：是否有模板化、机械化的表达",
+      "5. 逻辑连贯性：论证是否有跳跃、缺乏深度推理",
+      "6. 个性化特征：是否缺乏个人风格、口语化、情感色彩",
+      "7. 错误类型：AI常见错误（事实错误、逻辑矛盾）vs人类错误（拼写、语法）",
+      "8. 创新性：观点是否新颖还是常见套话",
+      "",
       "文档内容：",
       truncateText(input.extractedText, DETECTION_SOURCE_MAX_CHARS),
-    ].join("\n\n");
+    ].join("\n");
   }
 
   return [
-    `File name: ${input.fileName}`,
-    "Estimate whether the following document is more likely AI-generated or human-created.",
-    "Focus on repetition, stylistic uniformity, templated wording, density of information, and reasoning continuity.",
+    `File: ${input.fileName}`,
+    "Deeply analyze if this document is AI-generated across 8 dimensions:",
+    "1. Repetition: sentence patterns, vocabulary, expression repetition",
+    "2. Structural uniformity: overly regular paragraph lengths and structure",
+    "3. Information density: shallow content, lack of specific details and data",
+    "4. Phrasing style: templated, mechanical expressions",
+    "5. Logical coherence: reasoning jumps, lack of depth",
+    "6. Personalization: lack of personal style, colloquialisms, emotional tone",
+    "7. Error types: AI errors (factual, logical) vs human errors (spelling, grammar)",
+    "8. Originality: novel insights vs common platitudes",
+    "",
     "Document content:",
     truncateText(input.extractedText, DETECTION_SOURCE_MAX_CHARS),
-  ].join("\n\n");
+  ].join("\n");
 }
 
 function buildVisualDetectionPrompt(target: "image" | "video", locale: "zh" | "en") {
   if (locale === "zh") {
-    return target === "video"
-      ? "你将收到同一段视频抽取的多张关键帧。请分别评估每一帧的 AI 生成概率，并给出整体平均判断，重点关注纹理一致性、边缘失真、物理不连续、字幕/文字异常和时序伪影。"
-      : "请评估该图片为 AI 生成的概率，重点关注局部纹理、光影一致性、手部/边缘细节、透视关系、文字和水印异常。";
+    if (target === "video") {
+      return [
+        "⚠️ 关键：真实视频允许有场景切换、镜头切换、UI界面、光线自然变化。这些都是正常现象，不是AI特征！",
+        "",
+        "只有以下情况才是AI生成的特征：",
+        "",
+        "1. 同一场景内的异常：",
+        "   - 人物面部在同一镜头内扭曲、五官漂移",
+        "   - 物体形状在同一场景内突变",
+        "   - 纹理在同一画面内模糊、重复、不真实",
+        "",
+        "2. 物理违背：",
+        "   - 光影方向明显错误（如两个相反方向的阴影）",
+        "   - 重力、运动违背常识",
+        "",
+        "3. 明显的生成伪影：",
+        "   - 人物手指、肢体明显畸形",
+        "   - 画面有明显的AI生成痕迹（模糊、扭曲）",
+        "",
+        "⚠️ 以下情况是正常的，不要误判为AI：",
+        "- 场景切换（从海洋切换到界面）= 正常剪辑",
+        "- 镜头切换（不同角度、不同时间）= 正常拍摄",
+        "- 光线变化（日出日落、云层）= 自然现象",
+        "- UI界面出现 = 正常的视频播放器界面",
+        "- 月亮大小变化 = 正常的镜头焦距变化",
+        "",
+        "如果帧来自不同场景或包含UI界面，请将probability设为30-40（更像真实视频），不要因为场景不连续就判断为AI。"
+      ].join("\n");
+    }
+    return [
+      "请从以下8个维度深度分析该图片是否为AI生成：",
+      "1. 纹理细节：局部纹理是否重复、不自然、过于完美",
+      "2. 边缘质量：物体边缘是否模糊、有伪影、不清晰",
+      "3. 光影一致性：光源方向、阴影、高光是否符合物理规律",
+      "4. 人体解剖：手指、五官、肢体比例、关节是否正常",
+      "5. 文字内容：文字是否清晰、有无乱码、变形",
+      "6. 透视关系：空间透视、物体大小比例是否合理",
+      "7. 对称性：是否过度对称（AI特征）或自然不对称",
+      "8. 细节连贯性：放大后细节是否经得起推敲、有无穿帮"
+    ].join("\n");
   }
 
-  return target === "video"
-    ? "You will receive multiple keyframes from the same video. Estimate the AI-generation probability for each frame and return the overall mean, focusing on texture consistency, edge artifacts, physical continuity, text anomalies, and temporal-style artifacts visible across frames."
-    : "Estimate the probability that this image is AI-generated. Focus on local textures, lighting consistency, anatomy or edge details, perspective, and text or watermark anomalies.";
+  if (target === "video") {
+    return [
+      "⚠️ KEY: Real videos allow scene cuts, camera switches, UI overlays, natural lighting changes. These are NORMAL, not AI traits!",
+      "",
+      "Only these indicate AI generation:",
+      "",
+      "1. Within-scene anomalies:",
+      "   - Facial distortion/feature drift within same shot",
+      "   - Object shape changes within same scene",
+      "   - Blurry, repetitive, unreal textures in same frame",
+      "",
+      "2. Physics violations:",
+      "   - Clearly wrong lighting direction (e.g., two opposite shadows)",
+      "   - Gravity/motion defying common sense",
+      "",
+      "3. Obvious generation artifacts:",
+      "   - Clearly deformed fingers/limbs",
+      "   - Obvious AI generation traces (blur, distortion)",
+      "",
+      "⚠️ These are NORMAL, do NOT misjudge as AI:",
+      "- Scene cuts (ocean to UI) = normal editing",
+      "- Camera switches (different angles/times) = normal filming",
+      "- Lighting changes (sunrise/sunset, clouds) = natural phenomena",
+      "- UI overlay appearance = normal video player interface",
+      "- Moon size changes = normal lens focal length change",
+      "",
+      "If frames are from different scenes or contain UI, set probability=30-40 (more likely real), don't judge as AI just because scenes are discontinuous."
+    ].join("\n");
+  }
+  return [
+    "Deeply analyze if this image is AI-generated across 8 dimensions:",
+    "1. Texture details: repetitive, unnatural, overly perfect local textures",
+    "2. Edge quality: blurry edges, artifacts, unclear boundaries",
+    "3. Lighting consistency: light direction, shadows, highlights follow physics",
+    "4. Human anatomy: fingers, facial features, body proportions, joints normal",
+    "5. Text content: text clarity, presence of gibberish, distortion",
+    "6. Perspective: spatial perspective, object size ratios reasonable",
+    "7. Symmetry: over-symmetry (AI trait) vs natural asymmetry",
+    "8. Detail coherence: details hold up under magnification, no inconsistencies"
+  ].join("\n");
 }
 
 async function detectDocumentWithDashScope(input: {
@@ -2873,8 +3002,8 @@ async function detectDocumentWithDashScope(input: {
 
   const requestBody = {
     model: resolveDashScopeTextDetectionModelId(input.modelId),
-    enable_thinking: false,
-    temperature: 0.1,
+    enable_thinking: true,
+    temperature: 0.2,
     max_tokens: DETECTION_MAX_TOKENS,
     response_format: {
       type: "json_object",
@@ -2937,8 +3066,8 @@ async function detectVisualWithDashScope(input: {
 
   const requestBody = {
     model: resolveDashScopeVisualDetectionModelId(input.modelId),
-    enable_thinking: false,
-    temperature: 0.1,
+    enable_thinking: true,
+    temperature: 0.2,
     max_tokens: DETECTION_MAX_TOKENS,
     response_format: {
       type: "json_object",
@@ -3909,17 +4038,52 @@ async function createDashScopeTextToVideoTask(modelId: string, prompt: string) {
 }
 
 async function editVideoWithDashScope(
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>,
+  requestId: string,
   modelId: string,
   prompt: string,
   keyframeFile: File,
 ) {
+  const imageDataUrl = await fileToDataUrl(keyframeFile);
+
+  // 步骤1: 使用多模态模型理解关键帧内容
+  const understandingPrompt = `请详细描述这张图片的内容，包括：场景、主体、动作、风格、色调、构图等视觉元素。用简洁的语言输出，不超过100字。`;
+
+  const visionPayload = await callDashScopeMultiModal(
+    "qwen-vl-max",
+    [
+      { type: "image", image: imageDataUrl },
+      { type: "text", text: understandingPrompt },
+    ],
+    { temperature: 0.1 },
+  );
+
+  const videoDescription = extractDashScopeMultiModalText(visionPayload);
+
+  // 步骤2: 结合原视频理解 + 用户编辑需求，生成新的视频生成提示词
+  const combinedPrompt = `基于以下视频内容描述和用户的编辑需求，生成一个新的视频生成提示词。
+
+原视频内容：${videoDescription}
+
+用户编辑需求：${prompt}
+
+请生成一个融合了原视频风格和用户需求的视频生成提示词（不超过200字）：`;
+
+  const promptGenPayload = await callDashScopeMultiModal(
+    "qwen-max",
+    [{ type: "text", text: combinedPrompt }],
+    { temperature: 0.3 },
+  );
+
+  const finalPrompt = extractDashScopeMultiModalText(promptGenPayload);
+
+  // 步骤3: 使用文生视频模型生成新视频
   const payload = await createDashScopeAsyncTask(
-    "/api/v1/services/aigc/image2video/video-synthesis",
+    "/api/v1/services/aigc/text2video/video-synthesis",
     {
-      model: modelId,
+      model: "wan2.2-t2v-plus",
       input: {
-        prompt: buildDashScopeVideoPrompt(prompt),
-        first_frame_url: await fileToDataUrl(keyframeFile),
+        prompt: buildDashScopeVideoPrompt(finalPrompt),
       },
     },
   );
@@ -4864,13 +5028,91 @@ function buildAudioDetectionPrompt(fileName: string, locale: "zh" | "en") {
   if (locale === "zh") {
     return [
       `文件名：${fileName}`,
-      "请根据音色稳定性、呼吸与停顿、频谱伪影、房间混响、情感变化和发音自然度，判断该音频是否更像 AI 合成语音。",
-    ].join("\n\n");
+      "⚠️ 关键：请直接分析音频的声学特征，不要仅依赖转录文字内容判断。",
+      "",
+      "请从以下8个专业维度深度分析该音频是否为AI合成：",
+      "",
+      "1. 音色特征：",
+      "   - AI特征：音色过于完美、稳定、缺乏自然波动",
+      "   - 人声特征：音色有微妙变化、疲劳感、情绪起伏",
+      "",
+      "2. 韵律节奏：",
+      "   - AI特征：语速过于均匀、停顿过于规律、重音机械",
+      "   - 人声特征：语速自然变化、停顿随意、重音自然",
+      "",
+      "3. 呼吸音与口水音：",
+      "   - AI特征：完全缺失或过于规律的呼吸声",
+      "   - 人声特征：自然的呼吸声、口水音、唇齿音",
+      "",
+      "4. 情感表达：",
+      "   - AI特征：情感变化生硬、过度或不足",
+      "   - 人声特征：情感起伏自然、细腻、真实",
+      "",
+      "5. 发音细节：",
+      "   - AI特征：连读、弱读过于标准或缺失",
+      "   - 人声特征：自然的连读、弱读、语气词、口误",
+      "",
+      "6. 频谱特征：",
+      "   - AI特征：高频或低频段异常、频谱过于干净",
+      "   - 人声特征：频谱自然分布、有环境噪声",
+      "",
+      "7. 环境混响：",
+      "   - AI特征：完全干净或混响不自然",
+      "   - 人声特征：有自然的房间混响、环境音",
+      "",
+      "8. 拼接痕迹：",
+      "   - AI特征：音频有明显拼接、突变、不连贯",
+      "   - 人声特征：音频连贯流畅",
+      "",
+      "⚠️ 如果你无法直接感知音频的声学特征（只能看到转录文字），请诚实说明并将probability设为50、confidence设为30。",
+    ].join("\n");
   }
 
   return [
-    `File name: ${fileName}`,
-    "Estimate whether this audio sounds AI-generated by considering prosody, breathing, pauses, spectral artifacts, room tone, emotional variation, and pronunciation naturalness.",
+    `File: ${fileName}`,
+    "⚠️ CRITICAL: Analyze the audio's acoustic features directly, not just transcribed text.",
+    "",
+    "Deeply analyze if this audio is AI-synthesized across 8 professional dimensions:",
+    "",
+    "1. Voice characteristics:",
+    "   - AI traits: overly perfect, stable tone, lack of natural variation",
+    "   - Human traits: subtle voice changes, fatigue, emotional fluctuation",
+    "",
+    "2. Prosody and rhythm:",
+    "   - AI traits: overly uniform pace, regular pauses, mechanical stress",
+    "   - Human traits: natural pace variation, random pauses, natural stress",
+    "",
+    "3. Breath and mouth sounds:",
+    "   - AI traits: completely absent or overly regular breathing",
+    "   - Human traits: natural breath sounds, mouth sounds, lip/teeth sounds",
+    "",
+    "4. Emotional expression:",
+    "   - AI traits: stiff, excessive, or insufficient emotion changes",
+    "   - Human traits: natural, nuanced, genuine emotional shifts",
+    "",
+    "5. Pronunciation details:",
+    "   - AI traits: overly standard or missing liaisons, reductions",
+    "   - Human traits: natural liaisons, reductions, fillers, slips",
+    "",
+    "6. Spectral features:",
+    "   - AI traits: abnormal high/low frequencies, overly clean spectrum",
+    "   - Human traits: natural spectrum distribution, ambient noise",
+    "",
+    "7. Room acoustics:",
+    "   - AI traits: completely clean or unnatural reverb",
+    "   - Human traits: natural room reverb, environmental sounds",
+    "",
+    "8. Splicing artifacts:",
+    "   - AI traits: obvious splicing, sudden changes, discontinuity",
+    "   - Human traits: continuous, smooth audio flow",
+    "",
+    "⚠️ If you cannot directly perceive acoustic features (only see transcribed text), honestly state this and set probability=50, confidence=30.",
+    "2. Breathing & pauses: Real speech has natural breath sounds and pause rhythms; AI may lack or regularize these",
+    "3. Spectral artifacts: AI synthesis may show abnormal spectral patterns in high/low frequencies",
+    "4. Room tone: Real recordings have environmental reverb; AI audio may be too clean or have unnatural reverb",
+    "5. Emotional variation: Human speech has natural emotional fluctuations; AI may sound stiff or exaggerated",
+    "6. Pronunciation naturalness: Check for natural liaison, weak forms, and filler words",
+    "If acoustic feature data is unavailable, state this clearly and set probability to 50 (uncertain).",
   ].join("\n\n");
 }
 
@@ -5051,8 +5293,8 @@ async function detectAudioWithDashScope(input: {
 
   const rawText = await requestDashScopeChatCompletionStreamText({
     model: resolveDashScopeAudioDetectionModelId(input.modelId),
-    enable_thinking: false,
-    temperature: 0.1,
+    enable_thinking: true,
+    temperature: 0.2,
     max_tokens: DETECTION_MAX_TOKENS,
     messages: [
       {
@@ -5067,10 +5309,8 @@ async function detectAudioWithDashScope(input: {
             text: buildAudioDetectionPrompt(input.file.name, input.locale),
           },
           {
-            type: "video_url",
-            video_url: {
-              url: uploaded.publicUrl,
-            },
+            type: "video",
+            video: uploaded.publicUrl,
           },
         ],
       },
@@ -6644,22 +6884,20 @@ ${object.summary}`,
         return returnTrackedGenerateError(userQuotaError, 429);
       }
 
+      if (!runtimeDbClient) {
+        throw new Error("编辑上传服务暂时不可用，请稍后重试。");
+      }
+
       const videoPayload =
         modelConfig.provider === "aliyun"
-          ? await editVideoWithDashScope(modelConfig.id, prompt, keyframeFile!)
-          : await (() => {
-              if (!runtimeDbClient || !(inputFile instanceof File)) {
-                throw new Error("编辑上传服务暂时不可用，请稍后重试。");
-              }
-
-              return editVideoWithReplicate({
-                requestId,
-                modelId: modelConfig.id,
-                prompt,
-                file: inputFile,
-                db: runtimeDbClient,
-              });
-            })();
+          ? await editVideoWithDashScope(runtimeDbClient, requestId, modelConfig.id, prompt, keyframeFile!)
+          : await editVideoWithReplicate({
+              requestId,
+              modelId: modelConfig.id,
+              prompt,
+              file: inputFile as File,
+              db: runtimeDbClient,
+            });
       const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(
         0,
         DEFAULT_VIDEO_OUTPUT_COUNT,

@@ -2247,18 +2247,21 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     guestQuota?.remaining ??
     Math.max(0, guestDocumentLimit - (guestQuota?.used ?? 0));
   const displayedDocumentLimit = user
-    ? documentQuota?.totalLimit || 0
+    ? Math.max(0, (documentQuota?.baseLimit || 0) + (documentQuota?.adminAdjustment || 0))
     : guestDocumentLimit;
+  const displayedDocumentUsed = user ? documentQuota?.usedAmount || 0 : 0;
   const displayedDocumentRemaining = user
-    ? documentQuota?.remainingAmount || 0
+    ? Math.max(0, displayedDocumentLimit - displayedDocumentUsed)
     : guestDocumentRemaining;
-  const displayedImageLimit = user ? imageQuota?.totalLimit || 0 : 0;
-  const displayedImageRemaining = user ? imageQuota?.remainingAmount || 0 : 0;
+  const displayedImageLimit = user ? Math.max(0, (imageQuota?.baseLimit || 0) + (imageQuota?.adminAdjustment || 0)) : 0;
+  const displayedImageUsed = user ? imageQuota?.usedAmount || 0 : 0;
+  const displayedImageRemaining = user ? Math.max(0, displayedImageLimit - displayedImageUsed) : 0;
   const displayedVideoAudioLimit = user
-    ? (videoQuota?.totalLimit || 0) + (audioQuota?.totalLimit || 0)
+    ? Math.max(0, (videoQuota?.baseLimit || 0) + (videoQuota?.adminAdjustment || 0) + (audioQuota?.baseLimit || 0) + (audioQuota?.adminAdjustment || 0))
     : 0;
+  const displayedVideoAudioUsed = user ? (videoQuota?.usedAmount || 0) + (audioQuota?.usedAmount || 0) : 0;
   const displayedVideoAudioRemaining = user
-    ? (videoQuota?.remainingAmount || 0) + (audioQuota?.remainingAmount || 0)
+    ? Math.max(0, displayedVideoAudioLimit - displayedVideoAudioUsed)
     : 0;
   const videoAudioAddonRemaining = user
     ? (videoQuota?.addonRemaining || 0) + (audioQuota?.addonRemaining || 0)
