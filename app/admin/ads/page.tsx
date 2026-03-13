@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { formatDateTime } from "@/lib/utils/date-format";
 import {
   getAdminAds,
   createAdminAd,
@@ -723,20 +724,8 @@ export default function AdsManagementPage() {
                       </TableCell>
                       <TableCell>
                         {ad.created_at ? (
-                          <div className="flex flex-col leading-tight">
-                            <span className="text-xs tabular-nums text-foreground/90 whitespace-nowrap">
-                              {new Date(ad.created_at).toLocaleDateString("zh-CN", {
-                                year: "numeric",
-                                month: "2-digit",
-                                day: "2-digit",
-                              })}
-                            </span>
-                            <span className="text-xs tabular-nums text-muted-foreground whitespace-nowrap">
-                              {new Date(ad.created_at).toLocaleTimeString("zh-CN", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                            </span>
+                          <div className="text-xs tabular-nums text-foreground/90">
+                            {formatDateTime(ad.created_at)}
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">-</span>

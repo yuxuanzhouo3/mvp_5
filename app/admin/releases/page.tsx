@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { formatDateTime } from "@/lib/utils/date-format";
 import {
   listReleases,
   createRelease,
@@ -628,13 +629,7 @@ export default function ReleasesManagementPage() {
                       <span className="flex items-center gap-1 text-sm text-muted-foreground">
                         <Calendar className="h-3 w-3" />
                         {release.created_at
-                          ? new Date(release.created_at).toLocaleString("zh-CN", {
-                              year: "numeric",
-                              month: "2-digit",
-                              day: "2-digit",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
+                          ? formatDateTime(release.created_at)
                           : "-"}
                       </span>
                     </TableCell>

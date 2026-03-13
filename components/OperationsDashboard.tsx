@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { formatDateTime } from "@/lib/utils/date-format";
 import type { GenerationItem } from "@/lib/ai-generation";
 import { type UILanguage } from "@/lib/ui-text";
 
@@ -333,18 +334,16 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                     {generation.modelLabel}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-gray-500 dark:text-gray-400">
-                    {new Date(generation.createdAt).toLocaleString(
-                      currentLanguage === "zh" ? "zh-CN" : "en-US",
-                    )}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                    {formatDateTime(generation.createdAt)}
                   </span>
                   {canDelete && (
                     <button
                       type="button"
                       onClick={() => onDeleteGeneration?.(generation)}
                       disabled={isDeleting}
-                      className="inline-flex items-center rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] text-red-600 transition-colors hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300"
+                      className="inline-flex items-center rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] text-red-600 transition-colors hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300 whitespace-nowrap"
                     >
                       {isDeleting ? deletingLabel : deleteLabel}
                     </button>
@@ -352,9 +351,11 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                 </div>
               </div>
 
-              <p className="text-sm text-gray-700 dark:text-gray-200 leading-6 break-words">
-                {generation.prompt}
-              </p>
+              <div className="text-sm text-gray-700 dark:text-gray-200 leading-6 space-y-1">
+                {generation.prompt.split(/(?<=\s)(?=编辑要求:|编辑文件:)/g).map((line, i) => (
+                  <p key={i} className="break-words">{line.trim()}</p>
+                ))}
+              </div>
 
               {generation.summary && (
                 <p

@@ -536,8 +536,35 @@ function isVideoGenerationType(type: GenerationTab) {
   return type === "video" || type === "edit_video";
 }
 
+function isDetectionGenerationType(type: GenerationTab) {
+  return (
+    type === "detect_text" ||
+    type === "detect_image" ||
+    type === "detect_audio" ||
+    type === "detect_video"
+  );
+}
+
 function buildAssetTargets(generation: GenerationItem) {
   const assets: AssetFetchTarget[] = [];
+
+  if (isDetectionGenerationType(generation.type)) {
+    if (generation.text) {
+      assets.push({
+        outputType: "text",
+        sequenceNo: 1,
+        fetchUrl: null,
+        fileName: "detect-report.txt",
+        textContent: generation.text,
+        metadata: {
+          kind: "detect_report",
+        },
+        provider: generation.provider,
+      });
+    }
+
+    return assets;
+  }
 
   if (isDocumentGenerationType(generation.type)) {
     const links = generation.downloadLinks || [];

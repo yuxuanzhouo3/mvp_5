@@ -8,6 +8,7 @@ import { trackAnalyticsClient } from "@/lib/analytics/client";
 import { getCloudbaseConfigError } from "@/lib/cloudbase/client";
 import { createClient as createSupabaseClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { PrivacyPolicyContent } from "@/components/legal";
 import {
   extractDomesticAuthErrorMessage,
   loginWithDomesticEmailPassword,
@@ -1126,11 +1127,7 @@ export function AuthPage({ mode }: AuthPageProps) {
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 bg-white/50 dark:bg-slate-800/50 max-h-[55vh]">
-              <p className="text-sm text-gray-600 dark:text-gray-300 leading-7">
-                {isZh
-                  ? "本页面用于真实账户鉴权，请确保您已阅读并同意隐私政策后继续。"
-                  : "This page is used for live account authentication. Please read and agree to the privacy policy before continuing."}
-              </p>
+              <PrivacyPolicyContent isDomestic={isDomesticVersion} />
             </div>
 
             <div className="px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200/80 dark:border-gray-700/80 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm">

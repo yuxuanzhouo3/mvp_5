@@ -4,12 +4,10 @@ import {
   getSupabaseAnonKeyFromEnv,
   getSupabaseUrlFromEnv,
 } from "@/lib/supabase/env";
+import { IS_DOMESTIC_VERSION } from "@/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-const IS_DOMESTIC_RUNTIME = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
-  .toLowerCase()
-  .startsWith("zh");
 
 function sanitizeNextPath(next: string | null): string {
   if (!next || !next.startsWith("/") || next.startsWith("//")) {
@@ -41,12 +39,14 @@ function getRequestOrigin(request: NextRequest): string {
 
 export async function GET(request: NextRequest) {
   const origin = getRequestOrigin(request);
-  if (IS_DOMESTIC_RUNTIME) {
+
+  // 国内版不支持Google登录
+  if (IS_DOMESTIC_VERSION) {
     const errorUrl = new URL("/auth/login", origin);
     errorUrl.searchParams.set("error", "unsupported_auth_version");
     errorUrl.searchParams.set(
       "error_description",
-      "Domestic version uses CloudBase auth only.",
+      "国内版仅支持邮箱登录",
     );
     return NextResponse.redirect(errorUrl);
   }

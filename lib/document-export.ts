@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import fontkit from "@pdf-lib/fontkit";
 import {
   Document as DocxDocument,
@@ -68,12 +69,20 @@ export type GeneratedExportedFile = {
 
 const PDF_FONT_PATH_CANDIDATES = [
   process.env.PDF_FONT_PATH,
-  "C:/Windows/Fonts/simhei.ttf",
   "C:/Windows/Fonts/msyh.ttf",
-  "C:/Windows/Fonts/simkai.ttf",
+  "C:/Windows/Fonts/simhei.ttf",
   "C:/Windows/Fonts/simsun.ttf",
-  "C:/Windows/Fonts/msyh.ttc",
-  "C:/Windows/Fonts/simsun.ttc",
+  "C:/Windows/Fonts/simkai.ttf",
+  "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  path.join(
+    process.cwd(),
+    "node_modules",
+    "@fontsource",
+    "noto-sans-sc",
+    "files",
+    "noto-sans-sc-chinese-simplified-400-normal.woff",
+  ),
 ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
 
 type LoadedPdfFont = {
@@ -171,7 +180,7 @@ export function buildPlainTextDocument(document: GeneratedDocument) {
       lines.push("");
     }
     for (const bullet of section.bullets) {
-      lines.push(`• ${bullet.trim()}`);
+      lines.push(`- ${bullet.trim()}`);
     }
     if (section.bullets.length > 0) {
       lines.push("");
@@ -204,7 +213,7 @@ export function buildPlainTextDocument(document: GeneratedDocument) {
   return lines.join("\n").trim();
 }
 
-async function loadPdfFontBytes() {
+export async function loadPdfFontBytes() {
   if (cachedPdfFont !== undefined) {
     return cachedPdfFont;
   }
@@ -318,20 +327,15 @@ async function exportPdf(document: GeneratedDocument) {
   pdf.registerFontkit(fontkit);
 
   const embeddedFont = await loadPdfFontBytes();
-  let font: PDFFont;
+  if (!embeddedFont) {
+    throw new Error("无法找到支持中文的PDF字体文件，请确保系统中安装了中文字体（如：simhei.ttf）");
+  }
 
-  if (embeddedFont) {
-    try {
-      font = await pdf.embedFont(embeddedFont.bytes, { subset: true });
-    } catch (error) {
-      console.warn(
-        `[document-export] PDF 字体嵌入失败，回退到 Helvetica。font=${embeddedFont.path}`,
-        error,
-      );
-      font = await pdf.embedFont(StandardFonts.Helvetica);
-    }
-  } else {
-    font = await pdf.embedFont(StandardFonts.Helvetica);
+  let font: PDFFont;
+  try {
+    font = await pdf.embedFont(embeddedFont.bytes, { subset: true });
+  } catch (error) {
+    throw new Error(`PDF字体加载失败: ${embeddedFont.path}，错误: ${error}`);
   }
 
   const marginX = 50;
@@ -399,7 +403,7 @@ async function exportPdf(document: GeneratedDocument) {
         pdf,
         page,
         y,
-        text: `• ${bullet}`,
+        text: `- ${bullet}`,
         font,
         fontSize: 11,
         lineHeight: 16,
@@ -409,44 +413,76 @@ async function exportPdf(document: GeneratedDocument) {
     }
 
     if (section.table) {
-      if (section.table.title) {
+      const table = section.table;
+      const colCount = table.columns.length;
+      const cellWidth = maxWidth / colCount;
+      const cellPadding = 6;
+      const fontSize = 9;
+      const lineHeight = 13;
+
+      if (table.title) {
         ({ page, y } = drawWrappedParagraph({
           pdf,
           page,
           y,
-          text: section.table.title,
+          text: table.title,
           font,
           fontSize: 12,
           lineHeight: 18,
           maxWidth,
           marginX,
         }));
+        y -= 4;
       }
 
-      ({ page, y } = drawWrappedParagraph({
-        pdf,
-        page,
-        y,
-        text: section.table.columns.join(" | "),
-        font,
-        fontSize: 10,
-        lineHeight: 15,
-        maxWidth,
-        marginX,
-      }));
-      for (const row of normalizeTableRows(section.table.columns, section.table.rows)) {
-        ({ page, y } = drawWrappedParagraph({
-          pdf,
-          page,
-          y,
-          text: row.join(" | "),
-          font,
-          fontSize: 10,
-          lineHeight: 15,
-          maxWidth,
-          marginX,
-        }));
+      const drawTableRow = (cells: string[], isHeader: boolean) => {
+        const wrappedCells = cells.map(cell =>
+          wrapText(cell, font, fontSize, cellWidth - cellPadding * 2)
+        );
+        const rowHeight = Math.max(...wrappedCells.map(lines => lines.length)) * lineHeight + cellPadding * 2;
+
+        if (y - rowHeight < 56) {
+          page = createPdfPage(pdf);
+          y = page.getHeight() - 56;
+        }
+
+        for (let i = 0; i < colCount; i++) {
+          const x = marginX + i * cellWidth;
+
+          page.drawRectangle({
+            x,
+            y: y - rowHeight,
+            width: cellWidth,
+            height: rowHeight,
+            borderColor: rgb(0.5, 0.5, 0.5),
+            borderWidth: 0.5,
+            color: isHeader ? rgb(0.95, 0.95, 0.95) : undefined,
+          });
+
+          const lines = wrappedCells[i];
+          let textY = y - cellPadding - fontSize;
+          for (const line of lines) {
+            page.drawText(line, {
+              x: x + cellPadding,
+              y: textY,
+              size: fontSize,
+              font,
+              color: rgb(0.15, 0.15, 0.18),
+            });
+            textY -= lineHeight;
+          }
+        }
+
+        y -= rowHeight;
+      };
+
+      drawTableRow(table.columns, true);
+
+      for (const row of normalizeTableRows(table.columns, table.rows)) {
+        drawTableRow(row, false);
       }
+
+      y -= 4;
     }
 
     y -= 8;

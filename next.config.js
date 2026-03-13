@@ -19,7 +19,11 @@ const nextConfig = {
       '',
   },
   experimental: {
-    serverComponentsExternalPackages: ['@cloudbase/node-sdk', 'alipay-sdk'],
+    serverComponentsExternalPackages: [
+      '@cloudbase/node-sdk',
+      'alipay-sdk',
+      'pdfjs-dist',
+    ],
   },
 }
 

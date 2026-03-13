@@ -1,4 +1,4 @@
-﻿import { DEFAULT_LANGUAGE } from "@/config";
+import { DEFAULT_LANGUAGE } from "@/config";
 
 export type GenerationTab =
   | "text"
@@ -22,7 +22,11 @@ export type ConnectedGenerationTab =
   | "edit_text"
   | "edit_image"
   | "edit_audio"
-  | "edit_video";
+  | "edit_video"
+  | "detect_text"
+  | "detect_image"
+  | "detect_audio"
+  | "detect_video";
 export type GenerationUILanguage = "zh" | "en";
 export type GenerationModelProvider = "mistral" | "replicate" | "aliyun" | "demo";
 export type GenerationModelRegion = "domestic" | "international" | "demo";
@@ -36,6 +40,10 @@ export type GenerationModelMode =
   | "image-editing"
   | "video-editing"
   | "audio-editing"
+  | "file-detection"
+  | "image-detection"
+  | "video-detection"
+  | "audio-detection"
   | "demo";
 
 export type GenerationModelConfig = {
@@ -149,6 +157,54 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "Audio Redub",
   },
   {
+    id: "qwen-flash-detect",
+    label: "Qwen Flash AI Detection via DashScope",
+    provider: "aliyun",
+    mode: "file-detection",
+    tabs: ["detect_text"],
+    region: "domestic",
+    optionLabelZh: "Qwen Flash · 文档检测",
+    optionLabelEn: "Qwen Flash · Docs Detection",
+    autoLabelZh: "Qwen 文档检测",
+    autoLabelEn: "Qwen Docs Detect",
+  },
+  {
+    id: "qwen3-vl-flash-image-detect",
+    label: "Qwen3 VL Flash Image Detection via DashScope",
+    provider: "aliyun",
+    mode: "image-detection",
+    tabs: ["detect_image"],
+    region: "domestic",
+    optionLabelZh: "Qwen3 VL Flash · 图片检测",
+    optionLabelEn: "Qwen3 VL Flash · Image Detection",
+    autoLabelZh: "Qwen 图片检测",
+    autoLabelEn: "Qwen Image Detect",
+  },
+  {
+    id: "qwen3-vl-flash-video-detect",
+    label: "Qwen3 VL Flash Video Detection via DashScope",
+    provider: "aliyun",
+    mode: "video-detection",
+    tabs: ["detect_video"],
+    region: "domestic",
+    optionLabelZh: "Qwen3 VL Flash · 视频检测",
+    optionLabelEn: "Qwen3 VL Flash · Video Detection",
+    autoLabelZh: "Qwen 视频检测",
+    autoLabelEn: "Qwen Video Detect",
+  },
+  {
+    id: "qwen3-omni-flash-realtime-detect",
+    label: "Qwen3 Omni Flash Realtime Detection via DashScope",
+    provider: "aliyun",
+    mode: "audio-detection",
+    tabs: ["detect_audio"],
+    region: "domestic",
+    optionLabelZh: "Qwen3 Omni Flash · 音频检测",
+    optionLabelEn: "Qwen3 Omni Flash · Audio Detection",
+    autoLabelZh: "Qwen 音频检测",
+    autoLabelEn: "Qwen Audio Detect",
+  },
+  {
     id: "lucataco/qwen1.5-1.8b",
     label: "Qwen 1.5 1.8B via Replicate",
     provider: "replicate",
@@ -233,7 +289,7 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "LTX Video Edit",
   },
   {
-    id: "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo",
+    id: "vaibhavs10/incredibly-fast-whisper+minimax/speech-02-turbo",
     label: "Whisper + MiniMax Speech 02 Turbo via Replicate",
     provider: "replicate",
     mode: "audio-editing",
@@ -245,16 +301,52 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "Whisper Audio Redub",
   },
   {
-    id: "ui-demo",
-    label: "Coming Soon",
-    provider: "demo",
-    mode: "demo",
-    tabs: ["detect_text", "detect_image", "detect_audio", "detect_video"],
-    region: "demo",
-    optionLabelZh: "开发中",
-    optionLabelEn: "Coming Soon",
-    autoLabelZh: "开发中",
-    autoLabelEn: "Coming Soon",
+    id: "lucataco/qwen1.5-1.8b-chat-detect",
+    label: "Qwen 1.5 1.8B Chat Detection via Replicate",
+    provider: "replicate",
+    mode: "file-detection",
+    tabs: ["detect_text"],
+    region: "international",
+    optionLabelZh: "Qwen 1.5 1.8B Chat · 文档检测",
+    optionLabelEn: "Qwen 1.5 1.8B Chat · Docs Detection",
+    autoLabelZh: "Qwen 文档检测",
+    autoLabelEn: "Qwen Docs Detect",
+  },
+  {
+    id: "lucataco/qwen-vl-chat-detect",
+    label: "Qwen VL Chat Detection via Replicate",
+    provider: "replicate",
+    mode: "image-detection",
+    tabs: ["detect_image"],
+    region: "international",
+    optionLabelZh: "Qwen VL Chat · 图片检测",
+    optionLabelEn: "Qwen VL Chat · Image Detection",
+    autoLabelZh: "Qwen 图片检测",
+    autoLabelEn: "Qwen Image Detect",
+  },
+  {
+    id: "lucataco/qwen-vl-chat-video-detect",
+    label: "Qwen VL Chat Video Detection via Replicate",
+    provider: "replicate",
+    mode: "video-detection",
+    tabs: ["detect_video"],
+    region: "international",
+    optionLabelZh: "Qwen VL Chat · 视频检测",
+    optionLabelEn: "Qwen VL Chat · Video Detection",
+    autoLabelZh: "Qwen 视频检测",
+    autoLabelEn: "Qwen Video Detect",
+  },
+  {
+    id: "nvidia/canary-qwen-2.5b-detect",
+    label: "Canary Qwen 2.5B Detection via Replicate",
+    provider: "replicate",
+    mode: "audio-detection",
+    tabs: ["detect_audio"],
+    region: "international",
+    optionLabelZh: "Canary Qwen 2.5B · 音频检测",
+    optionLabelEn: "Canary Qwen 2.5B · Audio Detection",
+    autoLabelZh: "Canary 音频检测",
+    autoLabelEn: "Canary Audio Detect",
   },
 ] as const;
 
@@ -273,13 +365,25 @@ const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
   edit_audio:
     DEFAULT_LANGUAGE === "zh"
       ? "paraformer-v2-qwen3-tts-flash"
-      : "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo",
+      : "vaibhavs10/incredibly-fast-whisper+minimax/speech-02-turbo",
   edit_video:
     DEFAULT_LANGUAGE === "zh" ? "wan2.2-i2v-flash" : "lightricks/ltx-video-0.9.7-distilled",
-  detect_text: "ui-demo",
-  detect_image: "ui-demo",
-  detect_audio: "ui-demo",
-  detect_video: "ui-demo",
+  detect_text:
+    DEFAULT_LANGUAGE === "zh"
+      ? "qwen-flash-detect"
+      : "lucataco/qwen1.5-1.8b-chat-detect",
+  detect_image:
+    DEFAULT_LANGUAGE === "zh"
+      ? "qwen3-vl-flash-image-detect"
+      : "lucataco/qwen-vl-chat-detect",
+  detect_audio:
+    DEFAULT_LANGUAGE === "zh"
+      ? "qwen3-omni-flash-realtime-detect"
+      : "nvidia/canary-qwen-2.5b-detect",
+  detect_video:
+    DEFAULT_LANGUAGE === "zh"
+      ? "qwen3-vl-flash-video-detect"
+      : "lucataco/qwen-vl-chat-video-detect",
 };
 
 export type GenerationDownloadLink = {
@@ -374,7 +478,11 @@ export function isConnectedGenerationTab(
     value === "edit_text" ||
     value === "edit_image" ||
     value === "edit_audio" ||
-    value === "edit_video"
+    value === "edit_video" ||
+    value === "detect_text" ||
+    value === "detect_image" ||
+    value === "detect_audio" ||
+    value === "detect_video"
   );
 }
 

@@ -172,6 +172,7 @@ type UserSubscriptionRow = {
   latest_order_id?: string | null;
   current_period_start?: string | null;
   current_period_end?: string | null;
+  created_at?: string | null;
 };
 
 type UserQuotaAccountRow = {
@@ -789,13 +790,12 @@ export async function prepareDomesticSubscriptionCheckout(input: {
   planCode: DomesticPlanCode;
   billingPeriod: DomesticBillingPeriod;
 }) {
-  const pricingPlan = await readDomesticPlanPricing({
-    db: input.db,
-    planCode: input.planCode,
-    billingPeriod: input.billingPeriod,
-  });
-
-  const [userRows, subscriptionRows] = await Promise.all([
+  const [pricingPlan, userRows, subscriptionRows] = await Promise.all([
+    readDomesticPlanPricing({
+      db: input.db,
+      planCode: input.planCode,
+      billingPeriod: input.billingPeriod,
+    }),
     queryRows<AppUserRow>(
       input.db
         .from("app_users")
@@ -1566,23 +1566,18 @@ async function upsertSubscription(input: {
     input.db
       .from("user_subscriptions")
       .select(
-        "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end",
+        "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end,created_at",
       )
       .eq("user_id", input.userId)
       .eq("source", DOMESTIC_SOURCE)
       .limit(20),
-    "读取用户订阅失败",
+    "��取用户订阅失败",
   );
 
   const latestActiveRow = [...rows]
     .filter((row) => normalizeSubscriptionStatus(row.status) !== "pending")
     .sort((left, right) =>
       compareByDateDesc(left.current_period_end, right.current_period_end),
-    )[0];
-  const latestPendingRow = [...rows]
-    .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
-    .sort((left, right) =>
-      compareByDateAsc(left.current_period_start, right.current_period_start),
     )[0];
 
   const fromPlanCode = normalizeText(latestActiveRow?.plan_code, "free") as string;
@@ -1665,65 +1660,109 @@ async function upsertSubscription(input: {
   }
 
   if (effectiveStatus === "pending") {
-    const pendingSubscriptionId = normalizeText(latestPendingRow?.id, "") || createTextId("sub");
-    const pendingPayload = {
-      plan_code: input.planCode,
-      billing_period: input.billingPeriod,
-      status: "pending",
-      provider: input.provider,
-      provider_subscription_id: input.providerOrderId,
-      latest_order_id: input.orderId,
-      current_period_start: periodStartIso,
-      current_period_end: periodEndIso,
-      cancel_at_period_end: false,
-      canceled_at: null,
-      updated_at: input.nowIso,
-      metadata_json: stringifyCloudbaseJson({
-        last_paid_order_id: input.orderId,
-        source: DOMESTIC_SOURCE,
-        schedule_mode: "at_period_end",
-      }),
-    };
-
-    if (latestPendingRow?.id) {
-      await executeQuery(
-        input.db
-          .from("user_subscriptions")
-          .update(pendingPayload)
-          .eq("id", pendingSubscriptionId),
-        "更新待生效订阅失败",
-      );
-    } else {
-      await executeQuery(
-        input.db.from("user_subscriptions").insert({
-          id: pendingSubscriptionId,
-          user_id: input.userId,
-          source: DOMESTIC_SOURCE,
-          start_at: input.nowIso,
-          created_at: input.nowIso,
-          ...pendingPayload,
-        }),
-        "创建待生效订阅失败",
-      );
-    }
-
-    const stalePendingIds = rows
+    // BUG FIX #1: 支持多重降级队列，按等级排序
+    const existingPendingSubs = rows
       .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
-      .map((row) => normalizeText(row.id, ""))
-      .filter((id) => Boolean(id) && id !== pendingSubscriptionId);
+      .map((row) => ({
+        id: normalizeText(row.id, ""),
+        planCode: normalizeText(row.plan_code, ""),
+        periodStart: normalizeText(row.current_period_start, ""),
+        periodEnd: normalizeText(row.current_period_end, ""),
+        createdAt: normalizeText(row.created_at, input.nowIso),
+      }))
+      .filter((sub) => Boolean(sub.id));
 
-    for (const pendingId of stalePendingIds) {
-      await executeQuery(
-        input.db
-          .from("user_subscriptions")
-          .update({
-            status: "canceled",
-            canceled_at: input.nowIso,
-            updated_at: input.nowIso,
-          })
-          .eq("id", pendingId),
-        "清理重复待生效订阅失败",
+    // 获取所有套餐等级
+    const planLevels = new Map<string, number>();
+    for (const sub of existingPendingSubs) {
+      if (!planLevels.has(sub.planCode)) {
+        try {
+          const plan = await readDomesticPlanDefinition({
+            db: input.db,
+            planCode: sub.planCode as DomesticPlanCode,
+          });
+          planLevels.set(sub.planCode, plan.planLevel);
+        } catch {
+          planLevels.set(sub.planCode, 0);
+        }
+      }
+    }
+    planLevels.set(input.planCode, targetPlanLevel);
+
+    // 构建完整的降级队列（包括新购买的）
+    const allPendingSubs = [
+      ...existingPendingSubs.map((sub) => ({
+        ...sub,
+        planLevel: planLevels.get(sub.planCode) || 0,
+      })),
+      {
+        id: "",
+        planCode: input.planCode,
+        periodStart: periodStartIso,
+        periodEnd: periodEndIso,
+        createdAt: input.nowIso,
+        planLevel: targetPlanLevel,
+      },
+    ].sort((a, b) => {
+      // 先按等级降序（高级先生效）
+      if (b.planLevel !== a.planLevel) return b.planLevel - a.planLevel;
+      // 同等级按创建时间升序（先买的先生效）
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
+    // 重新计算每个订阅的生效时间
+    let nextStartDate = currentPeriodEndIso;
+    for (let i = 0; i < allPendingSubs.length; i++) {
+      const sub = allPendingSubs[i];
+      const subDurationDays = Math.ceil(
+        (new Date(sub.periodEnd).getTime() - new Date(sub.periodStart).getTime()) /
+          (1000 * 60 * 60 * 24)
       );
+      const newPeriodEnd = toDomesticDateTime(addDays(new Date(nextStartDate), subDurationDays));
+
+      if (sub.id) {
+        // 更新现有订阅
+        await executeQuery(
+          input.db
+            .from("user_subscriptions")
+            .update({
+              current_period_start: nextStartDate,
+              current_period_end: newPeriodEnd,
+              updated_at: input.nowIso,
+            })
+            .eq("id", sub.id),
+          "更新降级队列订阅时间失败",
+        );
+      } else {
+        // 创建新订阅
+        await executeQuery(
+          input.db.from("user_subscriptions").insert({
+            id: createTextId("sub"),
+            user_id: input.userId,
+            source: DOMESTIC_SOURCE,
+            plan_code: input.planCode,
+            billing_period: input.billingPeriod,
+            status: "pending",
+            provider: input.provider,
+            provider_subscription_id: input.providerOrderId,
+            latest_order_id: input.orderId,
+            start_at: input.nowIso,
+            current_period_start: nextStartDate,
+            current_period_end: newPeriodEnd,
+            cancel_at_period_end: false,
+            updated_at: input.nowIso,
+            metadata_json: stringifyCloudbaseJson({
+              last_paid_order_id: input.orderId,
+              source: DOMESTIC_SOURCE,
+              schedule_mode: "at_period_end",
+            }),
+            created_at: input.nowIso,
+          }),
+          "创建待生效订阅失败",
+        );
+      }
+
+      nextStartDate = newPeriodEnd;
     }
   } else if (latestActiveRow?.id) {
     await executeQuery(
@@ -1777,12 +1816,48 @@ async function upsertSubscription(input: {
   }
 
   if (effectiveStatus === "active") {
-    const stalePendingIds = rows
+    // BUG FIX #2: 升级时只清理低等级的 pending 订阅，保留高等级的并重新计算时间
+    const pendingSubs = rows
       .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
-      .map((row) => normalizeText(row.id, ""))
-      .filter((id) => Boolean(id));
+      .map((row) => ({
+        id: normalizeText(row.id, ""),
+        planCode: normalizeText(row.plan_code, ""),
+        billingPeriod: normalizeText(row.billing_period, ""),
+        periodStart: normalizeText(row.current_period_start, ""),
+        periodEnd: normalizeText(row.current_period_end, ""),
+      }))
+      .filter((sub) => Boolean(sub.id));
 
-    for (const pendingId of stalePendingIds) {
+    const toDeleteIds: string[] = [];
+    const toKeepSubs: Array<{ id: string; planCode: string; billingPeriod: string }> = [];
+
+    for (const pendingSub of pendingSubs) {
+      try {
+        const pendingPlan = await readDomesticPlanDefinition({
+          db: input.db,
+          planCode: pendingSub.planCode as DomesticPlanCode,
+        });
+        const pendingPlanLevel = pendingPlan.planLevel;
+
+        if (pendingPlanLevel <= targetPlanLevel) {
+          // 等级低于或等于当前购买的订阅，删除
+          toDeleteIds.push(pendingSub.id);
+        } else {
+          // 等级高于当前购买的订阅，保留但需要重新计算时间
+          toKeepSubs.push({
+            id: pendingSub.id,
+            planCode: pendingSub.planCode,
+            billingPeriod: pendingSub.billingPeriod,
+          });
+        }
+      } catch {
+        // 如果无法读取套餐定义，默认删除
+        toDeleteIds.push(pendingSub.id);
+      }
+    }
+
+    // 删除低等级的 pending 订阅
+    for (const pendingId of toDeleteIds) {
       await executeQuery(
         input.db
           .from("user_subscriptions")
@@ -1792,8 +1867,31 @@ async function upsertSubscription(input: {
             updated_at: input.nowIso,
           })
           .eq("id", pendingId),
-        "清理历史待生效订阅失败",
+        "清理低等级待生效订阅失败",
       );
+    }
+
+    // 更新保留的高等级 pending 订阅的生效时间
+    let nextStart = periodEndIso;
+    for (const keepSub of toKeepSubs) {
+      const subDurationDays = getDomesticDurationDays(
+        keepSub.billingPeriod as DomesticBillingPeriod
+      );
+      const newPeriodEnd = toDomesticDateTime(addDays(new Date(nextStart), subDurationDays));
+
+      await executeQuery(
+        input.db
+          .from("user_subscriptions")
+          .update({
+            current_period_start: nextStart,
+            current_period_end: newPeriodEnd,
+            updated_at: input.nowIso,
+          })
+          .eq("id", keepSub.id),
+        "更新保留的高等级订阅时间失败",
+      );
+
+      nextStart = newPeriodEnd;
     }
   }
 

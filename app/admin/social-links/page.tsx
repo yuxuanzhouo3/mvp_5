@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { formatDateTime } from "@/lib/utils/date-format";
 import {
   listSocialLinks,
   createSocialLink,
@@ -640,14 +641,7 @@ export default function SocialLinksManagementPage() {
                       <TableCell>
                         <span className="text-xs text-muted-foreground">
                           {link.created_at
-                            ? new Date(link.created_at).toLocaleDateString("zh-CN", {
-                                year: "numeric",
-                                month: "2-digit",
-                                day: "2-digit",
-                              }) + " " + new Date(link.created_at).toLocaleTimeString("zh-CN", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })
+                            ? formatDateTime(link.created_at)
                             : "-"}
                         </span>
                       </TableCell>

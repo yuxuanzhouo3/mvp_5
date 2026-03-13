@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Check, Crown, Loader2, Rocket, Shield, Sparkles, Star, Zap } from "lucide-react";
 import { getCloudbaseAuth } from "@/lib/cloudbase/client";
 import { getUIText, type UILanguage } from "@/lib/ui-text";
+import { SubscriptionRulesDialog } from "./SubscriptionRulesDialog";
 
 export type PlanKey = "free" | "pro" | "enterprise";
 export type BillingPeriod = "monthly" | "yearly";
@@ -147,12 +148,14 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
   const [loading, setLoading] = useState(true);
   const [fallback, setFallback] = useState(false);
   const [agreeTerms, setAgreeTerms] = useState(false);
+  const [showTermsDialog, setShowTermsDialog] = useState(false);
   const [selectedPayment, setSelectedPayment] = useState<PaymentMethod>(isDomesticVersion ? "alipay" : "stripe");
   const [mode, setMode] = useState<"subscription" | "addon">("subscription");
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>(initialSelectedPlan);
   const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>(initialBillingPeriod);
   const [selectedAddon, setSelectedAddon] = useState<AddonKey>("standard");
   const [paymentQuote, setPaymentQuote] = useState<PaymentQuoteState | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
 
   useEffect(() => setSelectedPayment(isDomesticVersion ? "alipay" : "stripe"), [isDomesticVersion]);
   useEffect(() => {
@@ -190,7 +193,7 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
   const fmt = useMemo(() => new Intl.NumberFormat(currentLanguage === "zh" ? "zh-CN" : "en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 }), [currentLanguage]);
   const plan = plans.find((item) => item.planCode === selectedPlan) || null;
   const addon = addons.find((item) => item.addonCode === selectedAddon) || null;
-  const canBuy = isLoggedIn && agreeTerms && !loading && (mode === "subscription" ? selectedPlan !== "free" && Boolean(plan) : Boolean(addon));
+  const canBuy = isLoggedIn && agreeTerms && !loading && !quoteLoading && (mode === "subscription" ? selectedPlan !== "free" && Boolean(plan) : Boolean(addon));
   const selectionKey = useMemo(
     () => mode === "subscription"
       ? `subscription:${selectedPlan}:${billingPeriod}`
@@ -204,25 +207,47 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
     const loadQuote = async () => {
       if (!isLoggedIn) {
         setPaymentQuote(null);
+        setQuoteLoading(false);
         return;
       }
 
       if (mode === "subscription" && selectedPlan === "free") {
         setPaymentQuote(null);
+        setQuoteLoading(false);
         return;
       }
 
       if (mode === "subscription" && !plan) {
         setPaymentQuote(null);
+        setQuoteLoading(false);
         return;
       }
 
       if (mode === "addon" && !addon) {
         setPaymentQuote(null);
+        setQuoteLoading(false);
+        return;
+      }
+
+      if (mode === "addon") {
+        setPaymentQuote({
+          selectionKey,
+          payload: {
+            success: true,
+            productType: "ADDON",
+            addonCode: addon.addonCode,
+            amount: addon.price,
+            originalAmount: null,
+            currency,
+            isUpgrade: false,
+          },
+        });
+        setQuoteLoading(false);
         return;
       }
 
       setPaymentQuote((current) => current?.selectionKey === selectionKey ? current : null);
+      setQuoteLoading(true);
 
       try {
         const endpoint = isDomesticVersion
@@ -267,11 +292,13 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
             selectionKey,
             payload,
           });
+          setQuoteLoading(false);
         }
       } catch (error) {
         console.warn("[PaymentSystem] 加载支付报价失败:", error);
         if (!cancelled) {
           setPaymentQuote(null);
+          setQuoteLoading(false);
         }
       }
     };
@@ -299,7 +326,9 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
   const payCurrency = activeQuote?.currency ?? currency;
   const paySymbol = payCurrency === "USD" ? "$" : "¥";
   const payAmountText = typeof payAmount === "number" ? `${paySymbol}${fmt.format(payAmount)}` : null;
-  const buyButtonText = mode === "subscription"
+  const buyButtonText = quoteLoading
+    ? (currentLanguage === "zh" ? "计算价格中..." : "Calculating...")
+    : mode === "subscription"
     ? selectedPlan === "free"
       ? (currentLanguage === "zh" ? "免费版无需订阅" : "Free plan does not require subscription")
       : currentLanguage === "zh"
@@ -383,7 +412,15 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
           <div className="flex items-center gap-2 flex-wrap">
             {(isDomesticVersion ? ["alipay", "wechat"] : ["stripe", "paypal"]).map((method) => <button key={method} type="button" onClick={() => setSelectedPayment(method as PaymentMethod)} className={`px-2.5 py-1 rounded-md text-xs font-semibold transition ${selectedPayment === method ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow" : "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20"}`}>{method === "alipay" ? "💳 支付宝" : method === "wechat" ? "💬 微信" : method === "stripe" ? "💳 Stripe" : "🅿️ PayPal"}</button>)}
           </div>
-          <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300 cursor-pointer"><input type="checkbox" checked={agreeTerms} onChange={(e) => setAgreeTerms(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600" /><span>{mode === "subscription" ? (currentLanguage === "zh" ? "我已阅读并同意订阅规则" : "I have read and agree to the subscription terms") : (currentLanguage === "zh" ? "我已阅读并同意加油包购买规则" : "I have read and agree to the add-on purchase terms")}</span></label>
+          <div className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
+            <input type="checkbox" id="agree-terms" checked={agreeTerms} onChange={(e) => setAgreeTerms(e.target.checked)} className="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600" />
+            <label htmlFor="agree-terms" className="cursor-pointer">
+              {mode === "subscription" ? (currentLanguage === "zh" ? "我已阅读并同意" : "I have read and agree to the ") : (currentLanguage === "zh" ? "我已阅读并同意" : "I have read and agree to the ")}
+              <button type="button" onClick={() => setShowTermsDialog(true)} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline">
+                {mode === "subscription" ? (currentLanguage === "zh" ? "《订阅规则》" : "Subscription Terms") : (currentLanguage === "zh" ? "《加油包购买规则》" : "Add-on Purchase Terms")}
+              </button>
+            </label>
+          </div>
           <button type="button" disabled={!canBuy} onClick={() => {
             if (mode === "subscription" && plan) onSubscribe(selectedPayment, { productType: "subscription", planCode: plan.planCode, billingPeriod, displayName: currentLanguage === "zh" ? plan.displayNameCn : plan.displayNameEn });
             if (mode === "addon" && addon) onSubscribe(selectedPayment, { productType: "addon", addonCode: addon.addonCode, addonDisplayName: currentLanguage === "zh" ? addon.displayNameCn : addon.displayNameEn, amount: addon.price });
@@ -391,6 +428,7 @@ const PaymentSystem: React.FC<PaymentSystemProps> = ({
           {!isLoggedIn && <p className="text-center text-xs text-amber-600 dark:text-amber-400">{text.subscribeHint}</p>}
         </div>
       </div>
+      <SubscriptionRulesDialog open={showTermsDialog} onOpenChange={setShowTermsDialog} isDomestic={isDomesticVersion} />
     </section>
   );
 };

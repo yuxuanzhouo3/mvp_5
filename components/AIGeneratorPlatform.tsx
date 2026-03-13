@@ -334,67 +334,212 @@ function getUnsupportedTabMessage(tab: string, language: "zh" | "en") {
     : "This feature is currently unavailable.";
 }
 
-async function extractVideoKeyframeFile(file: File) {
+function calculatePreviewSize(width: number, height: number, maxDimension: number) {
+  const safeWidth = Math.max(1, Math.round(width));
+  const safeHeight = Math.max(1, Math.round(height));
+  const longestSide = Math.max(safeWidth, safeHeight);
+  if (longestSide <= maxDimension) {
+    return {
+      width: safeWidth,
+      height: safeHeight,
+    };
+  }
+
+  const scale = maxDimension / longestSide;
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale)),
+  };
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("图像导出失败，请稍后重试。"));
+        return;
+      }
+      resolve(blob);
+    }, "image/png");
+  });
+}
+
+async function resizeImageFile(file: File, maxDimension = 512) {
   const objectUrl = URL.createObjectURL(file);
 
   try {
     return await new Promise<File>((resolve, reject) => {
-      const video = document.createElement("video");
-      video.preload = "auto";
-      video.muted = true;
-      video.playsInline = true;
+      const image = new Image();
 
       const cleanup = () => {
-        video.src = "";
+        image.src = "";
         URL.revokeObjectURL(objectUrl);
       };
 
-      video.onerror = () => {
+      image.onerror = () => {
         cleanup();
-        reject(new Error("视频首帧提取失败，请更换文件后重试。"));
+        reject(new Error("图片压缩失败，请更换文件后重试。"));
       };
 
-      video.onloadeddata = () => {
-        if (!video.videoWidth || !video.videoHeight) {
-          cleanup();
-          reject(new Error("无法读取视频画面尺寸，请更换文件后重试。"));
-          return;
-        }
+      image.onload = async () => {
+        try {
+          const { width, height } = calculatePreviewSize(
+            image.naturalWidth,
+            image.naturalHeight,
+            maxDimension,
+          );
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
 
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-
-        const context = canvas.getContext("2d");
-        if (!context) {
-          cleanup();
-          reject(new Error("浏览器不支持视频首帧提取。"));
-          return;
-        }
-
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob((blob) => {
-          cleanup();
-          if (!blob) {
-            reject(new Error("视频首帧导出失败，请稍后重试。"));
+          const context = canvas.getContext("2d");
+          if (!context) {
+            cleanup();
+            reject(new Error("浏览器不支持图片压缩。"));
             return;
           }
 
-          const baseName = file.name.replace(/\.[^.]+$/, "") || "video";
+          context.drawImage(image, 0, 0, width, height);
+          const blob = await canvasToPngBlob(canvas);
+          cleanup();
+
+          const baseName = file.name.replace(/\.[^.]+$/, "") || "image";
           resolve(
-            new File([blob], `${baseName}-keyframe.png`, {
+            new File([blob], `${baseName}.png`, {
               type: "image/png",
             }),
           );
-        }, "image/png");
+        } catch (error) {
+          cleanup();
+          reject(
+            error instanceof Error
+              ? error
+              : new Error("图片压缩失败，请稍后重试。"),
+          );
+        }
       };
 
-      video.src = objectUrl;
+      image.src = objectUrl;
     });
   } catch (error) {
     URL.revokeObjectURL(objectUrl);
     throw error;
   }
+}
+
+async function extractVideoFrameFiles(
+  file: File,
+  options?: { frameCount?: number; maxDimension?: number },
+) {
+  const frameCount = Math.max(1, options?.frameCount ?? 3);
+  const maxDimension = Math.max(128, options?.maxDimension ?? 512);
+  const objectUrl = URL.createObjectURL(file);
+
+  const waitForEvent = <T extends keyof HTMLVideoElementEventMap>(
+    video: HTMLVideoElement,
+    eventName: T,
+    errorMessage: string,
+  ) =>
+    new Promise<void>((resolve, reject) => {
+      const handleSuccess = () => {
+        cleanup();
+        resolve();
+      };
+      const handleError = () => {
+        cleanup();
+        reject(new Error(errorMessage));
+      };
+      const cleanup = () => {
+        video.removeEventListener(eventName, handleSuccess);
+        video.removeEventListener("error", handleError);
+      };
+
+      video.addEventListener(eventName, handleSuccess, { once: true });
+      video.addEventListener("error", handleError, { once: true });
+    });
+
+  try {
+    const video = document.createElement("video");
+    video.preload = "auto";
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = "anonymous";
+    video.src = objectUrl;
+
+    await waitForEvent(video, "loadedmetadata", "视频解析失败，请更换文件后重试。");
+
+    if (!video.videoWidth || !video.videoHeight) {
+      throw new Error("无法读取视频画面尺寸，请更换文件后重试。");
+    }
+
+    const { width, height } = calculatePreviewSize(
+      video.videoWidth,
+      video.videoHeight,
+      maxDimension,
+    );
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("浏览器不支持视频抽帧。");
+    }
+
+    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "video";
+    const ratioSeeds = frameCount === 1 ? [0.5] : [0.15, 0.5, 0.85];
+    const timestamps = Array.from(
+      new Set(
+        ratioSeeds
+          .slice(0, frameCount)
+          .map((ratio) => {
+            if (duration <= 0.2) {
+              return 0;
+            }
+            return Math.min(Math.max(duration * ratio, 0), Math.max(0, duration - 0.05));
+          })
+          .map((value) => Number(value.toFixed(3))),
+      ),
+    );
+
+    const frames: File[] = [];
+    for (let index = 0; index < timestamps.length; index += 1) {
+      const timestamp = timestamps[index];
+      if (duration > 0.2) {
+        const seekPromise = waitForEvent(
+          video,
+          "seeked",
+          "视频抽帧失败，请更换文件后重试。",
+        );
+        video.currentTime = timestamp;
+        await seekPromise;
+      }
+
+      context.drawImage(video, 0, 0, width, height);
+      const blob = await canvasToPngBlob(canvas);
+      frames.push(
+        new File([blob], `${baseName}-frame-${index + 1}.png`, {
+          type: "image/png",
+        }),
+      );
+    }
+
+    video.src = "";
+    URL.revokeObjectURL(objectUrl);
+    return frames;
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
+async function extractVideoKeyframeFile(file: File) {
+  const frames = await extractVideoFrameFiles(file, { frameCount: 1, maxDimension: 1024 });
+  if (frames.length === 0) {
+    throw new Error("视频首帧提取失败，请更换文件后重试。");
+  }
+  return frames[0];
 }
 
 const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayName }) => {
@@ -1320,10 +1465,6 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   }, [activeTab, user]);
 
   useEffect(() => {
-    if (user) {
-      return;
-    }
-
     setSelectedDocumentFormats((previous) => {
       if (previous.length === 1) {
         return previous;
@@ -1432,7 +1573,9 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
     }
 
     const isEditRequest = activeTab.startsWith("edit_");
-    if (isEditRequest && !selectedOperationFile) {
+    const isDetectRequest = activeTab.startsWith("detect_");
+    const requiresUpload = isEditRequest || isDetectRequest;
+    if (requiresUpload && !selectedOperationFile) {
       return;
     }
 
@@ -1441,12 +1584,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
       return;
     }
 
-    if (activeTab === "text" && isGuest && selectedDocumentFormats.length !== 1) {
+    if (activeTab === "text" && selectedDocumentFormats.length !== 1) {
       setSelectedDocumentFormats([selectedDocumentFormats[0] || "docx"]);
-      return;
-    }
-
-    if (activeTab === "text" && !isGuest && selectedDocumentFormats.length === 0) {
       return;
     }
 
@@ -1534,16 +1673,31 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
       }
 
       let response: Response;
-      if (isEditRequest) {
+      if (requiresUpload) {
         const formData = new FormData();
         formData.set("type", activeTab);
         formData.set("prompt", trimmedPrompt);
         formData.set("model", model);
-        formData.set("file", selectedOperationFile!);
+        let uploadFile = selectedOperationFile!;
+        if (activeTab === "detect_image") {
+          uploadFile = await resizeImageFile(selectedOperationFile!, 512);
+        }
+
+        formData.set("file", uploadFile);
 
         if (activeTab === "edit_video" && isDomesticVersion) {
           const keyframe = await extractVideoKeyframeFile(selectedOperationFile!);
           formData.set("keyframe", keyframe);
+        }
+
+        if (activeTab === "detect_video") {
+          const frames = await extractVideoFrameFiles(selectedOperationFile!, {
+            frameCount: 3,
+            maxDimension: 512,
+          });
+          frames.forEach((frame) => {
+            formData.append("frames", frame);
+          });
         }
 
         response = await fetch("/api/generate", {

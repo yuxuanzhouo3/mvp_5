@@ -1,6 +1,7 @@
 ﻿import { createMistral } from "@ai-sdk/mistral";
 import { generateObject } from "ai";
 import ExcelJS from "exceljs";
+import { extractTextFromPdfBuffer, replaceTextInPdfBuffer } from "@/lib/pdf-editing";
 import JSZip from "jszip";
 import { randomUUID } from "node:crypto";
 import {
@@ -20,6 +21,7 @@ import {
   generateDocumentFiles,
   getGeneratedDocumentSchema,
   type GeneratedDocument,
+  type GeneratedExportedFile,
 } from "@/lib/document-export";
 import { storeGeneratedFile } from "@/lib/generated-files";
 import { getProviderProxyStatus, providerFetch } from "@/lib/provider-http";
@@ -56,6 +58,25 @@ const FILE_GENERATION_SYSTEM_PROMPT_LINES = [
   "You generate structured documents for export to PDF, Excel, Word, TXT, and Markdown.",
   "Return content that follows the provided schema exactly.",
   "Default to Simplified Chinese unless the user explicitly requests another language.",
+  "",
+  "CRITICAL: You MUST return JSON in this exact format:",
+  "{",
+  '  "title": "Document title (string, 1-120 chars)",',
+  '  "summary": "Brief summary (string, 1-1200 chars)",',
+  '  "sections": [',
+  "    {",
+  '      "heading": "Section heading (string, 1-80 chars)",',
+  '      "paragraphs": ["Paragraph text (string, 1-1500 chars)"],',
+  '      "bullets": ["Optional bullet point (string, max 200 chars)"],',
+  '      "table": {',
+  '        "title": "Optional table title",',
+  '        "columns": ["Column 1", "Column 2"],',
+  '        "rows": [["Cell 1", "Cell 2"]]',
+  "      }",
+  "    }",
+  "  ],",
+  '  "spreadsheets": []',
+  "}",
 ];
 
 const REPLICATE_POLL_INTERVAL_MS = 1200;
@@ -104,11 +125,27 @@ const DEFAULT_AUDIO_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
 const DEFAULT_VIDEO_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
 const DOCUMENT_GENERATION_MAX_TOKENS = getPositiveIntFromEnv(
   "DOCUMENT_GENERATION_MAX_TOKENS",
-  900,
+  1000,
+);
+const DOCUMENT_EDITING_MAX_TOKENS = getPositiveIntFromEnv(
+  "DOCUMENT_EDITING_MAX_TOKENS",
+  1000,
 );
 const DOCUMENT_EDIT_SOURCE_MAX_CHARS = getPositiveIntFromEnv(
   "DOCUMENT_EDIT_SOURCE_MAX_CHARS",
-  12000,
+  8000,
+);
+const DETECTION_MAX_TOKENS = getPositiveIntFromEnv(
+  "DETECTION_MAX_TOKENS",
+  200,
+);
+const DETECTION_SOURCE_MAX_CHARS = getPositiveIntFromEnv(
+  "DETECTION_SOURCE_MAX_CHARS",
+  8000,
+);
+const USER_PROMPT_MAX_CHARS = getPositiveIntFromEnv(
+  "USER_PROMPT_MAX_CHARS",
+  2000,
 );
 const GENERATED_INPUT_BUCKET = "generated-outputs";
 const GENERATED_INPUT_SIGNED_URL_TTL_SECONDS = getPositiveIntFromEnv(
@@ -147,6 +184,7 @@ type GenerateRequestPayload = {
   formats: unknown;
   inputFile: File | null;
   keyframeFile: File | null;
+  frameFiles: File[];
 };
 
 function normalizeFormFieldValue(value: FormDataEntryValue | null) {
@@ -160,16 +198,20 @@ async function parseGenerateRequest(req: Request): Promise<GenerateRequestPayloa
     const formData = await req.formData();
     const inputFile = formData.get("file");
     const keyframeFile = formData.get("keyframe");
+    const frameFiles = formData.getAll("frames");
     const formats = formData.getAll("formats");
 
     return {
-      prompt: normalizeFormFieldValue(formData.get("prompt")).trim(),
+      prompt: normalizeFormFieldValue(formData.get("prompt")).trim().slice(0, USER_PROMPT_MAX_CHARS),
       type: normalizeFormFieldValue(formData.get("type")).trim(),
       model: normalizeFormFieldValue(formData.get("model")).trim(),
       formats: formats.length > 0 ? formats : undefined,
       inputFile: inputFile instanceof File && inputFile.size > 0 ? inputFile : null,
       keyframeFile:
         keyframeFile instanceof File && keyframeFile.size > 0 ? keyframeFile : null,
+      frameFiles: frameFiles.filter(
+        (file): file is File => file instanceof File && file.size > 0,
+      ),
     };
   }
 
@@ -181,12 +223,13 @@ async function parseGenerateRequest(req: Request): Promise<GenerateRequestPayloa
   };
 
   return {
-    prompt: typeof body.prompt === "string" ? body.prompt.trim() : "",
+    prompt: typeof body.prompt === "string" ? body.prompt.trim().slice(0, USER_PROMPT_MAX_CHARS) : "",
     type: typeof body.type === "string" ? body.type : "",
     model: body.model,
     formats: body.formats,
     inputFile: null,
     keyframeFile: null,
+    frameFiles: [],
   };
 }
 
@@ -740,7 +783,8 @@ function splitReplicateModelId(modelId: string) {
 }
 
 function normalizeReplicateTextModelId(modelId: string) {
-  return modelId === "lucataco/qwen1.5-1.8b-chat"
+  return modelId === "lucataco/qwen1.5-1.8b-chat" ||
+    modelId === "lucataco/qwen1.5-1.8b-chat-detect"
     ? "lucataco/qwen1.5-1.8b"
     : modelId;
 }
@@ -748,6 +792,62 @@ function normalizeReplicateTextModelId(modelId: string) {
 function normalizeReplicateAudioModelId(modelId: string) {
   return modelId === "codeplugtech/minimax-speech-02-turbo"
     ? "minimax/speech-02-turbo"
+    : modelId;
+}
+
+function isLegacyReplicateAudioEditingModelId(modelId: string) {
+  return modelId === "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo";
+}
+
+function isReplicateAudioEditingPipelineModelId(modelId: string) {
+  return (
+    modelId === "vaibhavs10/incredibly-fast-whisper+minimax/speech-02-turbo" ||
+    isLegacyReplicateAudioEditingModelId(modelId)
+  );
+}
+
+function resolveDashScopeTextDetectionModelId(modelId: string) {
+  return modelId === "qwen-flash-detect" ? "qwen-flash" : modelId;
+}
+
+function resolveDashScopeVisualDetectionModelId(modelId: string) {
+  if (
+    modelId === "qwen-vl-plus-image-detect" ||
+    modelId === "qwen-vl-plus-video-detect"
+  ) {
+    return "qwen-vl-plus";
+  }
+
+  if (
+    modelId === "qwen3-vl-flash-image-detect" ||
+    modelId === "qwen3-vl-flash-video-detect"
+  ) {
+    return "qwen3-vl-flash";
+  }
+
+  return modelId;
+}
+
+function resolveDashScopeAudioDetectionModelId(modelId: string) {
+  return modelId === "qwen3-omni-flash-realtime-detect"
+    ? "qwen3-omni-flash"
+    : modelId;
+}
+
+function resolveReplicateVisualDetectionModelId(modelId: string) {
+  if (
+    modelId === "lucataco/qwen-vl-chat-detect" ||
+    modelId === "lucataco/qwen-vl-chat-video-detect"
+  ) {
+    return "lucataco/qwen-vl-chat";
+  }
+
+  return modelId;
+}
+
+function resolveReplicateAudioDetectionModelId(modelId: string) {
+  return modelId === "nvidia/canary-qwen-2.5b-detect"
+    ? "nvidia/canary-qwen-2.5b"
     : modelId;
 }
 
@@ -770,18 +870,20 @@ function buildReplicateVideoPrompt(userPrompt: string) {
   ].join("\n");
 }
 
-function buildReplicateDocumentPrompt(userPrompt: string, requireSpreadsheet: boolean) {
+function buildReplicateDocumentPrompt(userPrompt: string, targetFormat: DocumentFileFormat) {
+  const requireSpreadsheet = targetFormat === "xlsx";
+
   return [
-    ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
+    buildFileGenerationSystemPrompt(targetFormat),
     "Return raw JSON only.",
     "Output JSON keys: title, summary, sections, spreadsheets.",
     "Each section must include heading, paragraphs, bullets, and may include table.",
     "Each spreadsheet must include name, columns, rows.",
     requireSpreadsheet
       ? "Return at least one useful spreadsheet."
-      : "Return an empty spreadsheets array unless tabular data is genuinely useful.",
+      : "Return an empty spreadsheets array unless tabular data is explicitly requested.",
     "",
-    buildFileGenerationPrompt(userPrompt, requireSpreadsheet),
+    buildFileGenerationPrompt(userPrompt, targetFormat),
   ].join("\n");
 }
 
@@ -1549,6 +1651,281 @@ function truncateText(value: string, maxLength: number) {
   return trimmed.slice(0, maxLength).trim();
 }
 
+type DetectionVerdict = "likely_ai" | "uncertain" | "likely_human";
+
+type NormalizedDetectionResult = {
+  probability: number;
+  confidence: number;
+  verdict: DetectionVerdict;
+  reasons: string[];
+  frameProbabilities?: number[];
+};
+
+function getRuntimeLocale() {
+  return IS_DOMESTIC_RUNTIME ? "zh" : "en";
+}
+
+function clampPercentage(value: number, fallback = 50) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(100, Math.max(0, Math.round(value)));
+}
+
+function parsePercentageValue(value: unknown, fallback = 50) {
+  if (typeof value === "number") {
+    return clampPercentage(value <= 1 ? value * 100 : value, fallback);
+  }
+
+  if (typeof value === "string") {
+    const matched = value.trim().match(/-?\d+(?:\.\d+)?/);
+    if (!matched) {
+      return fallback;
+    }
+    const numeric = Number(matched[0]);
+    if (!Number.isFinite(numeric)) {
+      return fallback;
+    }
+    return clampPercentage(numeric <= 1 ? numeric * 100 : numeric, fallback);
+  }
+
+  return fallback;
+}
+
+function parseConfidenceValue(value: unknown, fallback = 60) {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["high", "strong", "高", "较高"].includes(normalized)) {
+      return 85;
+    }
+    if (["medium", "mid", "moderate", "中", "一般"].includes(normalized)) {
+      return 60;
+    }
+    if (["low", "弱", "低", "较低"].includes(normalized)) {
+      return 35;
+    }
+  }
+
+  return parsePercentageValue(value, fallback);
+}
+
+function normalizeReasonList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as string[];
+  }
+
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(0, 5);
+}
+
+function resolveDetectionVerdict(probability: number, requested?: unknown): DetectionVerdict {
+  if (typeof requested === "string") {
+    const normalized = requested.trim().toLowerCase();
+    if (["likely_ai", "ai", "likely-ai", "ai_generated"].includes(normalized)) {
+      return "likely_ai";
+    }
+    if (["likely_human", "human", "human_written", "human_made"].includes(normalized)) {
+      return "likely_human";
+    }
+    if (["uncertain", "unknown", "mixed"].includes(normalized)) {
+      return "uncertain";
+    }
+  }
+
+  if (probability >= 70) {
+    return "likely_ai";
+  }
+  if (probability <= 30) {
+    return "likely_human";
+  }
+  return "uncertain";
+}
+
+function normalizeDetectionResult(rawText: string): NormalizedDetectionResult {
+  let parsed: Record<string, unknown> = {};
+
+  try {
+    parsed = JSON.parse(extractJsonObjectText(rawText)) as Record<string, unknown>;
+  } catch (error) {
+    console.warn("[Generate][detect] parse detection JSON failed:", error);
+  }
+
+  const probability = parsePercentageValue(
+    parsed.probability ?? parsed.ai_probability ?? parsed.score ?? parsed.likelihood,
+    50,
+  );
+  const confidence = parseConfidenceValue(
+    parsed.confidence ?? parsed.confidence_score,
+    probability >= 70 || probability <= 30 ? 75 : 55,
+  );
+  const frameProbabilities = Array.isArray(parsed.frame_probabilities)
+    ? parsed.frame_probabilities
+        .map((item) => parsePercentageValue(item, NaN))
+        .filter((item) => Number.isFinite(item))
+        .slice(0, 6)
+    : undefined;
+  const reasons = normalizeReasonList(parsed.reasons ?? parsed.evidence ?? parsed.signals);
+  const verdict = resolveDetectionVerdict(probability, parsed.verdict);
+
+  return {
+    probability,
+    confidence,
+    verdict,
+    reasons:
+      reasons.length > 0
+        ? reasons
+        : [
+            getRuntimeLocale() === "zh"
+              ? "模型未返回明确依据，建议结合人工复核。"
+              : "The model did not return clear evidence. Manual review is recommended.",
+          ],
+    frameProbabilities,
+  };
+}
+
+function getDetectionVerdictLabel(verdict: DetectionVerdict, locale: "zh" | "en") {
+  if (locale === "zh") {
+    if (verdict === "likely_ai") {
+      return "高概率为 AI 生成";
+    }
+    if (verdict === "likely_human") {
+      return "更可能为人工创作";
+    }
+    return "暂不确定";
+  }
+
+  if (verdict === "likely_ai") {
+    return "Likely AI-generated";
+  }
+  if (verdict === "likely_human") {
+    return "Likely human-created";
+  }
+  return "Uncertain";
+}
+
+function getConfidenceLabel(score: number, locale: "zh" | "en") {
+  if (locale === "zh") {
+    if (score >= 80) {
+      return "高";
+    }
+    if (score >= 55) {
+      return "中";
+    }
+    return "低";
+  }
+
+  if (score >= 80) {
+    return "High";
+  }
+  if (score >= 55) {
+    return "Medium";
+  }
+  return "Low";
+}
+
+function buildDetectionSummary(result: NormalizedDetectionResult, locale: "zh" | "en") {
+  return locale === "zh"
+    ? `AI 生成概率 ${result.probability}% · ${getDetectionVerdictLabel(result.verdict, locale)}`
+    : `${result.probability}% AI probability · ${getDetectionVerdictLabel(result.verdict, locale)}`;
+}
+
+function buildDetectionText(
+  result: NormalizedDetectionResult,
+  locale: "zh" | "en",
+) {
+  const lines =
+    locale === "zh"
+      ? [
+          `检测结论：${getDetectionVerdictLabel(result.verdict, locale)}`,
+          `AI 生成概率：${result.probability}%`,
+          `置信度：${getConfidenceLabel(result.confidence, locale)}（${result.confidence}%）`,
+        ]
+      : [
+          `Verdict: ${getDetectionVerdictLabel(result.verdict, locale)}`,
+          `AI Probability: ${result.probability}%`,
+          `Confidence: ${getConfidenceLabel(result.confidence, locale)} (${result.confidence}%)`,
+        ];
+
+  if (result.frameProbabilities && result.frameProbabilities.length > 0) {
+    lines.push(
+      locale === "zh"
+        ? `关键帧概率：${result.frameProbabilities.map((item) => `${item}%`).join("、")}`
+        : `Frame Probabilities: ${result.frameProbabilities.map((item) => `${item}%`).join(", ")}`,
+    );
+  }
+
+  lines.push(locale === "zh" ? "判定依据：" : "Reasons:");
+  result.reasons.forEach((reason) => {
+    lines.push(locale === "zh" ? `- ${reason}` : `- ${reason}`);
+  });
+  lines.push(
+    locale === "zh"
+      ? "说明：该结果为概率判断，不等同于司法或平台官方鉴定。"
+      : "Note: This is a probabilistic assessment, not a forensic or platform-certified verdict.",
+  );
+
+  return lines.join("\n");
+}
+
+function buildStructuredDetectionInstruction(target: "document" | "image" | "audio" | "video", locale: "zh" | "en") {
+  if (locale === "zh") {
+    return [
+      `你是专业的${target === "document" ? "文档" : target === "image" ? "图片" : target === "audio" ? "音频" : "视频"} AI 来源检测助手。`,
+      "请仅根据给定内容估计它是 AI 生成的概率，不要编造无法观察到的事实。",
+      "返回严格 JSON，不要输出 Markdown，不要补充解释。",
+      'JSON 格式：{"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["依据1","依据2"]}',
+      target === "video"
+        ? '如果收到多张关键帧，请额外返回 "frame_probabilities": [0-100,0-100,...]，并给出整体平均概率。'
+        : "reasons 请控制在 2-4 条，并尽量具体。",
+    ].join("\n");
+  }
+
+  return [
+    `You are a professional AI-origin detector for ${target}.`,
+    "Estimate the probability that the content is AI-generated using only the provided evidence.",
+    "Return strict JSON only. No markdown. No extra explanation.",
+    'JSON schema: {"probability":0-100,"confidence":0-100,"verdict":"likely_ai|uncertain|likely_human","reasons":["reason 1","reason 2"]}',
+    target === "video"
+      ? 'If you receive multiple keyframes, also return "frame_probabilities": [0-100, ...] and set "probability" to the overall mean estimate.'
+      : "Keep reasons concrete and concise.",
+  ].join("\n");
+}
+
+function resolveDetectionTargetType(type: string): "text" | "image" | "audio" | "video" {
+  if (type.endsWith("image")) {
+    return "image";
+  }
+  if (type.endsWith("video")) {
+    return "video";
+  }
+  if (type.endsWith("audio")) {
+    return "audio";
+  }
+  return "text";
+}
+
+function resolveDetectionRiskLevel(probability: number): "low" | "medium" | "high" {
+  if (probability >= 70) {
+    return "high";
+  }
+  if (probability >= 40) {
+    return "medium";
+  }
+  return "low";
+}
+
+function mapDetectionVerdictToDbValue(verdict: DetectionVerdict) {
+  if (verdict === "likely_ai") {
+    return "ai_generated";
+  }
+  if (verdict === "likely_human") {
+    return "human";
+  }
+  return "uncertain";
+}
+
 function extractTextFragments(value: unknown, depth = 0): string[] {
   if (depth > 3 || value == null) {
     return [];
@@ -1829,7 +2206,7 @@ function normalizeSpreadsheet(
   const normalized = normalizeTabularData(value, {
     maxRows: 50,
     maxColumns: 8,
-    titleFallback: `?? ${index + 1}`,
+    titleFallback: `Table ${index + 1}`,
   });
   if (!normalized) {
     return null;
@@ -1844,8 +2221,8 @@ function normalizeSpreadsheet(
 
 function buildFallbackSpreadsheet(sections: GeneratedDocument["sections"]) {
   return {
-    name: "????",
-    columns: ["??", "??"],
+    name: "Sheet 1",
+    columns: ["Section", "Content"],
     rows: sections.slice(0, 8).map((section) => [section.heading, section.paragraphs[0] ?? ""]),
   } satisfies GeneratedDocument["spreadsheets"][number];
 }
@@ -1874,12 +2251,13 @@ function normalizeGeneratedDocumentPayload(
   const title =
     firstNonEmptyText(record, ["title", "name", "headline", "topic"], 120) ||
     truncateText(prompt, 120) ||
-    "????";
+    "Edited Document";
 
   const summary =
     firstNonEmptyText(record, ["summary", "abstract", "overview", "description"], 1200) ||
     truncateText(
-      normalizedSections.flatMap((section) => section.paragraphs).join(" ") || `???${prompt}??????????`,
+      normalizedSections.flatMap((section) => section.paragraphs).join(" ") ||
+        "Edited document content.",
       1200,
     );
 
@@ -1926,6 +2304,108 @@ async function requestDashScopeChatCompletion(body: Record<string, unknown>) {
   );
 
   return readDashScopeJson<DashScopeChatCompletionPayload>(response);
+}
+
+async function requestDashScopeChatCompletionStreamText(
+  body: Record<string, unknown>,
+) {
+  const response = await dashScopeFetch(
+    `${getDashScopeCompatibleBaseUrl()}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({
+        ...body,
+        stream: true,
+      }),
+    },
+    DASHSCOPE_CHAT_COMPLETION_TIMEOUT_MS,
+  );
+
+  if (!response.ok) {
+    const detail = (await response.text()).trim();
+    throw new Error(
+      `阿里云百炼流式请求失败 (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
+
+  if (!response.body) {
+    throw new Error("阿里云百炼未返回可读取的流式响应。");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let outputText = "";
+
+  const appendChunkText = (payload: unknown) => {
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+
+    const record = payload as {
+      choices?: Array<{
+        delta?: {
+          content?: unknown;
+        };
+        message?: {
+          content?: unknown;
+        };
+      }>;
+    };
+    const choice = Array.isArray(record.choices) ? record.choices[0] : null;
+    const deltaContent = choice?.delta?.content;
+    const messageContent = choice?.message?.content;
+    const textChunk =
+      typeof deltaContent === "string"
+        ? deltaContent
+        : extractChatMessageText(deltaContent) ||
+          (typeof messageContent === "string"
+            ? messageContent
+            : extractChatMessageText(messageContent));
+    if (textChunk) {
+      outputText += textChunk;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) {
+        continue;
+      }
+
+      const payloadText = trimmed.slice(5).trim();
+      if (!payloadText || payloadText === "[DONE]") {
+        continue;
+      }
+
+      try {
+        appendChunkText(JSON.parse(payloadText));
+      } catch (error) {
+        console.warn("[Generate][DashScope] failed to parse stream chunk:", error);
+      }
+    }
+
+    if (done) {
+      break;
+    }
+  }
+
+  if (!outputText.trim()) {
+    throw new Error("阿里云百炼未返回可解析的流式文本内容。");
+  }
+
+  return outputText;
 }
 
 function supportsDashScopeJsonSchema(modelId: string) {
@@ -1996,12 +2476,56 @@ function shouldRequireSpreadsheet(formats: readonly DocumentFileFormat[]) {
   return formats.includes("xlsx");
 }
 
-function buildFileGenerationSystemPrompt(requireSpreadsheet: boolean) {
+function getDocumentFormatGenerationGuidance(targetFormat: DocumentFileFormat) {
+  if (targetFormat === "xlsx") {
+    return [
+      "Target export format: Excel (.xlsx).",
+      "Focus on structured spreadsheet data.",
+      "Include at least one spreadsheet with a clear sheet name, useful columns, and complete rows.",
+      "Keep sections concise; the spreadsheet is the primary deliverable.",
+    ];
+  }
+
+  if (targetFormat === "docx") {
+    return [
+      "Target export format: Word (.docx).",
+      "Focus on prose sections, readable headings, and polished paragraphs.",
+      "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+    ];
+  }
+
+  if (targetFormat === "pdf") {
+    return [
+      "Target export format: PDF.",
+      "Focus on clean narrative structure with concise headings and readable paragraphs.",
+      "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+    ];
+  }
+
+  if (targetFormat === "md") {
+    return [
+      "Target export format: Markdown (.md).",
+      "Use a markdown-friendly structure with clear headings and concise paragraphs.",
+      "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+    ];
+  }
+
+  return [
+    "Target export format: TXT (.txt).",
+    "Use plain-text-friendly structure with simple headings and readable paragraphs.",
+    "Keep the spreadsheets array empty unless the user explicitly requests tabular output.",
+  ];
+}
+
+function buildFileGenerationSystemPrompt(targetFormat: DocumentFileFormat) {
+  const requireSpreadsheet = targetFormat === "xlsx";
+
   return [
     ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
+    ...getDocumentFormatGenerationGuidance(targetFormat),
     requireSpreadsheet
       ? "Include at least one meaningful spreadsheet that matches the user's request."
-      : "Spreadsheets are optional. Return an empty spreadsheets array unless tabular data is clearly helpful.",
+      : "Return an empty spreadsheets array unless tabular data is explicitly requested.",
   ].join("\n");
 }
 
@@ -2034,9 +2558,10 @@ async function generateDocumentWithDashScope(
   requestId: string,
   modelId: string,
   prompt: string,
-  requireSpreadsheet: boolean,
+  targetFormat: DocumentFileFormat,
 ) {
-  const systemPrompt = `${buildFileGenerationSystemPrompt(requireSpreadsheet)} Respond with raw JSON only.`;
+  const requireSpreadsheet = targetFormat === "xlsx";
+  const systemPrompt = `${buildFileGenerationSystemPrompt(targetFormat)} Respond with raw JSON only.`;
   const baseRequest = {
     model: modelId,
     messages: [
@@ -2046,7 +2571,7 @@ async function generateDocumentWithDashScope(
       },
       {
         role: "user",
-        content: buildFileGenerationPrompt(prompt, requireSpreadsheet),
+        content: buildFileGenerationPrompt(prompt, targetFormat),
       },
     ],
     temperature: 0.3,
@@ -2095,17 +2620,19 @@ async function generateDocumentWithDashScope(
     throw new Error("阿里云百炼文档生成未返回可解析内容。");
   }
 
-  return parseGeneratedDocumentFromRawText(content, prompt, requireSpreadsheet);
-}
-
-async function generateDocumentWithReplicate(
+  console.log(`[Generate][${requestId}][DashScope] AI返回内容:`, content.substring(0, 500));
+  const result = parseGeneratedDocumentFromRawText(content, prompt, requireSpreadsheet);
+  console.log(`[Generate][${requestId}][DashScope] 解析结果:`, JSON.stringify(result).substring(0, 300));
+  return result;
+}async function generateDocumentWithReplicate(
   requestId: string,
   modelId: string,
   prompt: string,
-  requireSpreadsheet: boolean,
+  targetFormat: DocumentFileFormat,
 ) {
+  const requireSpreadsheet = targetFormat === "xlsx";
   const normalizedModelId = normalizeReplicateTextModelId(modelId);
-  const documentPrompt = buildReplicateDocumentPrompt(prompt, requireSpreadsheet);
+  const documentPrompt = buildReplicateDocumentPrompt(prompt, targetFormat);
   const primaryInput = {
     prompt: documentPrompt,
     max_new_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
@@ -2125,7 +2652,7 @@ async function generateDocumentWithReplicate(
     }
 
     console.warn(
-      `[Generate][${requestId}] Replicate 文档参数不兼容，自动降级为最小输入重试`,
+      `[Generate][${requestId}] Replicate ???????????????????`,
     );
     payload = await createReplicatePrediction(requestId, normalizedModelId, fallbackInput);
   }
@@ -2133,7 +2660,7 @@ async function generateDocumentWithReplicate(
   const status = (payload.status ?? "").toLowerCase();
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 文档生成失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(`Replicate ??????${detail ? `: ${detail}` : ""}`);
   }
 
   const finalPayload =
@@ -2141,19 +2668,19 @@ async function generateDocumentWithReplicate(
       ? payload
       : await (() => {
           if (!payload.id) {
-            throw new Error("Replicate 返回结果缺少 prediction id。");
+            throw new Error("Replicate ?????? prediction id?");
           }
 
           return waitForReplicatePredictionResult(
             payload.id,
             REPLICATE_TEXT_TASK_TIMEOUT_MS,
-            `Replicate 文档生成超时，请稍后重试。prediction_id: ${payload.id}`,
+            `Replicate ?????????????prediction_id: ${payload.id}`,
           );
         })();
 
   const content = extractReplicateTextOutput(finalPayload.output);
   if (!content.trim()) {
-    throw new Error("Replicate 文档生成未返回可解析内容。");
+    throw new Error("Replicate ?????????????");
   }
 
   return parseGeneratedDocumentFromRawText(content, prompt, requireSpreadsheet);
@@ -2273,7 +2800,594 @@ async function extractEditableDocumentText(file: File) {
     return extractTextFromXlsxBuffer(bytes);
   }
 
-  throw new Error("当前文档编辑仅支持 TXT、MD、DOCX、XLSX 文件。");
+  if (extension === "pdf") {
+    return extractTextFromPdfBuffer(bytes);
+  }
+
+  throw new Error("当前文档编辑仅支持 TXT、MD、DOCX、XLSX、PDF 文件。");
+}
+
+async function extractDetectableDocumentText(file: File) {
+  try {
+    return await extractEditableDocumentText(file);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("当前文档编辑仅支持")
+    ) {
+      throw new Error("当前文档检测仅支持 TXT、MD、DOCX、XLSX、PDF 文件。");
+    }
+    throw error;
+  }
+}
+
+function buildDocumentDetectionPrompt(input: {
+  fileName: string;
+  extractedText: string;
+  locale: "zh" | "en";
+}) {
+  if (input.locale === "zh") {
+    return [
+      `文件名：${input.fileName}`,
+      "请判断以下文档内容更像 AI 生成还是人工创作。",
+      "重点观察语言重复度、结构均匀性、信息密度、措辞模板化、论证跳跃等信号。",
+      "文档内容：",
+      truncateText(input.extractedText, DETECTION_SOURCE_MAX_CHARS),
+    ].join("\n\n");
+  }
+
+  return [
+    `File name: ${input.fileName}`,
+    "Estimate whether the following document is more likely AI-generated or human-created.",
+    "Focus on repetition, stylistic uniformity, templated wording, density of information, and reasoning continuity.",
+    "Document content:",
+    truncateText(input.extractedText, DETECTION_SOURCE_MAX_CHARS),
+  ].join("\n\n");
+}
+
+function buildVisualDetectionPrompt(target: "image" | "video", locale: "zh" | "en") {
+  if (locale === "zh") {
+    return target === "video"
+      ? "你将收到同一段视频抽取的多张关键帧。请分别评估每一帧的 AI 生成概率，并给出整体平均判断，重点关注纹理一致性、边缘失真、物理不连续、字幕/文字异常和时序伪影。"
+      : "请评估该图片为 AI 生成的概率，重点关注局部纹理、光影一致性、手部/边缘细节、透视关系、文字和水印异常。";
+  }
+
+  return target === "video"
+    ? "You will receive multiple keyframes from the same video. Estimate the AI-generation probability for each frame and return the overall mean, focusing on texture consistency, edge artifacts, physical continuity, text anomalies, and temporal-style artifacts visible across frames."
+    : "Estimate the probability that this image is AI-generated. Focus on local textures, lighting consistency, anatomy or edge details, perspective, and text or watermark anomalies.";
+}
+
+async function detectDocumentWithDashScope(input: {
+  modelId: string;
+  file: File;
+  locale: "zh" | "en";
+}) {
+  const extractedText = await extractDetectableDocumentText(input.file);
+  if (!extractedText.trim()) {
+    throw new Error(
+      input.locale === "zh"
+        ? "未能从文档中提取到可检测文本。"
+        : "No detectable text could be extracted from the document.",
+    );
+  }
+
+  const requestBody = {
+    model: resolveDashScopeTextDetectionModelId(input.modelId),
+    enable_thinking: false,
+    temperature: 0.1,
+    max_tokens: DETECTION_MAX_TOKENS,
+    response_format: {
+      type: "json_object",
+    },
+    messages: [
+      {
+        role: "system",
+        content: buildStructuredDetectionInstruction("document", input.locale),
+      },
+      {
+        role: "user",
+        content: buildDocumentDetectionPrompt({
+          fileName: input.file.name,
+          extractedText,
+          locale: input.locale,
+        }),
+      },
+    ],
+  };
+
+  let payload: DashScopeChatCompletionPayload;
+  try {
+    payload = await requestDashScopeChatCompletion(requestBody);
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    if (statusCode !== 400 && statusCode !== 422) {
+      throw error;
+    }
+
+    const { response_format, ...fallbackRequestBody } = requestBody;
+    void response_format;
+    payload = await requestDashScopeChatCompletion(fallbackRequestBody);
+  }
+
+  return normalizeDetectionResult(
+    extractChatMessageText(payload.choices?.[0]?.message?.content).trim(),
+  );
+}
+
+async function detectVisualWithDashScope(input: {
+  modelId: string;
+  files: File[];
+  locale: "zh" | "en";
+  target: "image" | "video";
+}) {
+  const content = [
+    {
+      type: "text",
+      text: buildVisualDetectionPrompt(input.target, input.locale),
+    },
+    ...(await Promise.all(
+      input.files.slice(0, 6).map(async (file) => ({
+        type: "image_url",
+        image_url: {
+          url: await fileToDataUrl(file),
+        },
+      })),
+    )),
+  ];
+
+  const requestBody = {
+    model: resolveDashScopeVisualDetectionModelId(input.modelId),
+    enable_thinking: false,
+    temperature: 0.1,
+    max_tokens: DETECTION_MAX_TOKENS,
+    response_format: {
+      type: "json_object",
+    },
+    messages: [
+      {
+        role: "system",
+        content: buildStructuredDetectionInstruction(input.target, input.locale),
+      },
+      {
+        role: "user",
+        content,
+      },
+    ],
+  };
+
+  let payload: DashScopeChatCompletionPayload;
+  try {
+    payload = await requestDashScopeChatCompletion(requestBody);
+  } catch (error) {
+    const statusCode = getErrorStatusCode(error);
+    if (statusCode !== 400 && statusCode !== 422) {
+      throw error;
+    }
+
+    const { response_format, ...fallbackRequestBody } = requestBody;
+    void response_format;
+    payload = await requestDashScopeChatCompletion(fallbackRequestBody);
+  }
+
+  return normalizeDetectionResult(
+    extractChatMessageText(payload.choices?.[0]?.message?.content).trim(),
+  );
+}
+
+type LiteralReplacePlan = {
+  sourceText: string;
+  targetText: string;
+};
+
+type DirectDocumentEditResult = {
+  generatedFiles: GeneratedExportedFile[];
+  replacementCount: number;
+  previewText: string;
+  mode: "direct_replace";
+  sourceText: string;
+  targetText: string;
+};
+
+function escapeXmlEntities(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function replaceAllLiteral(input: string, sourceText: string, targetText: string) {
+  if (!sourceText) {
+    return {
+      value: input,
+      count: 0,
+    };
+  }
+
+  let cursor = 0;
+  let count = 0;
+  let output = "";
+
+  while (cursor < input.length) {
+    const matchedIndex = input.indexOf(sourceText, cursor);
+    if (matchedIndex < 0) {
+      output += input.slice(cursor);
+      break;
+    }
+
+    output += input.slice(cursor, matchedIndex);
+    output += targetText;
+    cursor = matchedIndex + sourceText.length;
+    count += 1;
+  }
+
+  return {
+    value: output,
+    count,
+  };
+}
+
+function parseLiteralReplaceInstruction(instruction: string): LiteralReplacePlan | null {
+  const normalized = instruction.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const patterns = [
+    /(?:\u628a|\u5c06)?(?:\u6587\u6863|\u6587\u7ae0|\u5185\u5bb9|\u6587\u672c)?(?:\u4e2d|\u91cc|\u5185)?(?:\u7684)?\s*\u3010([\s\S]+?)\u3011\s*(?:\u4fee\u6539\u4e3a|\u6539\u4e3a|\u66ff\u6362\u4e3a|\u66ff\u6362\u6210|\u6539\u6210|\u6362\u6210|\u6362\u4e3a)\s*\u3010([\s\S]+?)\u3011/,
+    /(?:\u628a|\u5c06)?(?:\u6587\u6863|\u6587\u7ae0|\u5185\u5bb9|\u6587\u672c)?(?:\u4e2d|\u91cc|\u5185)?(?:\u7684)?\s*\u201c([\s\S]+?)\u201d\s*(?:\u4fee\u6539\u4e3a|\u6539\u4e3a|\u66ff\u6362\u4e3a|\u66ff\u6362\u6210|\u6539\u6210|\u6362\u6210|\u6362\u4e3a)\s*\u201c([\s\S]+?)\u201d/,
+    /(?:\u628a|\u5c06)?(?:\u6587\u6863|\u6587\u7ae0|\u5185\u5bb9|\u6587\u672c)?(?:\u4e2d|\u91cc|\u5185)?(?:\u7684)?\s*"([\s\S]+?)"\s*(?:\u4fee\u6539\u4e3a|\u6539\u4e3a|\u66ff\u6362\u4e3a|\u66ff\u6362\u6210|\u6539\u6210|\u6362\u6210|\u6362\u4e3a)\s*"([\s\S]+?)"/,
+    /(?:\u628a|\u5c06)?(?:\u6587\u6863|\u6587\u7ae0|\u5185\u5bb9|\u6587\u672c)?(?:\u4e2d|\u91cc|\u5185)?(?:\u7684)?\s*'([\s\S]+?)'\s*(?:\u4fee\u6539\u4e3a|\u6539\u4e3a|\u66ff\u6362\u4e3a|\u66ff\u6362\u6210|\u6539\u6210|\u6362\u6210|\u6362\u4e3a)\s*'([\s\S]+?)'/,
+    /(?:replace|change)\s+["\u201c\']([\s\S]+?)["\u201d\']\s+(?:with|to)\s+["\u201c\']([\s\S]+?)["\u201d\']/i,
+  ];
+
+  for (const pattern of patterns) {
+    const matched = normalized.match(pattern);
+    if (!matched) {
+      continue;
+    }
+
+    const sourceText = matched[1]?.trim() || "";
+    const targetText = matched[2]?.trim() || "";
+    if (!sourceText || sourceText === targetText) {
+      return null;
+    }
+
+    return {
+      sourceText,
+      targetText,
+    };
+  }
+
+  return null;
+}
+
+async function extractEditableDocumentTextFromBytes(bytes: Uint8Array, extension: string) {
+  if (extension === "txt" || extension === "md") {
+    return normalizeEditablePlainText(Buffer.from(bytes).toString("utf8"));
+  }
+
+  if (extension === "docx") {
+    return extractTextFromDocxBuffer(bytes);
+  }
+
+  if (extension === "xlsx") {
+    return extractTextFromXlsxBuffer(bytes);
+  }
+
+  if (extension === "pdf") {
+    return extractTextFromPdfBuffer(bytes);
+  }
+
+  throw new Error("当前文档编辑仅支持 TXT、MD、DOCX、XLSX、PDF 文件。");
+}
+
+function buildDirectDocumentEditPreview(input: {
+  fileName: string;
+  instruction: string;
+  sourceText: string;
+  targetText: string;
+  replacementCount: number;
+}) {
+  return [
+    `文件名: ${input.fileName}`,
+    `指令: ${input.instruction}`,
+    "编辑方式: 文本替换",
+    `替换次数: ${input.replacementCount}`,
+    `原文: ${input.sourceText}`,
+    `新文: ${input.targetText}`,
+  ].join("\n");
+}
+
+function buildGeneratedDocumentPreview(document: GeneratedDocument) {
+  const previewLines = [document.title.trim(), document.summary.trim()]
+    .filter(Boolean)
+    .slice(0, 2);
+
+  document.sections.slice(0, 2).forEach((section) => {
+    if (section.heading.trim()) {
+      previewLines.push(`# ${section.heading.trim()}`);
+    }
+    section.paragraphs
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .slice(0, 2)
+      .forEach((paragraph) => previewLines.push(paragraph));
+  });
+
+  return truncateText(previewLines.join("\n"), 1200);
+}
+
+function getDocumentMimeTypeByExtension(extension: string) {
+  if (extension === "txt") {
+    return "text/plain; charset=utf-8";
+  }
+
+  if (extension === "md") {
+    return "text/markdown; charset=utf-8";
+  }
+
+  if (extension === "xlsx") {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+
+  if (extension === "pdf") {
+    return "application/pdf";
+  }
+
+  return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+function replaceTextInWordParagraphXml(paragraphXml: string, plan: LiteralReplacePlan) {
+  const nodeRegex = /(<w:t\b[^>]*>)([\s\S]*?)(<\/w:t>)/g;
+  const nodes: Array<{
+    start: number;
+    end: number;
+    openTag: string;
+    closeTag: string;
+    text: string;
+  }> = [];
+
+  let matched: RegExpExecArray | null;
+  while ((matched = nodeRegex.exec(paragraphXml)) !== null) {
+    nodes.push({
+      start: matched.index,
+      end: nodeRegex.lastIndex,
+      openTag: matched[1],
+      closeTag: matched[3],
+      text: decodeXmlEntities(matched[2]),
+    });
+  }
+
+  if (nodes.length === 0) {
+    return {
+      xml: paragraphXml,
+      replacementCount: 0,
+    };
+  }
+
+  const combinedText = nodes.map((node) => node.text).join("");
+  const replaced = replaceAllLiteral(combinedText, plan.sourceText, plan.targetText);
+  if (replaced.count === 0) {
+    return {
+      xml: paragraphXml,
+      replacementCount: 0,
+    };
+  }
+
+  const originalLengths = nodes.map((node) => node.text.length);
+  const nextNodeTexts = originalLengths.map((length, index) => {
+    const consumed = originalLengths
+      .slice(0, index)
+      .reduce((sum, current) => sum + current, 0);
+    if (index === originalLengths.length - 1) {
+      return replaced.value.slice(consumed);
+    }
+    return replaced.value.slice(consumed, consumed + length);
+  });
+
+  let nextXml = paragraphXml;
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const node = nodes[index];
+    const replacementXml = `${node.openTag}${escapeXmlEntities(nextNodeTexts[index] || "")}${node.closeTag}`;
+    nextXml = `${nextXml.slice(0, node.start)}${replacementXml}${nextXml.slice(node.end)}`;
+  }
+
+  return {
+    xml: nextXml,
+    replacementCount: replaced.count,
+  };
+}
+
+function replaceTextInWordXmlContent(xml: string, plan: LiteralReplacePlan) {
+  const escapedSource = escapeXmlEntities(plan.sourceText);
+  const escapedTarget = escapeXmlEntities(plan.targetText);
+  const directReplace = replaceAllLiteral(xml, escapedSource, escapedTarget);
+  if (directReplace.count > 0) {
+    return {
+      xml: directReplace.value,
+      replacementCount: directReplace.count,
+    };
+  }
+
+  const paragraphRegex = /<w:p\b[\s\S]*?<\/w:p>/g;
+  let replacementCount = 0;
+  let cursor = 0;
+  let output = "";
+  let matched: RegExpExecArray | null;
+
+  while ((matched = paragraphRegex.exec(xml)) !== null) {
+    output += xml.slice(cursor, matched.index);
+    const paragraphResult = replaceTextInWordParagraphXml(matched[0], plan);
+    output += paragraphResult.xml;
+    replacementCount += paragraphResult.replacementCount;
+    cursor = matched.index + matched[0].length;
+  }
+
+  output += xml.slice(cursor);
+  return {
+    xml: output,
+    replacementCount,
+  };
+}
+
+async function replaceTextInDocxBuffer(bytes: Uint8Array, plan: LiteralReplacePlan) {
+  const zip = await JSZip.loadAsync(bytes);
+  const xmlPaths = Object.keys(zip.files).filter((path) =>
+    /^word\/(document|header\d+|footer\d+|footnotes|endnotes|comments)\.xml$/i.test(path),
+  );
+
+  let replacementCount = 0;
+  await Promise.all(
+    xmlPaths.map(async (path) => {
+      const file = zip.file(path);
+      if (!file) {
+        return;
+      }
+
+      const xml = await file.async("text");
+      const replaced = replaceTextInWordXmlContent(xml, plan);
+      replacementCount += replaced.replacementCount;
+      if (replaced.replacementCount > 0) {
+        zip.file(path, replaced.xml);
+      }
+    }),
+  );
+
+  return {
+    bytes: new Uint8Array(await zip.generateAsync({ type: "uint8array" })),
+    replacementCount,
+  };
+}
+
+function replaceTextInRichTextRuns(
+  richTextRuns: Array<{ text?: string; [key: string]: unknown }>,
+  plan: LiteralReplacePlan,
+) {
+  let replacementCount = 0;
+  const nextRuns = richTextRuns.map((run) => {
+    const text = typeof run.text === "string" ? run.text : "";
+    if (!text) {
+      return { ...run, text };
+    }
+
+    const replaced = replaceAllLiteral(text, plan.sourceText, plan.targetText);
+    replacementCount += replaced.count;
+    return { ...run, text: replaced.count > 0 ? replaced.value : text };
+  });
+
+  return {
+    richTextRuns: nextRuns,
+    replacementCount,
+  };
+}
+
+async function replaceTextInXlsxBuffer(bytes: Uint8Array, plan: LiteralReplacePlan) {
+  const workbook = new ExcelJS.Workbook();
+  const workbookBuffer = Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0];
+  await workbook.xlsx.load(workbookBuffer);
+
+  let replacementCount = 0;
+  workbook.worksheets.forEach((sheet) => {
+    sheet.eachRow((row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        if (typeof cell.value === "string") {
+          const replaced = replaceAllLiteral(cell.value, plan.sourceText, plan.targetText);
+          if (replaced.count > 0) {
+            cell.value = replaced.value;
+            replacementCount += replaced.count;
+          }
+          return;
+        }
+
+        if (
+          cell.value &&
+          typeof cell.value === "object" &&
+          "richText" in cell.value &&
+          Array.isArray((cell.value as { richText?: unknown }).richText)
+        ) {
+          const richTextValue = cell.value as {
+            richText: Array<{ text?: string; [key: string]: unknown }>;
+          };
+          const richTextResult = replaceTextInRichTextRuns(richTextValue.richText, plan);
+          if (richTextResult.replacementCount > 0) {
+            cell.value = {
+              ...richTextValue,
+              richText: richTextResult.richTextRuns,
+            };
+            replacementCount += richTextResult.replacementCount;
+          }
+        }
+      });
+    });
+  });
+
+  return {
+    bytes: new Uint8Array(await workbook.xlsx.writeBuffer()),
+    replacementCount,
+  };
+}
+
+async function tryPerformDirectDocumentEdit(file: File, instruction: string) {
+  const plan = parseLiteralReplaceInstruction(instruction);
+  if (!plan) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(await file.arrayBuffer()) as Uint8Array;
+  const extension = getUploadFileExtension(file.name);
+  let editedBytes: Uint8Array = bytes;
+  let replacementCount = 0;
+
+  if (extension === "txt" || extension === "md") {
+    const sourceText = Buffer.from(bytes).toString("utf8");
+    const replaced = replaceAllLiteral(sourceText, plan.sourceText, plan.targetText);
+    replacementCount = replaced.count;
+    editedBytes = new TextEncoder().encode(replaced.value);
+  } else if (extension === "docx") {
+    const replaced = await replaceTextInDocxBuffer(bytes, plan);
+    replacementCount = replaced.replacementCount;
+    editedBytes = replaced.bytes;
+  } else if (extension === "xlsx") {
+    const replaced = await replaceTextInXlsxBuffer(bytes, plan);
+    replacementCount = replaced.replacementCount;
+    editedBytes = replaced.bytes;
+  } else if (extension === "pdf") {
+    const replaced = await replaceTextInPdfBuffer(bytes, plan);
+    replacementCount = replaced.replacementCount;
+    editedBytes = replaced.bytes;
+  } else {
+    return null;
+  }
+
+  if (replacementCount <= 0) {
+    throw new Error(`未在文档中找到原文“${plan.sourceText}”，请确认原文完全一致后重试。`);
+  }
+
+  const previewText = buildDirectDocumentEditPreview({
+    fileName: file.name,
+    instruction,
+    sourceText: plan.sourceText,
+    targetText: plan.targetText,
+    replacementCount,
+  });
+
+  return {
+    generatedFiles: [
+      {
+        format: getDocumentEditOutputFormats(file.name)[0],
+        fileName: file.name,
+        mimeType: getDocumentMimeTypeByExtension(extension),
+        bytes: editedBytes,
+      },
+    ],
+    replacementCount,
+    previewText,
+    mode: "direct_replace",
+    sourceText: plan.sourceText,
+    targetText: plan.targetText,
+  } satisfies DirectDocumentEditResult;
 }
 
 function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFormat[] {
@@ -2290,6 +3404,10 @@ function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFo
     return ["xlsx"];
   }
 
+  if (extension === "pdf") {
+    return ["pdf"];
+  }
+
   return ["docx"];
 }
 
@@ -2298,6 +3416,8 @@ function buildDocumentEditingSystemPrompt(requireSpreadsheet: boolean) {
     ...FILE_GENERATION_SYSTEM_PROMPT_LINES,
     "You edit uploaded documents instead of drafting from scratch.",
     "Preserve core facts from the source document unless the user explicitly asks to rewrite them.",
+    "Do not summarize, compress, or rewrite unaffected content.",
+    "Keep paragraph order and wording unchanged wherever no edit is requested.",
     requireSpreadsheet
       ? "Return at least one spreadsheet when the output format includes xlsx."
       : "Return an empty spreadsheets array unless tabular data is genuinely useful.",
@@ -2322,6 +3442,8 @@ function buildDocumentEditingPrompt(input: {
     "Output requirements:",
     "- Keep the result faithful to the uploaded file while applying the requested edits.",
     "- Return one complete edited document package.",
+    "- Do not omit sections, shorten paragraphs, or summarize unchanged passages.",
+    "- If the request is a local phrase replacement, keep every other sentence exactly as-is.",
     input.requireSpreadsheet
       ? "- Include one useful spreadsheet in the result."
       : "- Keep the spreadsheets array empty unless the edited result clearly needs tabular data.",
@@ -2371,7 +3493,7 @@ async function editDocumentWithDashScope(input: {
       },
     ],
     temperature: 0.2,
-    max_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+    max_tokens: DOCUMENT_EDITING_MAX_TOKENS,
   };
 
   let payload: DashScopeChatCompletionPayload;
@@ -2459,7 +3581,7 @@ async function editDocumentWithReplicate(input: {
   });
   const primaryInput = {
     prompt: documentPrompt,
-    max_new_tokens: DOCUMENT_GENERATION_MAX_TOKENS,
+    max_new_tokens: DOCUMENT_EDITING_MAX_TOKENS,
     temperature: 0.2,
     top_p: 0.95,
   };
@@ -3022,10 +4144,9 @@ function getAudioEditingPipelineModelIds(modelId: string) {
 function getReplicateAudioEditingPipelineModelIds(modelId: string) {
   return {
     transcriptionModelId: "vaibhavs10/incredibly-fast-whisper",
-    synthesisModelId:
-      modelId === "vaibhavs10/incredibly-fast-whisper+codeplugtech/minimax-speech-02-turbo"
-        ? "codeplugtech/minimax-speech-02-turbo"
-        : modelId,
+    synthesisModelId: isReplicateAudioEditingPipelineModelId(modelId)
+      ? "minimax/speech-02-turbo"
+      : normalizeReplicateAudioModelId(modelId),
     rewriteModelId: "lucataco/qwen1.5-1.8b-chat",
   };
 }
@@ -3728,15 +4849,290 @@ async function generateAudioWithDashScope(
   throw lastError ?? new Error("阿里云百炼语音合成失败。");
 }
 
-function buildFileGenerationPrompt(userPrompt: string, requireSpreadsheet: boolean) {
+function buildReplicateDetectionPrompt(
+  target: "document" | "image" | "audio" | "video",
+  userPrompt: string,
+  locale: "zh" | "en",
+) {
+  return [
+    buildStructuredDetectionInstruction(target, locale),
+    userPrompt,
+  ].join("\n\n");
+}
+
+function buildAudioDetectionPrompt(fileName: string, locale: "zh" | "en") {
+  if (locale === "zh") {
+    return [
+      `文件名：${fileName}`,
+      "请根据音色稳定性、呼吸与停顿、频谱伪影、房间混响、情感变化和发音自然度，判断该音频是否更像 AI 合成语音。",
+    ].join("\n\n");
+  }
+
+  return [
+    `File name: ${fileName}`,
+    "Estimate whether this audio sounds AI-generated by considering prosody, breathing, pauses, spectral artifacts, room tone, emotional variation, and pronunciation naturalness.",
+  ].join("\n\n");
+}
+
+function mergeDetectionResults(results: NormalizedDetectionResult[]) {
+  if (results.length === 0) {
+    return normalizeDetectionResult("{}");
+  }
+
+  if (results.length === 1) {
+    return results[0];
+  }
+
+  const probability = clampPercentage(
+    results.reduce((sum, item) => sum + item.probability, 0) / results.length,
+    results[0].probability,
+  );
+  const confidence = clampPercentage(
+    results.reduce((sum, item) => sum + item.confidence, 0) / results.length,
+    results[0].confidence,
+  );
+  const reasons = Array.from(
+    new Set(results.flatMap((item) => item.reasons.map((reason) => reason.trim()))),
+  )
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return {
+    probability,
+    confidence,
+    verdict: resolveDetectionVerdict(probability),
+    reasons,
+    frameProbabilities: results.map((item) => item.probability),
+  };
+}
+
+async function waitForReplicateDetectionResult(input: {
+  requestId: string;
+  modelId: string;
+  primaryInput: Record<string, unknown>;
+  fallbackInput: Record<string, unknown>;
+  timeoutMessage: string;
+}) {
+  let payload: ReplicatePredictionPayload;
+  try {
+    payload = await createReplicatePrediction(
+      input.requestId,
+      input.modelId,
+      input.primaryInput,
+    );
+  } catch (error) {
+    if (getErrorStatusCode(error) !== 422) {
+      throw error;
+    }
+
+    payload = await createReplicatePrediction(
+      input.requestId,
+      input.modelId,
+      input.fallbackInput,
+    );
+  }
+
+  const status = (payload.status ?? "").toLowerCase();
+  if (status === "failed" || status === "canceled") {
+    const detail = extractReplicateErrorText(payload.error);
+    throw new Error(`Replicate 检测失败${detail ? `: ${detail}` : ""}`);
+  }
+
+  const finalPayload =
+    status === "succeeded"
+      ? payload
+      : await (() => {
+          if (!payload.id) {
+            throw new Error("Replicate 返回结果缺少 prediction id。");
+          }
+
+          return waitForReplicatePredictionResult(
+            payload.id,
+            REPLICATE_TEXT_TASK_TIMEOUT_MS,
+            input.timeoutMessage,
+          );
+        })();
+
+  const content = extractReplicateTextOutput(finalPayload.output);
+  if (!content.trim()) {
+    throw new Error("Replicate 检测未返回可解析内容。");
+  }
+
+  return normalizeDetectionResult(content);
+}
+
+async function detectDocumentWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  file: File;
+  locale: "zh" | "en";
+}) {
+  const extractedText = await extractDetectableDocumentText(input.file);
+  if (!extractedText.trim()) {
+    throw new Error(
+      input.locale === "zh"
+        ? "未能从文档中提取到可检测文本。"
+        : "No detectable text could be extracted from the document.",
+    );
+  }
+
+  const normalizedModelId = normalizeReplicateTextModelId(input.modelId);
+  const prompt = buildReplicateDetectionPrompt(
+    "document",
+    buildDocumentDetectionPrompt({
+      fileName: input.file.name,
+      extractedText,
+      locale: input.locale,
+    }),
+    input.locale,
+  );
+
+  return waitForReplicateDetectionResult({
+    requestId: input.requestId,
+    modelId: normalizedModelId,
+    primaryInput: {
+      prompt,
+      max_new_tokens: DETECTION_MAX_TOKENS,
+      temperature: 0.1,
+      top_p: 0.95,
+    },
+    fallbackInput: {
+      prompt,
+    },
+    timeoutMessage: `Replicate 文档检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+  });
+}
+
+async function detectImageWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  imageUrl: string;
+  locale: "zh" | "en";
+  target: "image" | "video";
+}) {
+  const normalizedModelId = resolveReplicateVisualDetectionModelId(input.modelId);
+  const prompt = buildReplicateDetectionPrompt(
+    input.target,
+    buildVisualDetectionPrompt(input.target, input.locale),
+    input.locale,
+  );
+
+  return waitForReplicateDetectionResult({
+    requestId: input.requestId,
+    modelId: normalizedModelId,
+    primaryInput: {
+      image: input.imageUrl,
+      prompt,
+      max_length: DETECTION_MAX_TOKENS,
+      temperature: 0.1,
+      top_p: 0.95,
+    },
+    fallbackInput: {
+      image: input.imageUrl,
+      prompt,
+    },
+    timeoutMessage: `Replicate 视觉检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+  });
+}
+
+async function detectAudioWithDashScope(input: {
+  requestId: string;
+  modelId: string;
+  file: File;
+  locale: "zh" | "en";
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+}) {
+  const uploaded = await uploadInputFileForEditing(
+    input.db,
+    input.requestId,
+    "audio-detect",
+    input.file,
+  );
+
+  const rawText = await requestDashScopeChatCompletionStreamText({
+    model: resolveDashScopeAudioDetectionModelId(input.modelId),
+    enable_thinking: false,
+    temperature: 0.1,
+    max_tokens: DETECTION_MAX_TOKENS,
+    messages: [
+      {
+        role: "system",
+        content: buildStructuredDetectionInstruction("audio", input.locale),
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: buildAudioDetectionPrompt(input.file.name, input.locale),
+          },
+          {
+            type: "video_url",
+            video_url: {
+              url: uploaded.publicUrl,
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  return normalizeDetectionResult(rawText);
+}
+
+async function detectAudioWithReplicate(input: {
+  requestId: string;
+  modelId: string;
+  file: File;
+  locale: "zh" | "en";
+  db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+}) {
+  const uploaded = await uploadInputFileForEditing(
+    input.db,
+    input.requestId,
+    "audio-detect",
+    input.file,
+  );
+  const normalizedModelId = resolveReplicateAudioDetectionModelId(input.modelId);
+  const prompt = buildReplicateDetectionPrompt(
+    "audio",
+    buildAudioDetectionPrompt(input.file.name, input.locale),
+    input.locale,
+  );
+
+  return waitForReplicateDetectionResult({
+    requestId: input.requestId,
+    modelId: normalizedModelId,
+    primaryInput: {
+      audio: uploaded.publicUrl,
+      prompt,
+      max_tokens: DETECTION_MAX_TOKENS,
+      temperature: 0.1,
+      top_p: 0.95,
+    },
+    fallbackInput: {
+      audio: uploaded.publicUrl,
+      prompt,
+    },
+    timeoutMessage: `Replicate 音频检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+  });
+}
+
+function buildFileGenerationPrompt(userPrompt: string, targetFormat: DocumentFileFormat) {
+  const requireSpreadsheet = targetFormat === "xlsx";
+
   return [
     "User request:",
     userPrompt,
     "",
+    `Target format: ${targetFormat}`,
+    "",
     "Output requirements:",
     "- Create one complete document package that satisfies the request.",
     "- Keep the title concise and specific.",
-    "- Write a practical summary and focused sections.",
+    requireSpreadsheet
+      ? "- Prioritize accurate spreadsheet structure, sheet names, columns, and rows."
+      : "- Prioritize readable prose structure with clear headings and focused paragraphs.",
     requireSpreadsheet
       ? "- Include one useful spreadsheet such as a checklist, plan, budget, schedule, or summary table."
       : "- Keep the spreadsheets array empty unless a spreadsheet is clearly necessary.",
@@ -4143,6 +5539,45 @@ export async function POST(req: Request) {
     });
   };
 
+  const persistDetectionReportResult = async (
+    generation: GenerationItem,
+    detectionResult: NormalizedDetectionResult,
+    requestParams?: Record<string, unknown> | null,
+  ) => {
+    if (!analyticsUserId || !runtimeDbClient) {
+      return;
+    }
+
+    const insertResult = await runtimeDbClient.from("ai_detection_reports").insert({
+      id: `detect_report_${randomUUID().replace(/-/g, "")}`,
+      task_id: generation.id,
+      user_id: analyticsUserId,
+      source: analyticsSource,
+      target_type: resolveDetectionTargetType(generation.type),
+      confidence_score: detectionResult.confidence,
+      risk_level: resolveDetectionRiskLevel(detectionResult.probability),
+      verdict: mapDetectionVerdictToDbValue(detectionResult.verdict),
+      report_text: generation.text || generation.summary || null,
+      evidence_json: {
+        probability: detectionResult.probability,
+        confidence: detectionResult.confidence,
+        verdict: detectionResult.verdict,
+        reasons: detectionResult.reasons,
+        frame_probabilities: detectionResult.frameProbabilities || null,
+        request_params: requestParams || null,
+        model_id: generation.modelId,
+        model_label: generation.modelLabel,
+        model_provider: generation.provider,
+      },
+      created_at: getDbNowBySource(analyticsSource),
+    });
+
+    const insertError = toDbErrorMessage(insertResult);
+    if (insertError) {
+      throw new Error(`写入 AI 检测报告失败: ${insertError}`);
+    }
+  };
+
   const getTrackedTaskId = (generation: GenerationItem) =>
     analyticsUserId && runtimeDbClient ? generation.id : null;
 
@@ -4180,7 +5615,7 @@ export async function POST(req: Request) {
 
   try {
     const requestPayload = await parseGenerateRequest(req);
-    const { prompt, type, inputFile, keyframeFile } = requestPayload;
+    const { prompt, type, inputFile, keyframeFile, frameFiles } = requestPayload;
     const cloudbaseAccessToken =
       req.headers.get(CLOUDBASE_ACCESS_TOKEN_HEADER)?.trim() || "";
     const supabaseAccessToken = extractBearerToken(req);
@@ -4354,12 +5789,320 @@ export async function POST(req: Request) {
       )}`,
     );
 
+    const detectionLocale = getRuntimeLocale();
+
+    if (modelConfig.mode === "file-detection") {
+      if (!inputFile) {
+        return returnTrackedGenerateError("请上传待检测文档。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const detectionResult =
+        modelConfig.provider === "aliyun"
+          ? await detectDocumentWithDashScope({
+              modelId: modelConfig.id,
+              file: inputFile,
+              locale: detectionLocale,
+            })
+          : await detectDocumentWithReplicate({
+              requestId,
+              modelId: modelConfig.id,
+              file: inputFile,
+              locale: detectionLocale,
+            });
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: buildDetectionSummary(detectionResult, detectionLocale),
+        text: buildDetectionText(detectionResult, detectionLocale),
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile.name,
+      });
+      await persistDetectionReportResult(persistedResult, detectionResult, {
+        source_file_name: inputFile.name,
+      });
+
+      await trackGenerateEvent(
+        "detect_success",
+        "detect_document_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          ai_probability: detectionResult.probability,
+          confidence: detectionResult.confidence,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+
+      return Response.json(persistedResult);
+    }
+
+    if (modelConfig.mode === "image-detection") {
+      if (!inputFile) {
+        return returnTrackedGenerateError("请上传待检测图片。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const detectionResult =
+        modelConfig.provider === "aliyun"
+          ? await detectVisualWithDashScope({
+              modelId: modelConfig.id,
+              files: [inputFile],
+              locale: detectionLocale,
+              target: "image",
+            })
+          : await (async () => {
+              if (!runtimeDbClient) {
+                throw new Error("图片检测缺少运行时数据库上下文。");
+              }
+
+              const uploaded = await uploadInputFileForEditing(
+                runtimeDbClient,
+                requestId,
+                "image-detect",
+                inputFile,
+              );
+              return detectImageWithReplicate({
+                requestId,
+                modelId: modelConfig.id,
+                imageUrl: uploaded.publicUrl,
+                locale: detectionLocale,
+                target: "image",
+              });
+            })();
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: buildDetectionSummary(detectionResult, detectionLocale),
+        text: buildDetectionText(detectionResult, detectionLocale),
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile.name,
+      });
+      await persistDetectionReportResult(persistedResult, detectionResult, {
+        source_file_name: inputFile.name,
+      });
+
+      await trackGenerateEvent(
+        "detect_success",
+        "detect_image_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          ai_probability: detectionResult.probability,
+          confidence: detectionResult.confidence,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+
+      return Response.json(persistedResult);
+    }
+
+    if (modelConfig.mode === "audio-detection") {
+      if (!inputFile) {
+        return returnTrackedGenerateError("请上传待检测音频。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const detectionResult =
+        modelConfig.provider === "aliyun"
+          ? await (async () => {
+              if (!runtimeDbClient) {
+                throw new Error("音频检测缺少运行时数据库上下文。");
+              }
+
+              return detectAudioWithDashScope({
+                requestId,
+                modelId: modelConfig.id,
+                file: inputFile,
+                locale: detectionLocale,
+                db: runtimeDbClient,
+              });
+            })()
+          : await (async () => {
+              if (!runtimeDbClient) {
+                throw new Error("音频检测缺少运行时数据库上下文。");
+              }
+
+              return detectAudioWithReplicate({
+                requestId,
+                modelId: modelConfig.id,
+                file: inputFile,
+                locale: detectionLocale,
+                db: runtimeDbClient,
+              });
+            })();
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: buildDetectionSummary(detectionResult, detectionLocale),
+        text: buildDetectionText(detectionResult, detectionLocale),
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile.name,
+      });
+      await persistDetectionReportResult(persistedResult, detectionResult, {
+        source_file_name: inputFile.name,
+      });
+
+      await trackGenerateEvent(
+        "detect_success",
+        "detect_audio_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          ai_probability: detectionResult.probability,
+          confidence: detectionResult.confidence,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+
+      return Response.json(persistedResult);
+    }
+
+    if (modelConfig.mode === "video-detection") {
+      if (!inputFile) {
+        return returnTrackedGenerateError("请上传待检测视频。", 400);
+      }
+      if (frameFiles.length === 0) {
+        return returnTrackedGenerateError("视频检测缺少关键帧，请重新上传后重试。", 400);
+      }
+
+      const userQuotaError = await reserveUserQuotaIfNeeded();
+      if (userQuotaError) {
+        return returnTrackedGenerateError(userQuotaError, 429);
+      }
+
+      const detectionResult =
+        modelConfig.provider === "aliyun"
+          ? await detectVisualWithDashScope({
+              modelId: modelConfig.id,
+              files: frameFiles,
+              locale: detectionLocale,
+              target: "video",
+            })
+          : await (async () => {
+              if (!runtimeDbClient) {
+                throw new Error("视频检测缺少运行时数据库上下文。");
+              }
+
+              const frameResults: NormalizedDetectionResult[] = [];
+              const limitedFrames = frameFiles.slice(0, 3);
+              for (let index = 0; index < limitedFrames.length; index += 1) {
+                const frame = limitedFrames[index];
+                const uploaded = await uploadInputFileForEditing(
+                  runtimeDbClient,
+                  requestId,
+                  `video-detect-frame-${index + 1}`,
+                  frame,
+                );
+                frameResults.push(
+                  await detectImageWithReplicate({
+                    requestId: `${requestId}-frame-${index + 1}`,
+                    modelId: modelConfig.id,
+                    imageUrl: uploaded.publicUrl,
+                    locale: detectionLocale,
+                    target: "video",
+                  }),
+                );
+              }
+
+              return mergeDetectionResults(frameResults);
+            })();
+
+      const result: GenerationItem = {
+        id: requestId,
+        type,
+        prompt,
+        modelId: modelConfig.id,
+        modelLabel: modelConfig.label,
+        provider: modelConfig.provider,
+        status: "success",
+        summary: buildDetectionSummary(detectionResult, detectionLocale),
+        text: buildDetectionText(detectionResult, detectionLocale),
+        createdAt: new Date().toISOString(),
+      };
+      const persistedResult = await persistGenerationResult(result, {
+        source_file_name: inputFile.name,
+        frame_count: frameFiles.length,
+      });
+      await persistDetectionReportResult(persistedResult, detectionResult, {
+        source_file_name: inputFile.name,
+        frame_count: frameFiles.length,
+      });
+
+      await trackGenerateEvent(
+        "detect_success",
+        "detect_video_success",
+        {
+          type,
+          model_id: modelConfig.id,
+          model_provider: modelConfig.provider,
+          ai_probability: detectionResult.probability,
+          confidence: detectionResult.confidence,
+          frame_count: frameFiles.length,
+          duration_ms: requestTimer.getTotalMs(),
+          is_guest: isGuestRequest,
+        },
+        false,
+        getTrackedTaskId(persistedResult),
+      );
+
+      return Response.json(persistedResult);
+    }
+
     if (modelConfig.mode === "file-generation") {
       let requestedFormats: readonly DocumentFileFormat[] = [DOCUMENT_FILE_FORMATS[0]];
 
       if (requestPayload.formats !== undefined) {
         if (!Array.isArray(requestPayload.formats)) {
-          return returnTrackedGenerateError("文档格式参数无效。", 400);
+          return returnTrackedGenerateError("格式参数无效", 400);
         }
 
         const filteredFormats = Array.from(
@@ -4367,14 +6110,14 @@ export async function POST(req: Request) {
         );
 
         if (filteredFormats.length === 0) {
-          return returnTrackedGenerateError("请至少选择一种文档格式。", 400);
+          return returnTrackedGenerateError("未指定有效格式", 400);
+        }
+
+        if (filteredFormats.length !== 1) {
+          return returnTrackedGenerateError("只能选择一个格式", 400);
         }
 
         requestedFormats = [filteredFormats[0]];
-      }
-
-      if (isGuestRequest && requestedFormats.length !== 1) {
-        return returnTrackedGenerateError("未登录用户每次仅能选择一种文档格式。", 400);
       }
 
       if (isGuestRequest) {
@@ -4384,7 +6127,7 @@ export async function POST(req: Request) {
 
         if (!guestConsumeResult.allowed) {
           return returnTrackedGenerateError(
-            "游客本月文档生成额度已用完，请登录后继续使用。",
+            "游客配额已用完，请稍后再试",
             429,
           );
         }
@@ -4397,6 +6140,7 @@ export async function POST(req: Request) {
         return returnTrackedGenerateError(userQuotaError, 429);
       }
 
+      const targetFormat = requestedFormats[0];
       const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
 
       const generationStartedAt = Date.now();
@@ -4406,16 +6150,16 @@ export async function POST(req: Request) {
               requestId,
               modelConfig.id,
               prompt,
-              requireSpreadsheet,
+              targetFormat,
             )
           : await generateDocumentWithReplicate(
               requestId,
               modelConfig.id,
               prompt,
-              requireSpreadsheet,
+              targetFormat,
             );
       requestTimer.phase(
-        "文档内容生成完成",
+        "生成文档",
         generationStartedAt,
         `provider: ${modelConfig.provider}`,
       );
@@ -4423,7 +6167,7 @@ export async function POST(req: Request) {
       const exportStartedAt = Date.now();
       const generatedFiles = await generateDocumentFiles(object, requestedFormats);
       requestTimer.phase(
-        "文档文件导出完成",
+        "导出文件",
         exportStartedAt,
         `formats: ${requestedFormats.join(",")}`,
       );
@@ -4442,7 +6186,7 @@ export async function POST(req: Request) {
           url: buildGeneratedFileUrl(origin, stored.id, file.fileName),
         };
       });
-      requestTimer.phase("文档文件落库完成", storageStartedAt, `count: ${downloadLinks.length}`);
+      requestTimer.phase("存储文件", storageStartedAt, `count: ${downloadLinks.length}`);
 
       const result: GenerateResponsePayload = {
         id: requestId,
@@ -4452,7 +6196,7 @@ export async function POST(req: Request) {
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: `已生成 ${generatedFiles.length} 个文档文件`,
+        summary: `已生成 ${generatedFiles.length} 个文档`,
         text: `${object.title}
 ${object.summary}`,
         downloadLinks,
@@ -4473,7 +6217,7 @@ ${object.summary}`,
           }
         : persistedResult;
 
-      requestTimer.total("文档请求完成");
+      requestTimer.total("??????");
       await trackGenerateEvent(
         "generate_success",
         "generate_document_success",
@@ -4504,8 +6248,17 @@ ${object.summary}`,
 
       const requestedFormats = getDocumentEditOutputFormats(inputFile.name);
       const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
-      const object =
-        modelConfig.provider === "aliyun"
+      const origin = new URL(req.url).origin;
+      const directEditResult = await tryPerformDirectDocumentEdit(inputFile, prompt);
+      if (!directEditResult && getUploadFileExtension(inputFile.name) === "pdf") {
+        return returnTrackedGenerateError(
+          "PDF 编辑当前仅支持精准替换模式，例如：把文档中的【原文】改为【新文】，其他不要改。该模式会尽量保留原有版式与位置。",
+          400,
+        );
+      }
+      const editedDocument = directEditResult
+        ? null
+        : modelConfig.provider === "aliyun"
           ? await editDocumentWithDashScope({
               requestId,
               modelId: modelConfig.id,
@@ -4520,9 +6273,9 @@ ${object.summary}`,
               file: inputFile,
               requireSpreadsheet,
             });
-
-      const origin = new URL(req.url).origin;
-      const generatedFiles = await generateDocumentFiles(object, requestedFormats);
+      const generatedFiles = directEditResult
+        ? directEditResult.generatedFiles
+        : await generateDocumentFiles(editedDocument!, requestedFormats);
       const downloadLinks = generatedFiles.map((file) => {
         const stored = storeGeneratedFile({
           fileName: file.fileName,
@@ -4544,8 +6297,12 @@ ${object.summary}`,
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: `已完成文档编辑并导出 ${generatedFiles.length} 个文件`,
-        text: `${object.title}\n${object.summary}`,
+        summary: directEditResult
+          ? `已精确替换 ${directEditResult.replacementCount} 处文本并导出 ${generatedFiles.length} 个文件`
+          : `已完成文档编辑并导出 ${generatedFiles.length} 个文件`,
+        text: directEditResult
+          ? directEditResult.previewText
+          : buildGeneratedDocumentPreview(editedDocument!),
         downloadLinks,
         createdAt: new Date().toISOString(),
       };
@@ -4553,6 +6310,10 @@ ${object.summary}`,
         requested_formats: requestedFormats,
         source_file_name: inputFile.name,
         require_spreadsheet: requireSpreadsheet,
+        editing_mode: directEditResult?.mode || "llm_regenerate",
+        replacement_source_text: directEditResult?.sourceText || null,
+        replacement_target_text: directEditResult?.targetText || null,
+        replacement_count: directEditResult?.replacementCount || 0,
       });
 
       await trackGenerateEvent(

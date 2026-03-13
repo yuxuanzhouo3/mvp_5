@@ -130,11 +130,11 @@ const AIOperations: React.FC<AIOperationsProps> = ({
   }, [activeTab, onSelectedFileChange, requiresFileUpload, setPrompt]);
 
   const acceptByTab: Record<string, string> = {
-    edit_text: ".txt,.md,.docx,.xlsx",
+    edit_text: ".txt,.md,.docx,.xlsx,.pdf",
     edit_image: "image/*",
     edit_audio: "audio/*",
     edit_video: "video/*",
-    detect_text: ".txt,.md,.doc,.docx,.pdf",
+    detect_text: ".txt,.md,.docx,.xlsx,.pdf",
     detect_image: "image/*",
     detect_audio: "audio/*",
     detect_video: "video/*",
@@ -340,8 +340,8 @@ const AIOperations: React.FC<AIOperationsProps> = ({
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
               {currentLanguage === "zh"
-                ? "每次仅生成 1 份文档结果，请选择输出格式"
-                : "Each request returns exactly 1 document. Choose the output format."}
+                ? "选择文档输出格式（单选）"
+                : "Select document output format (single choice)"}
             </p>
           </div>
 
@@ -370,22 +370,6 @@ const AIOperations: React.FC<AIOperationsProps> = ({
               {currentLanguage === "zh"
                 ? `游客本月文档额度：${guestQuota.remaining}/${guestQuota.limit}`
                 : `Guest monthly docs quota: ${guestQuota.remaining}/${guestQuota.limit}`}
-            </p>
-          )}
-
-          {selectedDocumentFormats.length === 0 && (
-            <p className="text-xs text-red-600 dark:text-red-400">
-              {currentLanguage === "zh"
-                ? "请至少选择一种文档格式。"
-                : "Please select at least one document format."}
-            </p>
-          )}
-
-          {selectedDocumentFormats.length !== 1 && (
-            <p className="text-xs text-red-600 dark:text-red-400">
-              {currentLanguage === "zh"
-                ? "每次必须且仅能选择一种文档格式。"
-                : "Exactly one document format is required for each request."}
             </p>
           )}
         </div>
@@ -431,19 +415,27 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         type="button"
         onClick={onGenerate}
         disabled={isGenerating || !canGenerate}
-        className="mt-4 sm:mt-5 w-full shrink-0 h-12 sm:h-11 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-semibold transition-colors"
+        className="mt-4 sm:mt-5 w-full shrink-0 h-12 sm:h-11 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-semibold transition-colors flex items-center justify-center gap-2"
       >
-        {isGenerating
-          ? isDetectMode
-            ? detectingText
-            : isEditMode
-              ? editingText
-              : generatingText
-          : isDetectMode
-            ? detectButtonText
-            : isEditMode
-              ? editButtonText
-              : generateText}
+        {isGenerating && (
+          <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          </svg>
+        )}
+        <span>
+          {isGenerating
+            ? isDetectMode
+              ? detectingText
+              : isEditMode
+                ? editingText
+                : generatingText
+            : isDetectMode
+              ? detectButtonText
+              : isEditMode
+                ? editButtonText
+                : generateText}
+        </span>
       </button>
     </section>
   );

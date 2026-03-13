@@ -74,9 +74,10 @@ function formatCurrency(amount: number, currency: string = "USD"): string {
   }).format(amount);
 }
 
+import { formatDateTime } from "@/lib/utils/date-format";
+
 function formatDate(dateStr?: string): string {
-  if (!dateStr) return "-";
-  return new Date(dateStr).toLocaleString("zh-CN");
+  return formatDateTime(dateStr);
 }
 
 function getPaymentStatusIcon(status: string) {
