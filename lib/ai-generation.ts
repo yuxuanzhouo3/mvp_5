@@ -304,16 +304,16 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "GPT-5 Nano Edit",
   },
   {
-    id: "espressotechie/qwen-imgedit-4bit",
-    label: "Qwen ImgEdit 4bit via Replicate",
+    id: "prunaai/p-image-edit",
+    label: "PrunaAI P-Image-Edit via Replicate",
     provider: "replicate",
     mode: "image-editing",
     tabs: ["edit_image"],
     region: "international",
-    optionLabelZh: "Qwen ImgEdit 4bit · 图片编辑",
-    optionLabelEn: "Qwen ImgEdit 4bit · Image Editing",
-    autoLabelZh: "Qwen 图片编辑",
-    autoLabelEn: "Qwen Image Edit",
+    optionLabelZh: "PrunaAI P-Image-Edit · 图片编辑",
+    optionLabelEn: "PrunaAI P-Image-Edit · Image Editing",
+    autoLabelZh: "PrunaAI 图片编辑",
+    autoLabelEn: "PrunaAI Image Edit",
   },
   {
     id: "lightricks/ltx-video-0.9.7-distilled",
@@ -376,16 +376,16 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
     autoLabelEn: "GPT-5 Nano Video Detect",
   },
   {
-    id: "lucataco/qwen2.5-omni-7b-detect",
-    label: "Qwen2.5 Omni 7B Detection via Replicate",
+    id: "vaibhavs10/incredibly-fast-whisper-detect",
+    label: "Incredibly Fast Whisper Detection via Replicate",
     provider: "replicate",
     mode: "audio-detection",
     tabs: ["detect_audio"],
     region: "international",
-    optionLabelZh: "Qwen2.5 Omni 7B · 音频检测",
-    optionLabelEn: "Qwen2.5 Omni 7B · Audio Detection",
-    autoLabelZh: "Qwen 音频检测",
-    autoLabelEn: "Qwen Audio Detect",
+    optionLabelZh: "Incredibly Fast Whisper · 音频检测",
+    optionLabelEn: "Incredibly Fast Whisper · Audio Detection",
+    autoLabelZh: "Whisper 音频检测",
+    autoLabelEn: "Whisper Audio Detect",
   },
   ] as const;
 
@@ -400,7 +400,7 @@ const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
   edit_text:
     DEFAULT_LANGUAGE === "zh" ? "qwen-flash-edit" : "openai/gpt-5-nano-edit",
   edit_image:
-    DEFAULT_LANGUAGE === "zh" ? "wanx2.1-imageedit" : "espressotechie/qwen-imgedit-4bit",
+    DEFAULT_LANGUAGE === "zh" ? "wanx2.1-imageedit" : "prunaai/p-image-edit",
   edit_audio:
     DEFAULT_LANGUAGE === "zh"
       ? "paraformer-v2-qwen3-tts-flash"
@@ -418,7 +418,7 @@ const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
   detect_audio:
     DEFAULT_LANGUAGE === "zh"
       ? "qwen3-omni-flash-realtime-detect"
-      : "lucataco/qwen2.5-omni-7b-detect",
+      : "vaibhavs10/incredibly-fast-whisper-detect",
   detect_video:
     DEFAULT_LANGUAGE === "zh"
       ? "qwen3-vl-flash-video-detect"

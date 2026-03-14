@@ -131,9 +131,14 @@ const DOCX_DEFAULT_FONT = {
 } as const;
 const EXPORT_CONTROL_CHAR_REGEX = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const EXPORT_ZERO_WIDTH_CHAR_REGEX = /[\u200B-\u200D\uFEFF]/g;
+const EXPORT_PDF_HYPHEN_CHAR_REGEX = /[\u00AD\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
+const EXPORT_PDF_APOSTROPHE_CHAR_REGEX = /[\u2018-\u201B]/g;
+const EXPORT_PDF_QUOTE_CHAR_REGEX = /[\u201C-\u201F]/g;
+const EXPORT_PDF_SPACE_CHAR_REGEX = /[\u2000-\u200A\u202F\u205F\u3000]/g;
+const EXPORT_PDF_ELLIPSIS_CHAR_REGEX = /\u2026/g;
 const WORKSHEET_NAME_FORBIDDEN_CHAR_REGEX = /[:\\/?*\[\]]/g;
 
-let cachedPdfFont: LoadedPdfFont | null | undefined;
+const cachedPdfFontMap = new Map<string, LoadedPdfFont | null>();
 
 function isSupportedPdfFontFile(fontPath: string) {
   return /\.(ttf|otf)$/i.test(fontPath);
@@ -144,6 +149,11 @@ function normalizeExportText(value: string) {
     .normalize("NFC")
     .replace(/\r\n?/g, "\n")
     .replace(/\u00A0/g, " ")
+    .replace(EXPORT_PDF_SPACE_CHAR_REGEX, " ")
+    .replace(EXPORT_PDF_HYPHEN_CHAR_REGEX, "-")
+    .replace(EXPORT_PDF_APOSTROPHE_CHAR_REGEX, "'")
+    .replace(EXPORT_PDF_QUOTE_CHAR_REGEX, `"`)
+    .replace(EXPORT_PDF_ELLIPSIS_CHAR_REGEX, "...")
     .replace(EXPORT_ZERO_WIDTH_CHAR_REGEX, "")
     .replace(EXPORT_CONTROL_CHAR_REGEX, "")
     .trim();
@@ -345,12 +355,23 @@ export function buildPlainTextDocument(document: GeneratedDocument) {
   return lines.join("\n").trim();
 }
 
-export async function loadPdfFontBytes() {
-  if (cachedPdfFont !== undefined) {
-    return cachedPdfFont;
+function containsCjkText(value: string) {
+  return /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(value);
+}
+
+function resolvePdfFontPathCandidates(text: string) {
+  return containsCjkText(text)
+    ? PDF_FONT_CJK_PATH_CANDIDATES
+    : PDF_FONT_LATIN_PATH_CANDIDATES;
+}
+
+export async function loadPdfFontBytes(text = "") {
+  const cacheKey = containsCjkText(text) ? "cjk" : "latin";
+  if (cachedPdfFontMap.has(cacheKey)) {
+    return cachedPdfFontMap.get(cacheKey) ?? null;
   }
 
-  for (const fontPath of PDF_FONT_PATH_CANDIDATES) {
+  for (const fontPath of resolvePdfFontPathCandidates(text)) {
     if (!existsSync(fontPath)) {
       continue;
     }
@@ -359,15 +380,16 @@ export async function loadPdfFontBytes() {
       continue;
     }
 
-    cachedPdfFont = {
+    const loadedFont = {
       bytes: new Uint8Array(await readFile(fontPath)),
       path: fontPath,
     };
-    return cachedPdfFont;
+    cachedPdfFontMap.set(cacheKey, loadedFont);
+    return loadedFont;
   }
 
-  cachedPdfFont = null;
-  return cachedPdfFont;
+  cachedPdfFontMap.set(cacheKey, null);
+  return null;
 }
 
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number) {
@@ -466,18 +488,23 @@ async function exportPdf(document: GeneratedDocument) {
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkit);
 
-  const embeddedFont = await loadPdfFontBytes();
-  if (!embeddedFont) {
-    throw new Error("无法找到支持中文的PDF字体文件，请确保系统中安装了中文字体（如：simhei.ttf）");
-  }
+  const pdfFontProbeText = buildPlainTextDocument(document);
+  const embeddedFont = await loadPdfFontBytes(pdfFontProbeText);
 
   let font: PDFFont;
-  try {
-    font = await pdf.embedFont(embeddedFont.bytes, { subset: true });
-  } catch (error) {
-    throw new Error(`PDF字体加载失败: ${embeddedFont.path}，错误: ${error}`);
-  }
+  if (!embeddedFont) {
+    if (containsCjkText(pdfFontProbeText)) {
+      throw new Error("Unable to find a PDF font that supports the current document content. Please configure PDF_FONT_PATH or install a compatible font.");
+    }
 
+    font = await pdf.embedFont(StandardFonts.Helvetica);
+  } else {
+    try {
+      font = await pdf.embedFont(embeddedFont.bytes, { subset: true });
+    } catch (error) {
+      throw new Error("PDF font load failed: " + embeddedFont.path + ". Error: " + String(error));
+    }
+  }
   const marginX = 50;
   const maxWidth = 495;
   let page = createPdfPage(pdf);
