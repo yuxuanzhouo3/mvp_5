@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { headers } from "next/headers";
 import { type AdminSession, getAdminSession } from "@/lib/admin/session";
 import { getAdminSourceScope } from "@/lib/admin/source-scope";
 import { getRoutedAdminDbClient } from "@/lib/server/database-routing";
@@ -7,6 +8,17 @@ export type AdminActionResult<T = undefined> = {
   success: boolean;
   error?: string;
   data?: T;
+};
+
+type AdminAuditLogPayload = {
+  action: string;
+  targetType: string;
+  targetId?: string | null;
+  source?: string | null;
+  beforeJson?: unknown;
+  afterJson?: unknown;
+  ipAddress?: string | null;
+  userAgent?: string | null;
 };
 
 export async function requireAdminContext() {
@@ -34,6 +46,38 @@ export function parseIntOr(input: string | number | null | undefined, fallback: 
 export function parseDecimalOr(input: string | number | null | undefined, fallback: number) {
   const value = typeof input === "number" ? input : Number(input);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeAuditText(value: string | null | undefined, maxLength: number) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.slice(0, maxLength);
+}
+
+function readAdminAuditRequestMeta() {
+  try {
+    const requestHeaders = headers();
+    const forwardedFor = requestHeaders.get("x-forwarded-for") || "";
+    const firstForwardedIp = forwardedFor
+      .split(",")
+      .map((item) => item.trim())
+      .find((item) => item.length > 0);
+
+    return {
+      ipAddress: normalizeAuditText(
+        requestHeaders.get("x-real-ip") || firstForwardedIp || null,
+        64,
+      ),
+      userAgent: normalizeAuditText(requestHeaders.get("user-agent"), 1000),
+    };
+  } catch {
+    return {
+      ipAddress: null,
+      userAgent: null,
+    };
+  }
 }
 
 async function findAdminUserId(
@@ -83,6 +127,72 @@ async function resolveAdminAuditUserId(db: any, session: AdminSession) {
   return null;
 }
 
+async function insertAdminAuditLog(input: {
+  db: any;
+  adminUserId?: string | null;
+  source: string | null;
+} & AdminAuditLogPayload) {
+  const { error } = await input.db.from("admin_audit_logs").insert({
+    id: createTextId("audit"),
+    admin_user_id: input.adminUserId || null,
+    action: input.action,
+    target_type: input.targetType,
+    target_id: input.targetId || null,
+    source: input.source,
+    before_json: input.beforeJson ?? null,
+    after_json: input.afterJson ?? null,
+    ip_address: input.ipAddress || null,
+    user_agent: input.userAgent || null,
+    created_at: new Date().toISOString(),
+  });
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function writeAdminAuditLogWithContext(params: {
+  db: any;
+  session?: AdminSession | null;
+  adminUserId?: string | null;
+  sourceScope?: string | null;
+} & AdminAuditLogPayload) {
+  if (!params.db) {
+    return;
+  }
+
+  try {
+    const adminUserId =
+      params.adminUserId !== undefined
+        ? params.adminUserId
+        : params.session
+          ? await resolveAdminAuditUserId(params.db, params.session)
+          : null;
+    const requestMeta = readAdminAuditRequestMeta();
+
+    await insertAdminAuditLog({
+      db: params.db,
+      adminUserId,
+      action: params.action,
+      targetType: params.targetType,
+      targetId: params.targetId,
+      source: params.source || params.sourceScope || null,
+      beforeJson: params.beforeJson,
+      afterJson: params.afterJson,
+      ipAddress: params.ipAddress ?? requestMeta.ipAddress,
+      userAgent: params.userAgent ?? requestMeta.userAgent,
+    });
+  } catch (error) {
+    console.warn("[AdminAudit] 写入审计日志失败，已跳过，不影响主流程。", {
+      sourceScope: params.sourceScope || null,
+      action: params.action,
+      targetType: params.targetType,
+      targetId: params.targetId || null,
+      error,
+    });
+  }
+}
+
 export async function writeAdminAuditLog(params: {
   action: string;
   targetType: string;
@@ -96,30 +206,15 @@ export async function writeAdminAuditLog(params: {
     return;
   }
 
-  try {
-    const adminUserId = await resolveAdminAuditUserId(db, session);
-    const { error } = await db.from("admin_audit_logs").insert({
-      id: createTextId("audit"),
-      admin_user_id: adminUserId,
-      action: params.action,
-      target_type: params.targetType,
-      target_id: params.targetId || null,
-      source: params.source || sourceScope,
-      before_json: params.beforeJson ?? null,
-      after_json: params.afterJson ?? null,
-      created_at: new Date().toISOString(),
-    });
-
-    if (error) {
-      throw error;
-    }
-  } catch (error) {
-    console.warn("[AdminAudit] 写入审计日志失败，已跳过，不影响主流程。", {
-      sourceScope,
-      action: params.action,
-      targetType: params.targetType,
-      targetId: params.targetId || null,
-      error,
-    });
-  }
+  await writeAdminAuditLogWithContext({
+    db,
+    session,
+    sourceScope,
+    action: params.action,
+    targetType: params.targetType,
+    targetId: params.targetId,
+    source: params.source,
+    beforeJson: params.beforeJson,
+    afterJson: params.afterJson,
+  });
 }

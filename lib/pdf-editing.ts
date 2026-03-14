@@ -347,7 +347,7 @@ function fitOverlayFontSize(font: PDFFont, text: string, preferredSize: number, 
 
 async function loadOverlayFont(pdf: PDFDocument, text: string) {
   pdf.registerFontkit(fontkit);
-  const loadedFont = await loadPdfFontBytes();
+  const loadedFont = await loadPdfFontBytes(text);
 
   if (loadedFont) {
     try {

@@ -67,7 +67,7 @@ async function trackConfirmedUser(
       source: "global",
       userId: user.id,
       ensureSession: true,
-      eventType: "register",
+      eventType: "auth_email_confirmed",
       eventName: "email_confirmed",
       eventData: {
         method: "supabase_email",

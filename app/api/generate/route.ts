@@ -1693,7 +1693,12 @@ function buildReplicateImageInputs(modelId: string, promptForModel: string) {
   };
 }
 
-async function generateImageWithReplicate(requestId: string, modelId: string, prompt: string) {
+async function generateImageWithReplicate(
+  requestId: string,
+  modelId: string,
+  prompt: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
   const promptForModel = buildReplicateImagePrompt(prompt);
   const { primaryInput, fallbackInput } = buildReplicateImageInputs(
     modelId,
@@ -1718,16 +1723,26 @@ async function generateImageWithReplicate(requestId: string, modelId: string, pr
   }
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 图片生成失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 图片生成失败${detail ? `: ${detail}` : ""}`
+        : `Replicate image generation failed${detail ? `: ${detail}` : ""}`,
+    );
   }
   if (!payload.id) {
-    throw new Error("Replicate 返回结果缺少 prediction id。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 返回结果缺少 prediction id。"
+        : "Replicate response is missing prediction id.",
+    );
   }
 
   return waitForReplicatePredictionResult(
     payload.id,
     REPLICATE_IMAGE_TASK_TIMEOUT_MS,
-    "Replicate 图片生成超时，请稍后重试。",
+    locale === "zh"
+      ? "Replicate 图片生成超时，请稍后重试。"
+      : "Replicate image generation timed out. Please try again.",
   );
 }
 
@@ -1826,11 +1841,22 @@ function buildReplicateAudioInputs(modelId: string, promptForModel: string) {
   };
 }
 
-function buildReplicateAudioTimeoutMessage(modelId: string, predictionId: string) {
-  return `Replicate 音频生成超时，请稍后重试。model_id: ${modelId} prediction_id: ${predictionId}`;
+function buildReplicateAudioTimeoutMessage(
+  modelId: string,
+  predictionId: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
+  return locale === "zh"
+    ? `Replicate 音频生成超时，请稍后重试。model_id: ${modelId} prediction_id: ${predictionId}`
+    : `Replicate audio generation timed out. Please try again. model_id: ${modelId} prediction_id: ${predictionId}`;
 }
 
-async function generateAudioWithReplicate(requestId: string, modelId: string, prompt: string) {
+async function generateAudioWithReplicate(
+  requestId: string,
+  modelId: string,
+  prompt: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
   const promptForModel = buildReplicateAudioPrompt(modelId, prompt);
   const { primaryInput, fallbackInput } = buildReplicateAudioInputs(modelId, promptForModel);
 
@@ -1852,16 +1878,24 @@ async function generateAudioWithReplicate(requestId: string, modelId: string, pr
   }
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate audio generation failed${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 音频生成失败${detail ? `: ${detail}` : ""}`
+        : `Replicate audio generation failed${detail ? `: ${detail}` : ""}`,
+    );
   }
   if (!payload.id) {
-    throw new Error("Replicate response is missing prediction id.");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 返回结果缺少 prediction id。"
+        : "Replicate response is missing prediction id.",
+    );
   }
 
   return waitForReplicatePredictionResult(
     payload.id,
     REPLICATE_AUDIO_TASK_TIMEOUT_MS,
-    buildReplicateAudioTimeoutMessage(modelId, payload.id),
+    buildReplicateAudioTimeoutMessage(modelId, payload.id, locale),
   );
 }
 
@@ -1941,23 +1975,46 @@ function getReplicateVideoTaskTimeoutMs(modelId: string) {
   return REPLICATE_VIDEO_TASK_TIMEOUT_MS;
 }
 
-function buildReplicateVideoTimeoutMessage(modelId: string, predictionId: string) {
+function buildReplicateVideoTimeoutMessage(
+  modelId: string,
+  predictionId: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
   if (modelId === "minimax/video-01") {
-    return [
-      `Replicate 视频生成超时：${modelId} 当前排队或生成较慢。`,
-      `prediction_id: ${predictionId}`,
-      "可稍后重试，或在 .env.local 中增大 REPLICATE_MINIMAX_VIDEO_TASK_TIMEOUT_MS。",
-    ].join("\n");
+    return locale === "zh"
+      ? [
+          `Replicate 视频生成超时：${modelId} 当前排队或生成较慢。`,
+          `prediction_id: ${predictionId}`,
+          "可稍后重试，或在 .env.local 中增大 REPLICATE_MINIMAX_VIDEO_TASK_TIMEOUT_MS。",
+        ].join("\n")
+      : [
+          `Replicate video generation timed out: ${modelId} is currently queued or generating slowly.`,
+          `prediction_id: ${predictionId}`,
+          "Retry later or increase REPLICATE_MINIMAX_VIDEO_TASK_TIMEOUT_MS in .env.local.",
+        ].join("\n");
   }
 
-  return `Replicate 视频生成超时，请稍后重试。prediction_id: ${predictionId}`;
+  return locale === "zh"
+    ? `Replicate 视频生成超时，请稍后重试。prediction_id: ${predictionId}`
+    : `Replicate video generation timed out. Please try again. prediction_id: ${predictionId}`;
 }
 
-function buildReplicateVideoEditingTimeoutMessage(modelId: string, predictionId: string) {
-  return `Replicate 视频编辑超时，请稍后重试。model_id: ${modelId} prediction_id: ${predictionId}`;
+function buildReplicateVideoEditingTimeoutMessage(
+  modelId: string,
+  predictionId: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
+  return locale === "zh"
+    ? `Replicate 视频编辑超时，请稍后重试。model_id: ${modelId} prediction_id: ${predictionId}`
+    : `Replicate video editing timed out. Please try again later. model_id: ${modelId} prediction_id: ${predictionId}`;
 }
 
-async function generateVideoWithReplicate(requestId: string, modelId: string, prompt: string) {
+async function generateVideoWithReplicate(
+  requestId: string,
+  modelId: string,
+  prompt: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
   const promptForModel = buildReplicateVideoPrompt(prompt);
   const { primaryInput, fallbackInput } = buildReplicateVideoInputs(modelId, promptForModel);
   const timeoutMs = getReplicateVideoTaskTimeoutMs(modelId);
@@ -1980,16 +2037,24 @@ async function generateVideoWithReplicate(requestId: string, modelId: string, pr
   }
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 视频生成失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 视频生成失败${detail ? `: ${detail}` : ""}`
+        : `Replicate video generation failed${detail ? `: ${detail}` : ""}`,
+    );
   }
   if (!payload.id) {
-    throw new Error("Replicate 返回结果缺少 prediction id。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 返回结果缺少 prediction id。"
+        : "Replicate response is missing prediction id.",
+    );
   }
 
   return waitForReplicatePredictionResult(
     payload.id,
     timeoutMs,
-    buildReplicateVideoTimeoutMessage(modelId, payload.id),
+    buildReplicateVideoTimeoutMessage(modelId, payload.id, locale),
   );
 }
 
@@ -3199,6 +3264,81 @@ function collectGeneratedDocumentCandidates(
   }
 }
 
+function normalizeGeneratedDocumentScoreText(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function scoreResolvedGeneratedDocument(
+  document: GeneratedDocument,
+  prompt: string,
+  requireSpreadsheet: boolean,
+) {
+  const promptTitle = truncateText(prompt, 120).trim().toLowerCase();
+  const fallbackHeadings = new Set(["content overview", "overview", "内容概览"]);
+  const summary = document.summary.trim();
+  let score = 0;
+
+  if (document.title.trim()) {
+    score += 3;
+  }
+  if (document.title.trim().toLowerCase() !== promptTitle) {
+    score += 8;
+  }
+  if (
+    summary &&
+    !/^edited document content\.?$/i.test(summary) &&
+    summary !== "Document summary" &&
+    summary !== "文档内容摘要"
+  ) {
+    score += 8;
+  }
+
+  score += document.sections.length * 5;
+  for (const section of document.sections) {
+    if (section.heading.trim() && !fallbackHeadings.has(section.heading.trim().toLowerCase())) {
+      score += 4;
+    }
+    score += Math.min(section.paragraphs.join(" ").trim().length, 600) / 80;
+    if (section.bullets.length > 0) {
+      score += 6;
+    }
+    if (section.table) {
+      score += 12 + Math.min(section.table.rows.length, 10);
+    }
+  }
+
+  if (document.spreadsheets.length > 0) {
+    score += 15 + document.spreadsheets.length * 5;
+  }
+  if (requireSpreadsheet && document.spreadsheets.length > 0) {
+    score += 20;
+  }
+
+  if (
+    document.sections.length === 1 &&
+    fallbackHeadings.has(document.sections[0]?.heading.trim().toLowerCase() ?? "")
+  ) {
+    score -= 8;
+  }
+
+  if (
+    document.sections.every(
+      (section) =>
+        section.bullets.length === 0 &&
+        !section.table &&
+        section.paragraphs.every(
+          (paragraph) =>
+            normalizeGeneratedDocumentScoreText(paragraph) ===
+            normalizeGeneratedDocumentScoreText(document.summary),
+        ),
+    )
+  ) {
+    score -= 12;
+  }
+
+  return score;
+}
+
 function tryResolveGeneratedDocumentCandidate(
   value: unknown,
   prompt: string,
@@ -3208,10 +3348,18 @@ function tryResolveGeneratedDocumentCandidate(
   const candidates: unknown[] = [];
   collectGeneratedDocumentCandidates(value, candidates, new WeakSet<object>());
 
+  let bestDocument: GeneratedDocument | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
   for (const candidate of candidates) {
     const directResult = documentSchema.safeParse(candidate);
     if (directResult.success) {
-      return directResult.data;
+      const score = scoreResolvedGeneratedDocument(directResult.data, prompt, requireSpreadsheet);
+      if (score > bestScore) {
+        bestDocument = directResult.data;
+        bestScore = score;
+      }
+      continue;
     }
 
     const normalizedCandidate =
@@ -3243,11 +3391,19 @@ function tryResolveGeneratedDocumentCandidate(
     );
     const normalizedResult = documentSchema.safeParse(normalizedDocument);
     if (normalizedResult.success) {
-      return normalizedResult.data;
+      const score = scoreResolvedGeneratedDocument(
+        normalizedResult.data,
+        prompt,
+        requireSpreadsheet,
+      );
+      if (score > bestScore) {
+        bestDocument = normalizedResult.data;
+        bestScore = score;
+      }
     }
   }
 
-  return null;
+  return bestDocument;
 }
 
 
@@ -3271,7 +3427,78 @@ function isPlainTextBulletLine(line: string) {
 }
 
 function normalizePlainTextBullet(line: string) {
-  return line.trim().replace(/^([-*•]\s+|\d+[.)]\s+)/, "").trim();
+  return line.trim().replace(/^([-*?]\s+|\d+[.)]\s+)/, "").trim();
+}
+
+function isMarkdownTableDividerLine(line: string) {
+  return /^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$/.test(line.trim());
+}
+
+function splitMarkdownTableCells(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => truncateText(cell.trim(), 200));
+}
+
+function parseMarkdownTableBlock(
+  rawLines: string[],
+  startIndex: number,
+  titleFallback: string,
+) {
+  const headerLine = rawLines[startIndex]?.trim() ?? "";
+  const dividerLine = rawLines[startIndex + 1]?.trim() ?? "";
+  if (!headerLine.includes("|") || !isMarkdownTableDividerLine(dividerLine)) {
+    return null;
+  }
+
+  const columns = splitMarkdownTableCells(headerLine).slice(0, 8);
+  if (columns.length === 0 || columns.every((column) => !column)) {
+    return null;
+  }
+
+  const rows: string[][] = [];
+  let index = startIndex + 2;
+  while (index < rawLines.length) {
+    const line = rawLines[index]?.trim() ?? "";
+    if (!line || !line.includes("|")) {
+      break;
+    }
+    if (isMarkdownTableDividerLine(line)) {
+      index += 1;
+      continue;
+    }
+
+    const cells = splitMarkdownTableCells(line).slice(0, columns.length);
+    if (cells.some((cell) => cell.length > 0)) {
+      rows.push(cells);
+    }
+    index += 1;
+  }
+
+  const normalizedTable = normalizeTabularData(
+    {
+      title: titleFallback,
+      columns,
+      rows,
+    },
+    {
+      maxRows: 30,
+      maxColumns: 8,
+      titleFallback,
+    },
+  );
+
+  if (!normalizedTable) {
+    return null;
+  }
+
+  return {
+    table: normalizedTable,
+    nextIndex: index - 1,
+  };
 }
 
 function isPlainTextSectionHeading(line: string) {
@@ -3369,6 +3596,10 @@ function buildGeneratedDocumentFromPlainText(
       );
     }
 
+    if (currentSection.paragraphs.length === 0 && currentSection.table) {
+      currentSection.paragraphs.push(containsCjkText(cleaned) ? "相关数据见下表。" : "See the table below.");
+    }
+
     if (currentSection.paragraphs.length === 0) {
       currentSection = null;
       return;
@@ -3378,6 +3609,11 @@ function buildGeneratedDocumentFromPlainText(
       heading: truncateText(currentSection.heading, 80) || defaultHeading,
       paragraphs: currentSection.paragraphs.slice(0, 4),
       bullets: currentSection.bullets.slice(0, 8),
+      ...(currentSection.table
+        ? {
+            table: currentSection.table,
+          }
+        : {}),
     });
     currentSection = null;
   };
@@ -3392,6 +3628,21 @@ function buildGeneratedDocumentFromPlainText(
 
     if (!summary && /^Summary\s*:/i.test(line)) {
       summary = truncateText(normalizePlainTextDocumentHeading(line), 1200);
+      continue;
+    }
+
+    const tableResult = parseMarkdownTableBlock(
+      rawLines,
+      index,
+      truncateText(currentSection?.heading ?? defaultHeading, 80) || defaultHeading,
+    );
+    if (tableResult) {
+      flushParagraphBuffer();
+      if (currentSection?.table) {
+        flushSection();
+      }
+      ensureSection().table = tableResult.table;
+      index = tableResult.nextIndex;
       continue;
     }
 
@@ -3433,6 +3684,7 @@ function buildGeneratedDocumentFromPlainText(
     spreadsheets: requireSpreadsheet ? [buildFallbackSpreadsheet(normalizedSections)] : [],
   };
 }
+
 
 async function requestDashScopeChatCompletion(body: Record<string, unknown>) {
   const response = await dashScopeFetch(
@@ -4024,6 +4276,16 @@ function decodePlainTextDocumentBytes(bytes: Uint8Array) {
   return bestText;
 }
 
+const UTF8_BOM_BYTES = Uint8Array.from([0xef, 0xbb, 0xbf]);
+
+function encodePlainTextDocumentBytes(text: string) {
+  const encoded = new TextEncoder().encode(normalizeEditablePlainText(text));
+  const output = new Uint8Array(UTF8_BOM_BYTES.length + encoded.length);
+  output.set(UTF8_BOM_BYTES, 0);
+  output.set(encoded, UTF8_BOM_BYTES.length);
+  return output;
+}
+
 function stringifySpreadsheetCellValue(cell: unknown) {
   if (cell == null) {
     return "";
@@ -4118,18 +4380,24 @@ async function extractEditableDocumentText(file: File) {
   throw new Error("当前文档编辑仅支持 TXT、MD、DOCX、XLSX、PDF 文件。");
 }
 
-async function extractDetectableDocumentText(file: File) {
-  try {
-    return await extractEditableDocumentText(file);
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes("当前文档编辑仅支持")
-    ) {
-      throw new Error("当前文档检测仅支持 TXT、MD、DOCX、XLSX、PDF 文件。");
-    }
-    throw error;
+function buildDocumentDetectionUnsupportedFormatMessage(
+  locale: PromptLocale = getRuntimeLocale(),
+) {
+  return locale === "zh"
+    ? "当前文档检测仅支持 TXT、MD、DOCX、XLSX、PDF 文件。"
+    : "Document detection currently supports only TXT, MD, DOCX, XLSX, and PDF files.";
+}
+
+async function extractDetectableDocumentText(
+  file: File,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
+  const extension = getUploadFileExtension(file.name);
+  if (!["txt", "md", "docx", "xlsx", "pdf"].includes(extension)) {
+    throw new Error(buildDocumentDetectionUnsupportedFormatMessage(locale));
   }
+
+  return extractEditableDocumentText(file);
 }
 
 function buildDocumentDetectionExcerpt(text: string, maxChars: number) {
@@ -4475,7 +4743,7 @@ function parseLiteralReplaceInstruction(instruction: string): LiteralReplacePlan
 
 async function extractEditableDocumentTextFromBytes(bytes: Uint8Array, extension: string) {
   if (extension === "txt" || extension === "md") {
-    return normalizeEditablePlainText(Buffer.from(bytes).toString("utf8"));
+    return decodePlainTextDocumentBytes(bytes);
   }
 
   if (extension === "docx") {
@@ -4499,15 +4767,27 @@ function buildDirectDocumentEditPreview(input: {
   sourceText: string;
   targetText: string;
   replacementCount: number;
+  locale?: PromptLocale;
 }) {
-  return [
-    `文件名: ${input.fileName}`,
-    `指令: ${input.instruction}`,
-    "编辑方式: 文本替换",
-    `替换次数: ${input.replacementCount}`,
-    `原文: ${input.sourceText}`,
-    `新文: ${input.targetText}`,
-  ].join("\n");
+  const locale = input.locale ?? getRuntimeLocale();
+
+  return locale === "zh"
+    ? [
+        `文件名: ${input.fileName}`,
+        `指令: ${input.instruction}`,
+        "编辑方式: 文本替换",
+        `替换次数: ${input.replacementCount}`,
+        `原文: ${input.sourceText}`,
+        `新文: ${input.targetText}`,
+      ].join("\n")
+    : [
+        `File: ${input.fileName}`,
+        `Instruction: ${input.instruction}`,
+        "Edit mode: direct replacement",
+        `Replacement count: ${input.replacementCount}`,
+        `Original: ${input.sourceText}`,
+        `Updated: ${input.targetText}`,
+      ].join("\n");
 }
 
 function buildGeneratedDocumentPreview(document: GeneratedDocument) {
@@ -4711,9 +4991,11 @@ async function replaceTextInXlsxBuffer(bytes: Uint8Array, plan: LiteralReplacePl
           return;
         }
 
+        if (!cell.value || typeof cell.value !== "object") {
+          return;
+        }
+
         if (
-          cell.value &&
-          typeof cell.value === "object" &&
           "richText" in cell.value &&
           Array.isArray((cell.value as { richText?: unknown }).richText)
         ) {
@@ -4729,6 +5011,27 @@ async function replaceTextInXlsxBuffer(bytes: Uint8Array, plan: LiteralReplacePl
             replacementCount += richTextResult.replacementCount;
           }
         }
+
+        const objectValue = cell.value as unknown as Record<string, unknown>;
+        const nextValue: Record<string, unknown> = { ...objectValue };
+        let objectReplacementCount = 0;
+
+        for (const key of ["text", "hyperlink", "formula", "result"] as const) {
+          if (typeof nextValue[key] !== "string") {
+            continue;
+          }
+
+          const replaced = replaceAllLiteral(nextValue[key] as string, plan.sourceText, plan.targetText);
+          if (replaced.count > 0) {
+            nextValue[key] = replaced.value;
+            objectReplacementCount += replaced.count;
+          }
+        }
+
+        if (objectReplacementCount > 0) {
+          cell.value = nextValue as unknown as typeof cell.value;
+          replacementCount += objectReplacementCount;
+        }
       });
     });
   });
@@ -4739,7 +5042,11 @@ async function replaceTextInXlsxBuffer(bytes: Uint8Array, plan: LiteralReplacePl
   };
 }
 
-async function tryPerformDirectDocumentEdit(file: File, instruction: string) {
+async function tryPerformDirectDocumentEdit(
+  file: File,
+  instruction: string,
+  locale: PromptLocale = getRuntimeLocale(),
+) {
   const plan = parseLiteralReplaceInstruction(instruction);
   if (!plan) {
     return null;
@@ -4751,10 +5058,10 @@ async function tryPerformDirectDocumentEdit(file: File, instruction: string) {
   let replacementCount = 0;
 
   if (extension === "txt" || extension === "md") {
-    const sourceText = Buffer.from(bytes).toString("utf8");
+    const sourceText = decodePlainTextDocumentBytes(bytes);
     const replaced = replaceAllLiteral(sourceText, plan.sourceText, plan.targetText);
     replacementCount = replaced.count;
-    editedBytes = new TextEncoder().encode(replaced.value);
+    editedBytes = encodePlainTextDocumentBytes(replaced.value);
   } else if (extension === "docx") {
     const replaced = await replaceTextInDocxBuffer(bytes, plan);
     replacementCount = replaced.replacementCount;
@@ -4772,7 +5079,11 @@ async function tryPerformDirectDocumentEdit(file: File, instruction: string) {
   }
 
   if (replacementCount <= 0) {
-    throw new Error(`未在文档中找到原文“${plan.sourceText}”，请确认原文完全一致后重试。`);
+    throw new Error(
+      locale === "zh"
+        ? `未在文档中找到原文“${plan.sourceText}”，请确认原文完全一致后重试。`
+        : `The source text "${plan.sourceText}" was not found in the document. Please verify an exact match and try again.`,
+    );
   }
 
   const previewText = buildDirectDocumentEditPreview({
@@ -4781,6 +5092,7 @@ async function tryPerformDirectDocumentEdit(file: File, instruction: string) {
     sourceText: plan.sourceText,
     targetText: plan.targetText,
     replacementCount,
+    locale,
   });
 
   return {
@@ -5012,10 +5324,16 @@ async function editDocumentWithReplicate(input: {
   prompt: string;
   file: File;
   requireSpreadsheet: boolean;
+  locale?: PromptLocale;
 }) {
+  const locale = input.locale ?? getRuntimeLocale();
   const sourceText = await extractEditableDocumentText(input.file);
   if (!sourceText.trim()) {
-    throw new Error("上传文档未解析出可编辑文本，请更换文件后重试。");
+    throw new Error(
+      locale === "zh"
+        ? "上传文档未解析出可编辑文本，请更换文件后重试。"
+        : "No editable text could be extracted from the uploaded document. Please try a different file.",
+    );
   }
 
   const normalizedModelId = normalizeReplicateTextModelId(input.modelId);
@@ -5040,7 +5358,9 @@ async function editDocumentWithReplicate(input: {
     }
 
     console.warn(
-      `[Generate][${input.requestId}] Replicate 文档编辑参数不兼容，自动降级为最小输入重试`,
+      locale === "zh"
+        ? `[Generate][${input.requestId}] Replicate 文档编辑参数不兼容，自动降级为最小输入重试`
+        : `[Generate][${input.requestId}] Replicate document editing input is incompatible; retrying with fallback input`,
     );
     payload = await createReplicatePrediction(input.requestId, normalizedModelId, fallbackInput);
   }
@@ -5048,7 +5368,11 @@ async function editDocumentWithReplicate(input: {
   const status = (payload.status ?? "").toLowerCase();
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 文档编辑失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 文档编辑失败${detail ? `: ${detail}` : ""}`
+        : `Replicate document editing failed${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   const finalPayload =
@@ -5056,19 +5380,29 @@ async function editDocumentWithReplicate(input: {
       ? payload
       : await (() => {
           if (!payload.id) {
-            throw new Error("Replicate 返回结果缺少 prediction id。");
+            throw new Error(
+              locale === "zh"
+                ? "Replicate 返回结果缺少 prediction id。"
+                : "Replicate response is missing a prediction id.",
+            );
           }
 
           return waitForReplicatePredictionResult(
             payload.id,
             REPLICATE_TEXT_TASK_TIMEOUT_MS,
-            `Replicate 文档编辑超时，请稍后重试。prediction_id: ${payload.id}`,
+            locale === "zh"
+              ? `Replicate 文档编辑超时，请稍后重试。prediction_id: ${payload.id}`
+              : `Replicate document editing timed out. Please try again later. prediction_id: ${payload.id}`,
           );
         })();
 
   const content = extractReplicateTextOutput(finalPayload.output);
   if (!content.trim()) {
-    throw new Error("Replicate 文档编辑未返回可解析内容。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 文档编辑未返回可解析内容。"
+        : "Replicate document editing returned no parseable content.",
+    );
   }
 
   return parseGeneratedDocumentFromRawText(content, input.prompt, input.requireSpreadsheet);
@@ -6058,8 +6392,16 @@ async function editImageWithReplicate(input: {
   prompt: string;
   file: File;
   db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+  locale?: PromptLocale;
 }) {
-  const uploaded = await uploadInputFileForEditing(input.db, input.requestId, "image-edit", input.file);
+  const locale = input.locale ?? getRuntimeLocale();
+  const uploaded = await uploadInputFileForEditing(
+    input.db,
+    input.requestId,
+    "image-edit",
+    input.file,
+    locale,
+  );
   const promptForModel = buildReplicateImageEditPrompt(input.prompt);
   const { primaryInput, fallbackInput } = buildReplicateImageEditInputs(
     input.modelId,
@@ -6075,7 +6417,11 @@ async function editImageWithReplicate(input: {
       throw error;
     }
 
-    console.warn(`[Generate][${input.requestId}] Replicate 图片编辑参数不兼容，自动降级为最小输入重试`);
+    console.warn(
+      locale === "zh"
+        ? `[Generate][${input.requestId}] Replicate 图片编辑参数不兼容，自动降级为最小输入重试`
+        : `[Generate][${input.requestId}] Replicate image editing input is incompatible; retrying with fallback input`,
+    );
     payload = await createReplicatePrediction(input.requestId, input.modelId, fallbackInput);
   }
 
@@ -6085,16 +6431,26 @@ async function editImageWithReplicate(input: {
   }
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 图片编辑失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 图片编辑失败${detail ? `: ${detail}` : ""}`
+        : `Replicate image editing failed${detail ? `: ${detail}` : ""}`,
+    );
   }
   if (!payload.id) {
-    throw new Error("Replicate 返回结果缺少 prediction id。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 返回结果缺少 prediction id。"
+        : "Replicate response is missing a prediction id.",
+    );
   }
 
   return waitForReplicatePredictionResult(
     payload.id,
     REPLICATE_IMAGE_TASK_TIMEOUT_MS,
-    `Replicate 图片编辑超时，请稍后重试。prediction_id: ${payload.id}`,
+    locale === "zh"
+      ? `Replicate 图片编辑超时，请稍后重试。prediction_id: ${payload.id}`
+      : `Replicate image editing timed out. Please try again later. prediction_id: ${payload.id}`,
   );
 }
 
@@ -6500,7 +6856,9 @@ function buildReplicateVideoEditInputs(input: {
   videoUrl: string | null;
   keyframeUrl?: string | null;
   aspectRatio?: ReplicateVideoAspectRatio | null;
+  locale?: PromptLocale;
 }) {
+  const locale = input.locale ?? getRuntimeLocale();
   const { modelId, promptForModel, videoUrl, keyframeUrl, aspectRatio } = input;
 
   if (modelId === "lightricks/ltx-video-0.9.7-distilled") {
@@ -6546,7 +6904,11 @@ function buildReplicateVideoEditInputs(input: {
     }
 
     if (!videoUrl) {
-      throw new Error("Replicate 视频编辑缺少可用的视频或关键帧输入。");
+      throw new Error(
+        locale === "zh"
+          ? "Replicate 视频编辑缺少可用的视频或关键帧输入。"
+          : "Replicate video editing is missing a usable video or keyframe input.",
+      );
     }
 
     primaryInput.video = videoUrl;
@@ -6585,7 +6947,11 @@ function buildReplicateVideoEditInputs(input: {
   }
 
   if (!videoUrl) {
-    throw new Error("Replicate 视频编辑缺少可用的视频输入。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 视频编辑缺少可用的视频输入。"
+        : "Replicate video editing is missing a usable video input.",
+    );
   }
 
   return {
@@ -6609,7 +6975,9 @@ async function editVideoWithReplicate(input: {
   keyframeFile: File | null;
   frameFiles: File[];
   db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+  locale?: PromptLocale;
 }) {
+  const locale = input.locale ?? getRuntimeLocale();
   const referenceKeyframeFile =
     input.keyframeFile ?? input.frameFiles[Math.min(1, input.frameFiles.length - 1)] ?? input.frameFiles[0] ?? null;
 
@@ -6623,6 +6991,7 @@ async function editVideoWithReplicate(input: {
         input.requestId,
         "video-edit-keyframe",
         referenceKeyframeFile,
+        locale,
       );
       keyframeUrl = uploadedKeyframe.publicUrl;
       aspectRatio = getReplicateVideoAspectRatioFromDimensions(
@@ -6630,7 +6999,9 @@ async function editVideoWithReplicate(input: {
       );
     } catch (error) {
       console.warn(
-        `[Generate][${input.requestId}][Replicate][video-edit] 关键帧准备失败，回退为原视频直编`,
+        locale === "zh"
+          ? `[Generate][${input.requestId}][Replicate][video-edit] 关键帧准备失败，回退为原视频直编`
+          : `[Generate][${input.requestId}][Replicate][video-edit] Keyframe preparation failed; falling back to direct video editing`,
         error,
       );
     }
@@ -6638,14 +7009,14 @@ async function editVideoWithReplicate(input: {
 
   let uploadedVideo = keyframeUrl
     ? null
-    : await uploadInputFileForEditing(input.db, input.requestId, "video-edit", input.file);
+    : await uploadInputFileForEditing(input.db, input.requestId, "video-edit", input.file, locale);
 
   const ensureUploadedVideo = async () => {
     if (uploadedVideo) {
       return uploadedVideo;
     }
 
-    uploadedVideo = await uploadInputFileForEditing(input.db, input.requestId, "video-edit", input.file);
+    uploadedVideo = await uploadInputFileForEditing(input.db, input.requestId, "video-edit", input.file, locale);
     return uploadedVideo;
   };
 
@@ -6659,10 +7030,13 @@ async function editVideoWithReplicate(input: {
     videoUrl: uploadedVideo?.publicUrl ?? null,
     keyframeUrl,
     aspectRatio,
+    locale,
   });
 
   console.log(
-    `[Generate][${input.requestId}][Replicate][video-edit] ${usesReferenceKeyframe ? `已切换为抽帧关键帧重生成，参考帧数 ${Math.max(1, input.frameFiles.length)}` : "未拿到关键帧，回退为原视频直编"}`,
+    locale === "zh"
+      ? `[Generate][${input.requestId}][Replicate][video-edit] ${usesReferenceKeyframe ? `已切换为抽帧关键帧重生成，参考帧数 ${Math.max(1, input.frameFiles.length)}` : "未拿到关键帧，回退为原视频直编"}`
+      : `[Generate][${input.requestId}][Replicate][video-edit] ${usesReferenceKeyframe ? `Switched to extracted-keyframe regeneration with ${Math.max(1, input.frameFiles.length)} reference frame(s)` : "No usable keyframe found; falling back to direct video editing"}`,
   );
 
   let payload: ReplicatePredictionPayload;
@@ -6673,7 +7047,11 @@ async function editVideoWithReplicate(input: {
       throw error;
     }
 
-    console.warn(`[Generate][${input.requestId}] Replicate 视频编辑参数不兼容，自动降级为最小输入重试`);
+    console.warn(
+      locale === "zh"
+        ? `[Generate][${input.requestId}] Replicate 视频编辑参数不兼容，自动降级为最小输入重试`
+        : `[Generate][${input.requestId}] Replicate video editing input is incompatible; retrying with fallback input`,
+    );
 
     if (usesReferenceKeyframe && !Object.prototype.hasOwnProperty.call(fallbackInput, "video")) {
       const fallbackVideo = await ensureUploadedVideo();
@@ -6688,10 +7066,13 @@ async function editVideoWithReplicate(input: {
         videoUrl: fallbackVideo.publicUrl,
         keyframeUrl: null,
         aspectRatio,
+        locale,
       }));
 
       console.warn(
-        `[Generate][${input.requestId}][Replicate][video-edit] 抽帧关键帧方案不兼容，已自动回退为原视频直编`,
+        locale === "zh"
+          ? `[Generate][${input.requestId}][Replicate][video-edit] 抽帧关键帧方案不兼容，已自动回退为原视频直编`
+          : `[Generate][${input.requestId}][Replicate][video-edit] Extracted-keyframe mode is incompatible; falling back to direct video editing`,
       );
     }
 
@@ -6707,17 +7088,25 @@ async function editVideoWithReplicate(input: {
   }
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 视频编辑失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 视频编辑失败${detail ? `: ${detail}` : ""}`
+        : `Replicate video editing failed${detail ? `: ${detail}` : ""}`,
+    );
   }
   if (!payload.id) {
-    throw new Error("Replicate 返回结果缺少 prediction id。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 返回结果缺少 prediction id。"
+        : "Replicate response is missing a prediction id.",
+    );
   }
 
   return {
     payload: await waitForReplicatePredictionResult(
       payload.id,
       getReplicateVideoTaskTimeoutMs(input.modelId),
-      buildReplicateVideoEditingTimeoutMessage(input.modelId, payload.id),
+      buildReplicateVideoEditingTimeoutMessage(input.modelId, payload.id, locale),
     ),
     usesReferenceKeyframe,
   };
@@ -6853,22 +7242,35 @@ async function getUploadedInputFileUrl(
   db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>,
   bucketName: string,
   objectPath: string,
+  locale: PromptLocale = getRuntimeLocale(),
 ) {
   if (db.backend === "supabase") {
     if (!supabaseAdmin) {
-      throw new Error("服务端缺少 Supabase 配置，无法生成编辑源文件签名地址。");
+      throw new Error(
+        locale === "zh"
+          ? "服务端缺少 Supabase 配置，无法生成编辑源文件签名地址。"
+          : "Supabase server configuration is missing, so a signed URL cannot be generated for the editing input.",
+      );
     }
 
     const { data, error } = await supabaseAdmin.storage
       .from(bucketName)
       .createSignedUrl(objectPath, GENERATED_INPUT_SIGNED_URL_TTL_SECONDS);
     if (error) {
-      throw new Error(`生成编辑源文件签名地址失败: ${error.message}`);
+      throw new Error(
+        locale === "zh"
+          ? `生成编辑源文件签名地址失败: ${error.message}`
+          : `Failed to create a signed URL for the editing input file: ${error.message}`,
+      );
     }
 
     const signedUrl = typeof data?.signedUrl === "string" ? data.signedUrl.trim() : "";
     if (!signedUrl) {
-      throw new Error("编辑源文件上传成功但未获取到签名地址。");
+      throw new Error(
+        locale === "zh"
+          ? "编辑源文件上传成功但未获取到签名地址。"
+          : "The editing source file was uploaded successfully, but no signed URL was returned.",
+      );
     }
 
     return signedUrl;
@@ -6876,12 +7278,20 @@ async function getUploadedInputFileUrl(
 
   const { data, error } = await db.storage.from(bucketName).getPublicUrl(objectPath);
   if (error) {
-    throw new Error(`读取编辑源文件地址失败: ${error.message}`);
+    throw new Error(
+      locale === "zh"
+        ? `读取编辑源文件地址失败: ${error.message}`
+        : `Failed to read the editing source file URL: ${error.message}`,
+    );
   }
 
   const publicUrl = typeof data?.publicUrl === "string" ? data.publicUrl.trim() : "";
   if (!publicUrl) {
-    throw new Error("编辑源文件上传成功但未获取到可访问地址。");
+    throw new Error(
+      locale === "zh"
+        ? "编辑源文件上传成功但未获取到可访问地址。"
+        : "The editing source file was uploaded successfully, but no accessible URL was returned.",
+    );
   }
 
   return publicUrl;
@@ -6892,6 +7302,7 @@ async function uploadInputFileForEditing(
   requestId: string,
   folder: string,
   file: File,
+  locale: PromptLocale = getRuntimeLocale(),
 ) {
   const extension = getUploadFileExtension(file.name) || "bin";
   const objectPath = [
@@ -6908,12 +7319,16 @@ async function uploadInputFileForEditing(
   });
 
   if (uploadResult.error) {
-    throw new Error(`上传编辑源文件失败: ${uploadResult.error.message}`);
+    throw new Error(
+      locale === "zh"
+        ? `上传编辑源文件失败: ${uploadResult.error.message}`
+        : `Failed to upload the editing source file: ${uploadResult.error.message}`,
+    );
   }
 
   return {
     objectPath,
-    publicUrl: await getUploadedInputFileUrl(db, GENERATED_INPUT_BUCKET, objectPath),
+    publicUrl: await getUploadedInputFileUrl(db, GENERATED_INPUT_BUCKET, objectPath, locale),
   };
 }
 
@@ -7120,6 +7535,7 @@ async function transcribeAudioWithReplicate(
   requestId: string,
   modelId: string,
   fileUrl: string,
+  locale: PromptLocale = getRuntimeLocale(),
 ) {
   const primaryInput = {
     audio: fileUrl,
@@ -7140,14 +7556,22 @@ async function transcribeAudioWithReplicate(
       throw error;
     }
 
-    console.warn(`[Generate][${requestId}] Replicate 音频转写参数不兼容，自动降级为最小输入重试`);
+    console.warn(
+      locale === "zh"
+        ? `[Generate][${requestId}] Replicate 音频转写参数不兼容，自动降级为最小输入重试`
+        : `[Generate][${requestId}] Replicate audio transcription input is incompatible; retrying with fallback input`,
+    );
     payload = await createReplicatePrediction(requestId, modelId, fallbackInput);
   }
 
   const status = (payload.status ?? "").toLowerCase();
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 音频转写失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 音频转写失败${detail ? `: ${detail}` : ""}`
+        : `Replicate audio transcription failed${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   const finalPayload =
@@ -7155,19 +7579,29 @@ async function transcribeAudioWithReplicate(
       ? payload
       : await (() => {
           if (!payload.id) {
-            throw new Error("Replicate 返回结果缺少 prediction id。");
+            throw new Error(
+              locale === "zh"
+                ? "Replicate 返回结果缺少 prediction id。"
+                : "Replicate response is missing a prediction id.",
+            );
           }
 
           return waitForReplicatePredictionResult(
             payload.id,
             REPLICATE_AUDIO_TASK_TIMEOUT_MS,
-            `Replicate 音频转写超时，请稍后重试。prediction_id: ${payload.id}`,
+            locale === "zh"
+              ? `Replicate 音频转写超时，请稍后重试。prediction_id: ${payload.id}`
+              : `Replicate audio transcription timed out. Please try again later. prediction_id: ${payload.id}`,
           );
         })();
 
   const transcriptionText = extractReplicateTranscriptionText(finalPayload.output);
   if (!transcriptionText) {
-    throw new Error("Replicate 音频转写结果为空。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 音频转写结果为空。"
+        : "Replicate audio transcription returned empty text.",
+    );
   }
 
   return transcriptionText;
@@ -7194,7 +7628,9 @@ async function rewriteAudioTranscriptWithReplicate(input: {
   instruction: string;
   transcript: string;
   modelId: string;
+  locale?: PromptLocale;
 }) {
+  const locale = input.locale ?? getRuntimeLocale();
   const normalizedModelId = normalizeReplicateTextModelId(input.modelId);
   const prompt = buildReplicateAudioEditingPrompt(input.instruction, input.transcript);
   const primaryInput = {
@@ -7215,14 +7651,22 @@ async function rewriteAudioTranscriptWithReplicate(input: {
       throw error;
     }
 
-    console.warn(`[Generate][${input.requestId}] Replicate 音频改写参数不兼容，自动降级为最小输入重试`);
+    console.warn(
+      locale === "zh"
+        ? `[Generate][${input.requestId}] Replicate 音频改写参数不兼容，自动降级为最小输入重试`
+        : `[Generate][${input.requestId}] Replicate audio rewrite input is incompatible; retrying with fallback input`,
+    );
     payload = await createReplicatePrediction(input.requestId, normalizedModelId, fallbackInput);
   }
 
   const status = (payload.status ?? "").toLowerCase();
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 音频改写失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 音频改写失败${detail ? `: ${detail}` : ""}`
+        : `Replicate audio rewrite failed${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   const finalPayload =
@@ -7230,19 +7674,29 @@ async function rewriteAudioTranscriptWithReplicate(input: {
       ? payload
       : await (() => {
           if (!payload.id) {
-            throw new Error("Replicate 返回结果缺少 prediction id。");
+            throw new Error(
+              locale === "zh"
+                ? "Replicate 返回结果缺少 prediction id。"
+                : "Replicate response is missing a prediction id.",
+            );
           }
 
           return waitForReplicatePredictionResult(
             payload.id,
             REPLICATE_TEXT_TASK_TIMEOUT_MS,
-            `Replicate 音频改写超时，请稍后重试。prediction_id: ${payload.id}`,
+            locale === "zh"
+              ? `Replicate 音频改写超时，请稍后重试。prediction_id: ${payload.id}`
+              : `Replicate audio rewrite timed out. Please try again later. prediction_id: ${payload.id}`,
           );
         })();
 
   const rewrittenText = extractReplicateTextOutput(finalPayload.output).trim();
   if (!rewrittenText) {
-    throw new Error("音频编辑文案改写失败，未返回有效文本。");
+    throw new Error(
+      locale === "zh"
+        ? "音频编辑文案改写失败，未返回有效文本。"
+        : "Audio script rewriting returned no usable text.",
+    );
   }
 
   return rewrittenText;
@@ -7254,31 +7708,46 @@ async function editAudioWithReplicate(input: {
   prompt: string;
   file: File;
   db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
+  locale?: PromptLocale;
 }) {
+  const locale = input.locale ?? getRuntimeLocale();
   const pipeline = getReplicateAudioEditingPipelineModelIds(input.modelId);
-  const uploaded = await uploadInputFileForEditing(input.db, input.requestId, "audio-edit", input.file);
+  const uploaded = await uploadInputFileForEditing(
+    input.db,
+    input.requestId,
+    "audio-edit",
+    input.file,
+    locale,
+  );
   const transcript = await transcribeAudioWithReplicate(
     input.requestId,
     pipeline.transcriptionModelId,
     uploaded.publicUrl,
+    locale,
   );
   const rewrittenScript = await rewriteAudioTranscriptWithReplicate({
     requestId: input.requestId,
     instruction: input.prompt,
     transcript,
     modelId: pipeline.rewriteModelId,
+    locale,
   });
   const synthesized = await generateAudioWithReplicate(
     input.requestId,
     pipeline.synthesisModelId,
     rewrittenScript,
+    locale,
   );
   const audioUrls = extractReplicateOutputUrls(synthesized.output).slice(
     0,
     DEFAULT_AUDIO_OUTPUT_COUNT,
   );
   if (audioUrls.length === 0) {
-    throw new Error("Replicate 音频重配未返回可用音频链接，请稍后重试。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 音频重配未返回可用音频链接，请稍后重试。"
+        : "Replicate audio remix did not return any usable audio URL. Please try again later.",
+    );
   }
 
   return {
@@ -7327,6 +7796,14 @@ function extractDashScopeAudioBase64(payload: unknown) {
   };
 }
 
+type RemoteGeneratedMediaKind = "image" | "audio" | "video";
+
+type StoredRemoteGeneratedMedia = {
+  fileName: string;
+  previewUrl: string;
+  downloadUrl: string;
+};
+
 const IMAGE_FILE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
   "image/bmp": "bmp",
   "image/gif": "gif",
@@ -7336,6 +7813,54 @@ const IMAGE_FILE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
   "image/png": "png",
   "image/svg+xml": "svg",
   "image/webp": "webp",
+};
+const IMAGE_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
+  bmp: "image/bmp",
+  gif: "image/gif",
+  heic: "image/heic",
+  heif: "image/heif",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  svg: "image/svg+xml",
+  webp: "image/webp",
+};
+const AUDIO_FILE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "audio/aac": "aac",
+  "audio/flac": "flac",
+  "audio/m4a": "m4a",
+  "audio/mp3": "mp3",
+  "audio/mp4": "m4a",
+  "audio/mpeg": "mp3",
+  "audio/ogg": "ogg",
+  "audio/wav": "wav",
+  "audio/webm": "webm",
+  "audio/x-wav": "wav",
+};
+const AUDIO_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
+  aac: "audio/aac",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  wav: "audio/wav",
+  webm: "audio/webm",
+};
+const VIDEO_FILE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-m4v": "m4v",
+  "video/x-matroska": "mkv",
+  "video/x-msvideo": "avi",
+};
+const VIDEO_MIME_TYPE_BY_EXTENSION: Record<string, string> = {
+  avi: "video/x-msvideo",
+  m4v: "video/x-m4v",
+  mkv: "video/x-matroska",
+  mov: "video/quicktime",
+  mp4: "video/mp4",
+  webm: "video/webm",
 };
 
 function buildGeneratedFileUrl(
@@ -7374,13 +7899,132 @@ function getImageFileExtension(mimeType: string, fallbackUrl: string) {
   );
 }
 
-async function storeRemoteImageAsGeneratedFile(input: {
+function getAudioFileExtension(mimeType: string, fallbackUrl: string) {
+  const normalizedMimeType = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return (
+    AUDIO_FILE_EXTENSION_BY_MIME_TYPE[normalizedMimeType] ??
+    getFileExtensionFromUrl(fallbackUrl) ??
+    getAudioFileExtensionFromMimeType(normalizedMimeType)
+  );
+}
+
+function getVideoFileExtension(mimeType: string, fallbackUrl: string) {
+  const normalizedMimeType = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return (
+    VIDEO_FILE_EXTENSION_BY_MIME_TYPE[normalizedMimeType] ??
+    getFileExtensionFromUrl(fallbackUrl) ??
+    "mp4"
+  );
+}
+
+function resolveRemoteGeneratedMediaMimeType(
+  kind: RemoteGeneratedMediaKind,
+  mimeType: string,
+  fallbackUrl: string,
+) {
+  const normalizedMimeType = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (normalizedMimeType.startsWith(`${kind}/`)) {
+    return normalizedMimeType;
+  }
+
+  const extension = getFileExtensionFromUrl(fallbackUrl) ?? "";
+  if (kind === "image") {
+    return IMAGE_MIME_TYPE_BY_EXTENSION[extension] ?? "image/png";
+  }
+  if (kind === "audio") {
+    return AUDIO_MIME_TYPE_BY_EXTENSION[extension] ?? "audio/mpeg";
+  }
+
+  return VIDEO_MIME_TYPE_BY_EXTENSION[extension] ?? "video/mp4";
+}
+
+function isCompatibleRemoteGeneratedMediaType(
+  kind: RemoteGeneratedMediaKind,
+  mimeType: string,
+  fallbackUrl: string,
+) {
+  const normalizedMimeType = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (normalizedMimeType.startsWith(`${kind}/`)) {
+    return true;
+  }
+
+  const extension = getFileExtensionFromUrl(fallbackUrl) ?? "";
+  if (kind === "image") {
+    return extension in IMAGE_MIME_TYPE_BY_EXTENSION;
+  }
+  if (kind === "audio") {
+    return extension in AUDIO_MIME_TYPE_BY_EXTENSION;
+  }
+
+  return extension in VIDEO_MIME_TYPE_BY_EXTENSION;
+}
+
+function getRemoteGeneratedMediaFileExtension(
+  kind: RemoteGeneratedMediaKind,
+  mimeType: string,
+  fallbackUrl: string,
+) {
+  if (kind === "image") {
+    return getImageFileExtension(mimeType, fallbackUrl);
+  }
+  if (kind === "audio") {
+    return getAudioFileExtension(mimeType, fallbackUrl);
+  }
+
+  return getVideoFileExtension(mimeType, fallbackUrl);
+}
+
+function getRemoteGeneratedMediaLabel(kind: RemoteGeneratedMediaKind, locale: PromptLocale) {
+  if (locale === "zh") {
+    if (kind === "image") {
+      return "图片";
+    }
+    if (kind === "audio") {
+      return "音频";
+    }
+    return "视频";
+  }
+
+  return kind;
+}
+
+function buildRemoteGeneratedMediaDownloadError(
+  kind: RemoteGeneratedMediaKind,
+  locale: PromptLocale,
+  status: number,
+  detail: string,
+) {
+  const mediaLabel = getRemoteGeneratedMediaLabel(kind, locale);
+  if (locale === "zh") {
+    return `生成${mediaLabel}下载失败 (HTTP ${status})${detail ? `: ${detail}` : ""}`;
+  }
+
+  return `Failed to download generated ${mediaLabel} (HTTP ${status})${detail ? `: ${detail}` : ""}`;
+}
+
+function buildRemoteGeneratedMediaTypeError(
+  kind: RemoteGeneratedMediaKind,
+  locale: PromptLocale,
+  mimeType: string,
+) {
+  const mediaLabel = getRemoteGeneratedMediaLabel(kind, locale);
+  if (locale === "zh") {
+    return `生成${mediaLabel}返回了非${mediaLabel}内容: ${mimeType}`;
+  }
+
+  return `Generated ${mediaLabel} response returned non-${mediaLabel} content: ${mimeType}`;
+}
+
+async function storeRemoteGeneratedMediaAsFile(input: {
   origin: string;
   requestId: string;
   sourceUrl: string;
   provider: GenerationItem["provider"];
   index: number;
-}) {
+  kind: RemoteGeneratedMediaKind;
+  locale?: PromptLocale;
+}): Promise<StoredRemoteGeneratedMedia> {
+  const locale = input.locale ?? getRuntimeLocale();
   const response = await providerFetch(
     getProxyProviderByModelProvider(input.provider),
     input.sourceUrl,
@@ -7393,18 +8037,34 @@ async function storeRemoteImageAsGeneratedFile(input: {
   if (!response.ok) {
     const detail = (await response.text()).trim();
     throw new Error(
-      `生成图片下载失败 (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
+      buildRemoteGeneratedMediaDownloadError(input.kind, locale, response.status, detail),
     );
   }
 
-  const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "image/png";
-  if (!mimeType.startsWith("image/")) {
-    throw new Error(`生成图片返回了非图片内容: ${mimeType}`);
+  const responseMimeType =
+    response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() || "";
+  if (!isCompatibleRemoteGeneratedMediaType(input.kind, responseMimeType, input.sourceUrl)) {
+    throw new Error(
+      buildRemoteGeneratedMediaTypeError(
+        input.kind,
+        locale,
+        responseMimeType || "application/octet-stream",
+      ),
+    );
   }
 
+  const mimeType = resolveRemoteGeneratedMediaMimeType(
+    input.kind,
+    responseMimeType,
+    input.sourceUrl,
+  );
   const bytes = new Uint8Array(await response.arrayBuffer());
-  const fileExtension = getImageFileExtension(mimeType, input.sourceUrl);
-  const fileName = `image-${input.index + 1}-${input.requestId.slice(0, 8)}.${fileExtension}`;
+  const fileExtension = getRemoteGeneratedMediaFileExtension(
+    input.kind,
+    mimeType,
+    input.sourceUrl,
+  );
+  const fileName = `${input.kind}-${input.index + 1}-${input.requestId.slice(0, 8)}.${fileExtension}`;
   const stored = storeGeneratedFile({
     fileName,
     mimeType,
@@ -7415,6 +8075,68 @@ async function storeRemoteImageAsGeneratedFile(input: {
     fileName,
     previewUrl: buildGeneratedFileUrl(input.origin, stored.id, fileName, "inline"),
     downloadUrl: buildGeneratedFileUrl(input.origin, stored.id, fileName, "attachment"),
+  };
+}
+
+async function storeRemoteImageAsGeneratedFile(input: {
+  origin: string;
+  requestId: string;
+  sourceUrl: string;
+  provider: GenerationItem["provider"];
+  index: number;
+}) {
+  return storeRemoteGeneratedMediaAsFile({
+    ...input,
+    kind: "image",
+  });
+}
+
+async function resolveGeneratedRemoteMediaOutputs(input: {
+  origin: string;
+  requestId: string;
+  sourceUrls: string[];
+  provider: GenerationItem["provider"];
+  kind: RemoteGeneratedMediaKind;
+  locale?: PromptLocale;
+}) {
+  const locale = input.locale ?? getRuntimeLocale();
+  const settled = await Promise.allSettled(
+    input.sourceUrls.map((sourceUrl, index) =>
+      storeRemoteGeneratedMediaAsFile({
+        origin: input.origin,
+        requestId: input.requestId,
+        sourceUrl,
+        provider: input.provider,
+        index,
+        kind: input.kind,
+        locale,
+      }),
+    ),
+  );
+
+  const resolved = settled.map((result, index) => {
+    if (result.status === "fulfilled") {
+      return result.value;
+    }
+
+    console.warn(
+      `[Generate][${input.requestId}] Generated ${input.kind} asset fallback to remote URL for item ${index + 1}`,
+      result.reason,
+    );
+
+    return {
+      fileName: `${input.kind}-${index + 1}`,
+      previewUrl: input.sourceUrls[index] ?? "",
+      downloadUrl: input.sourceUrls[index] ?? "",
+    } satisfies StoredRemoteGeneratedMedia;
+  });
+
+  return {
+    mediaUrls: resolved.map((item) => item.previewUrl),
+    downloadLinks: resolved.map((item) => ({
+      label: item.fileName,
+      url: item.downloadUrl,
+    })),
   };
 }
 
@@ -7716,7 +8438,9 @@ async function waitForReplicateDetectionResult(input: {
   primaryInput: Record<string, unknown>;
   fallbackInput: Record<string, unknown>;
   timeoutMessage: string;
+  locale?: PromptLocale;
 }) {
+  const locale = input.locale ?? getRuntimeLocale();
   let payload: ReplicatePredictionPayload;
   try {
     payload = await createReplicatePrediction(
@@ -7739,7 +8463,11 @@ async function waitForReplicateDetectionResult(input: {
   const status = (payload.status ?? "").toLowerCase();
   if (status === "failed" || status === "canceled") {
     const detail = extractReplicateErrorText(payload.error);
-    throw new Error(`Replicate 检测失败${detail ? `: ${detail}` : ""}`);
+    throw new Error(
+      locale === "zh"
+        ? `Replicate 检测失败${detail ? `: ${detail}` : ""}`
+        : `Replicate detection failed${detail ? `: ${detail}` : ""}`,
+    );
   }
 
   const finalPayload =
@@ -7747,7 +8475,11 @@ async function waitForReplicateDetectionResult(input: {
       ? payload
       : await (() => {
           if (!payload.id) {
-            throw new Error("Replicate 返回结果缺少 prediction id。");
+            throw new Error(
+              locale === "zh"
+                ? "Replicate 返回结果缺少 prediction id。"
+                : "Replicate response is missing a prediction id.",
+            );
           }
 
           return waitForReplicatePredictionResult(
@@ -7759,7 +8491,11 @@ async function waitForReplicateDetectionResult(input: {
 
   const content = extractReplicateTextOutput(finalPayload.output);
   if (!content.trim()) {
-    throw new Error("Replicate 检测未返回可解析内容。");
+    throw new Error(
+      locale === "zh"
+        ? "Replicate 检测未返回可解析内容。"
+        : "Replicate detection returned no parseable content.",
+    );
   }
 
   return normalizeDetectionResult(content);
@@ -7818,7 +8554,7 @@ async function detectDocumentWithReplicate(input: {
   file: File;
   locale: "zh" | "en";
 }) {
-  const extractedText = await extractDetectableDocumentText(input.file);
+  const extractedText = await extractDetectableDocumentText(input.file, input.locale);
   if (!extractedText.trim()) {
     throw new Error(
       input.locale === "zh"
@@ -7840,7 +8576,11 @@ async function detectDocumentWithReplicate(input: {
     modelId: normalizedModelId,
     primaryInput,
     fallbackInput,
-    timeoutMessage: `Replicate 文档检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+    timeoutMessage:
+      input.locale === "zh"
+        ? `Replicate 文档检测超时，请稍后重试。model_id: ${normalizedModelId}`
+        : `Replicate document detection timed out. Please try again later. model_id: ${normalizedModelId}`,
+    locale: input.locale,
   });
 }
 
@@ -7864,7 +8604,11 @@ async function detectImageWithReplicate(input: {
     modelId: normalizedModelId,
     primaryInput,
     fallbackInput,
-    timeoutMessage: `Replicate 视觉检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+    timeoutMessage:
+      input.locale === "zh"
+        ? `Replicate 视觉检测超时，请稍后重试。model_id: ${normalizedModelId}`
+        : `Replicate visual detection timed out. Please try again later. model_id: ${normalizedModelId}`,
+    locale: input.locale,
   });
 }
 
@@ -7880,6 +8624,7 @@ async function detectAudioWithDashScope(input: {
     input.requestId,
     "audio-detect",
     input.file,
+    input.locale,
   );
 
   const rawText = await requestDashScopeChatCompletionStreamText({
@@ -7923,11 +8668,16 @@ async function detectAudioWithReplicate(input: {
     input.requestId,
     "audio-detect",
     input.file,
+    input.locale,
   );
   const normalizedModelId = resolveReplicateAudioDetectionModelId(input.modelId);
   const systemPrompt = buildReplicateAudioDetectionSystemPrompt(input.locale);
   const userPrompt = buildReplicateAudioDetectionUserPrompt(input.file.name, input.locale);
   const compactPrompt = buildReplicateCompactAudioDetectionPrompt(input.file.name, input.locale);
+  const timeoutMessage =
+    input.locale === "zh"
+      ? `Replicate 音频检测超时，请稍后重试。model_id: ${normalizedModelId}`
+      : `Replicate audio detection timed out. Please try again later. model_id: ${normalizedModelId}`;
 
   if (normalizedModelId === "lucataco/qwen2.5-omni-7b") {
     return waitForReplicateDetectionResult({
@@ -7944,7 +8694,8 @@ async function detectAudioWithReplicate(input: {
         prompt: compactPrompt,
         generate_audio: false,
       },
-      timeoutMessage: `Replicate 音频检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+      timeoutMessage,
+      locale: input.locale,
     });
   }
 
@@ -7966,7 +8717,8 @@ async function detectAudioWithReplicate(input: {
         output_type: "text",
         return_json: true,
       },
-      timeoutMessage: `Replicate 音频检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+      timeoutMessage,
+      locale: input.locale,
     });
   }
 
@@ -7985,7 +8737,8 @@ async function detectAudioWithReplicate(input: {
         llm_prompt: compactPrompt,
         include_timestamps: false,
       },
-      timeoutMessage: `Replicate 音频检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+      timeoutMessage,
+      locale: input.locale,
     });
   }
 
@@ -8003,7 +8756,8 @@ async function detectAudioWithReplicate(input: {
       audio: uploaded.publicUrl,
       prompt: compactPrompt,
     },
-    timeoutMessage: `Replicate 音频检测超时，请稍后重试。model_id: ${normalizedModelId}`,
+    timeoutMessage,
+    locale: input.locale,
   });
 }
 
@@ -8707,7 +9461,12 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "file-detection") {
       if (!inputFile) {
-        return returnTrackedGenerateError("请上传待检测文档。", 400);
+        return returnTrackedGenerateError(
+          detectionLocale === "zh"
+            ? "请上传待检测文档。"
+            : "Please upload the document to detect.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -8769,7 +9528,12 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "image-detection") {
       if (!inputFile) {
-        return returnTrackedGenerateError("请上传待检测图片。", 400);
+        return returnTrackedGenerateError(
+          detectionLocale === "zh"
+            ? "请上传待检测图片。"
+            : "Please upload the image to detect.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -8787,7 +9551,11 @@ export async function POST(req: Request) {
             })
           : await (async () => {
               if (!runtimeDbClient) {
-                throw new Error("图片检测缺少运行时数据库上下文。");
+                throw new Error(
+                  detectionLocale === "zh"
+                    ? "图片检测缺少运行时数据库上下文。"
+                    : "Image detection is missing the runtime database context.",
+                );
               }
 
               const uploaded = await uploadInputFileForEditing(
@@ -8795,6 +9563,7 @@ export async function POST(req: Request) {
                 requestId,
                 "image-detect",
                 inputFile,
+                detectionLocale,
               );
               return detectImageWithReplicate({
                 requestId,
@@ -8845,7 +9614,12 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "audio-detection") {
       if (!inputFile) {
-        return returnTrackedGenerateError("请上传待检测音频。", 400);
+        return returnTrackedGenerateError(
+          detectionLocale === "zh"
+            ? "请上传待检测音频。"
+            : "Please upload the audio to detect.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -8857,7 +9631,11 @@ export async function POST(req: Request) {
         modelConfig.provider === "aliyun"
           ? await (async () => {
               if (!runtimeDbClient) {
-                throw new Error("音频检测缺少运行时数据库上下文。");
+                throw new Error(
+                  detectionLocale === "zh"
+                    ? "音频检测缺少运行时数据库上下文。"
+                    : "Audio detection is missing the runtime database context.",
+                );
               }
 
               return detectAudioWithDashScope({
@@ -8870,7 +9648,11 @@ export async function POST(req: Request) {
             })()
           : await (async () => {
               if (!runtimeDbClient) {
-                throw new Error("音频检测缺少运行时数据库上下文。");
+                throw new Error(
+                  detectionLocale === "zh"
+                    ? "音频检测缺少运行时数据库上下文。"
+                    : "Audio detection is missing the runtime database context.",
+                );
               }
 
               return detectAudioWithReplicate({
@@ -8922,10 +9704,20 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "video-detection") {
       if (!inputFile) {
-        return returnTrackedGenerateError("请上传待检测视频。", 400);
+        return returnTrackedGenerateError(
+          detectionLocale === "zh"
+            ? "请上传待检测视频。"
+            : "Please upload the video to detect.",
+          400,
+        );
       }
       if (frameFiles.length === 0) {
-        return returnTrackedGenerateError("视频检测缺少关键帧，请重新上传后重试。", 400);
+        return returnTrackedGenerateError(
+          detectionLocale === "zh"
+            ? "视频检测缺少关键帧，请重新上传后重试。"
+            : "Video detection is missing extracted keyframes. Please re-upload and try again.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -8943,7 +9735,11 @@ export async function POST(req: Request) {
             })
           : await (async () => {
               if (!runtimeDbClient) {
-                throw new Error("视频检测缺少运行时数据库上下文。");
+                throw new Error(
+                  detectionLocale === "zh"
+                    ? "视频检测缺少运行时数据库上下文。"
+                    : "Video detection is missing the runtime database context.",
+                );
               }
 
               const runtimeDb = runtimeDbClient;
@@ -8955,6 +9751,7 @@ export async function POST(req: Request) {
                     requestId,
                     `video-detect-frame-${index + 1}`,
                     frame,
+                    detectionLocale,
                   );
                   return uploaded.publicUrl;
                 }),
@@ -9166,7 +9963,12 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "file-editing") {
       if (!(inputFile instanceof File)) {
-        return returnTrackedGenerateError("请先上传需要编辑的文档。", 400);
+        return returnTrackedGenerateError(
+          runtimeLocale === "zh"
+            ? "请先上传需要编辑的文档。"
+            : "Please upload the document you want to edit first.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -9177,7 +9979,7 @@ export async function POST(req: Request) {
       const requestedFormats = getDocumentEditOutputFormats(inputFile.name);
       const requireSpreadsheet = shouldRequireSpreadsheet(requestedFormats);
       const origin = new URL(req.url).origin;
-      const directEditResult = await tryPerformDirectDocumentEdit(inputFile, prompt);
+      const directEditResult = await tryPerformDirectDocumentEdit(inputFile, prompt, runtimeLocale);
       const editedDocument = directEditResult
         ? null
         : modelConfig.provider === "aliyun"
@@ -9194,6 +9996,7 @@ export async function POST(req: Request) {
               prompt,
               file: inputFile,
               requireSpreadsheet,
+              locale: runtimeLocale,
             });
       const generatedFiles = directEditResult
         ? directEditResult.generatedFiles
@@ -9260,11 +10063,21 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "audio-editing") {
       if (!(inputFile instanceof File)) {
-        return returnTrackedGenerateError("请先上传需要编辑的音频。", 400);
+        return returnTrackedGenerateError(
+          runtimeLocale === "zh"
+            ? "请先上传需要编辑的音频。"
+            : "Please upload the audio you want to edit first.",
+          400,
+        );
       }
 
       if (!runtimeDbClient) {
-        return returnTrackedGenerateError("编辑上传服务暂时不可用，请稍后重试。", 503);
+        return returnTrackedGenerateError(
+          runtimeLocale === "zh"
+            ? "编辑上传服务暂时不可用，请稍后重试。"
+            : "The upload service for editing is temporarily unavailable. Please try again later.",
+          503,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -9289,7 +10102,23 @@ export async function POST(req: Request) {
               prompt,
               file: inputFile,
               db: runtimeDbClient,
+              locale: runtimeLocale,
             });
+
+      const resolvedAudio =
+        modelConfig.provider === "replicate"
+          ? await resolveGeneratedRemoteMediaOutputs({
+              origin,
+              requestId,
+              sourceUrls: audioEditResult.audioUrls,
+              provider: modelConfig.provider,
+              kind: "audio",
+              locale: runtimeLocale,
+            })
+          : {
+              mediaUrls: audioEditResult.audioUrls,
+              downloadLinks: audioEditResult.downloadLinks,
+            };
 
       const result: GenerationItem = {
         id: requestId,
@@ -9299,10 +10128,10 @@ export async function POST(req: Request) {
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: buildAudioEditSummary(audioEditResult.audioUrls.length, runtimeLocale),
+        summary: buildAudioEditSummary(resolvedAudio.mediaUrls.length, runtimeLocale),
         text: audioEditResult.rewrittenScript,
-        audioUrls: audioEditResult.audioUrls,
-        downloadLinks: audioEditResult.downloadLinks,
+        audioUrls: resolvedAudio.mediaUrls,
+        downloadLinks: resolvedAudio.downloadLinks,
         createdAt: new Date().toISOString(),
       };
       const persistedResult = await persistGenerationResult(result, {
@@ -9317,7 +10146,7 @@ export async function POST(req: Request) {
           type,
           model_id: modelConfig.id,
           model_provider: modelConfig.provider,
-          output_count: audioEditResult.audioUrls.length,
+          output_count: resolvedAudio.mediaUrls.length,
           duration_ms: requestTimer.getTotalMs(),
           is_guest: isGuestRequest,
         },
@@ -9329,7 +10158,12 @@ export async function POST(req: Request) {
 
     if (modelConfig.mode === "image-editing") {
       if (!(inputFile instanceof File)) {
-        return returnTrackedGenerateError("请先上传需要编辑的图片。", 400);
+        return returnTrackedGenerateError(
+          runtimeLocale === "zh"
+            ? "请先上传需要编辑的图片。"
+            : "Please upload the image you want to edit first.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -9342,7 +10176,11 @@ export async function POST(req: Request) {
           ? await editImageWithDashScope(modelConfig.id, prompt, inputFile)
           : await (() => {
               if (!runtimeDbClient) {
-                throw new Error("编辑上传服务暂时不可用，请稍后重试。");
+                throw new Error(
+                  runtimeLocale === "zh"
+                    ? "编辑上传服务暂时不可用，请稍后重试。"
+                    : "The upload service for editing is temporarily unavailable. Please try again later.",
+                );
               }
 
               return editImageWithReplicate({
@@ -9351,6 +10189,7 @@ export async function POST(req: Request) {
                 prompt,
                 file: inputFile,
                 db: runtimeDbClient,
+                locale: runtimeLocale,
               });
             })();
       const imageUrls = extractReplicateOutputUrls(imagePayload.output).slice(
@@ -9361,22 +10200,21 @@ export async function POST(req: Request) {
         throw new Error(
           modelConfig.provider === "aliyun"
             ? "阿里云百炼图片编辑未返回可用图片链接，请稍后重试。"
-            : "Replicate 图片编辑未返回可用图片链接，请稍后重试。",
+            : runtimeLocale === "zh"
+              ? "Replicate 图片编辑未返回可用图片链接，请稍后重试。"
+              : "Replicate image editing did not return any usable image URL. Please try again later.",
         );
       }
 
       const origin = new URL(req.url).origin;
-      const localImages = await Promise.all(
-        imageUrls.map((sourceUrl, index) =>
-          storeRemoteImageAsGeneratedFile({
-            origin,
-            requestId,
-            sourceUrl,
-            provider: modelConfig.provider,
-            index,
-          }),
-        ),
-      );
+      const resolvedImages = await resolveGeneratedRemoteMediaOutputs({
+        origin,
+        requestId,
+        sourceUrls: imageUrls,
+        provider: modelConfig.provider,
+        kind: "image",
+        locale: runtimeLocale,
+      });
 
       const result: GenerationItem = {
         id: requestId,
@@ -9386,12 +10224,9 @@ export async function POST(req: Request) {
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: buildImageEditSummary(localImages.length, runtimeLocale),
-        imageUrls: localImages.map((item) => item.previewUrl),
-        downloadLinks: localImages.map((item) => ({
-          label: item.fileName,
-          url: item.downloadUrl,
-        })),
+        summary: buildImageEditSummary(resolvedImages.mediaUrls.length, runtimeLocale),
+        imageUrls: resolvedImages.mediaUrls,
+        downloadLinks: resolvedImages.downloadLinks,
         createdAt: new Date().toISOString(),
       };
       const persistedResult = await persistGenerationResult(result, {
@@ -9405,7 +10240,7 @@ export async function POST(req: Request) {
           type,
           model_id: modelConfig.id,
           model_provider: modelConfig.provider,
-          output_count: localImages.length,
+          output_count: resolvedImages.mediaUrls.length,
           duration_ms: requestTimer.getTotalMs(),
           is_guest: isGuestRequest,
         },
@@ -9427,21 +10262,36 @@ export async function POST(req: Request) {
           ? await generateAudioWithDashScope(modelConfig.id, prompt, origin)
           : await (async () => {
               getReplicateApiKeyOrThrow();
-              const prediction = await generateAudioWithReplicate(requestId, modelConfig.id, prompt);
+              const prediction = await generateAudioWithReplicate(
+                requestId,
+                modelConfig.id,
+                prompt,
+                runtimeLocale,
+              );
               const audioUrls = extractReplicateOutputUrls(prediction.output).slice(
                 0,
                 DEFAULT_AUDIO_OUTPUT_COUNT,
               );
               if (audioUrls.length === 0) {
-                throw new Error("Replicate 音频生成未返回可用音频链接，请稍后重试。");
+                throw new Error(
+                  runtimeLocale === "zh"
+                    ? "Replicate 音频生成未返回可用音频链接，请稍后重试。"
+                    : "Replicate audio generation did not return any usable audio URL. Please try again.",
+                );
               }
 
+              const resolvedAudio = await resolveGeneratedRemoteMediaOutputs({
+                origin,
+                requestId,
+                sourceUrls: audioUrls,
+                provider: modelConfig.provider,
+                kind: "audio",
+                locale: runtimeLocale,
+              });
+
               return {
-                audioUrls,
-                downloadLinks: audioUrls.map((url, index) => ({
-                  label: `audio-${index + 1}`,
-                  url,
-                })),
+                audioUrls: resolvedAudio.mediaUrls,
+                downloadLinks: resolvedAudio.downloadLinks,
               };
             })();
 
@@ -9504,17 +10354,14 @@ export async function POST(req: Request) {
       }
 
       const origin = new URL(req.url).origin;
-      const localImages = await Promise.all(
-        imageUrls.map((sourceUrl, index) =>
-          storeRemoteImageAsGeneratedFile({
-            origin,
-            requestId,
-            sourceUrl,
-            provider: modelConfig.provider,
-            index,
-          }),
-        ),
-      );
+      const resolvedImages = await resolveGeneratedRemoteMediaOutputs({
+        origin,
+        requestId,
+        sourceUrls: imageUrls,
+        provider: modelConfig.provider,
+        kind: "image",
+        locale: runtimeLocale,
+      });
 
       const result: GenerationItem = {
         id: requestId,
@@ -9524,12 +10371,9 @@ export async function POST(req: Request) {
         modelLabel: modelConfig.label,
         provider: modelConfig.provider,
         status: "success",
-        summary: buildImageGenerationSummary(localImages.length, runtimeLocale),
-        imageUrls: localImages.map((item) => item.previewUrl),
-        downloadLinks: localImages.map((item) => ({
-          label: item.fileName,
-          url: item.downloadUrl,
-        })),
+        summary: buildImageGenerationSummary(resolvedImages.mediaUrls.length, runtimeLocale),
+        imageUrls: resolvedImages.mediaUrls,
+        downloadLinks: resolvedImages.downloadLinks,
         createdAt: new Date().toISOString(),
       };
       const persistedResult = await persistGenerationResult(result, null);
@@ -9541,7 +10385,7 @@ export async function POST(req: Request) {
           type,
           model_id: modelConfig.id,
           model_provider: modelConfig.provider,
-          output_count: localImages.length,
+          output_count: resolvedImages.mediaUrls.length,
           duration_ms: requestTimer.getTotalMs(),
           is_guest: isGuestRequest,
         },
@@ -9572,7 +10416,12 @@ export async function POST(req: Request) {
       }
 
       if (modelConfig.provider === "replicate" && !(inputFile instanceof File)) {
-        return returnTrackedGenerateError("请先上传需要编辑的视频。", 400);
+        return returnTrackedGenerateError(
+          runtimeLocale === "zh"
+            ? "请先上传需要编辑的视频。"
+            : "Please upload the video you want to edit first.",
+          400,
+        );
       }
 
       const userQuotaError = await reserveUserQuotaIfNeeded();
@@ -9581,7 +10430,11 @@ export async function POST(req: Request) {
       }
 
       if (modelConfig.provider === "replicate" && !runtimeDbClient) {
-        throw new Error("编辑上传服务暂时不可用，请稍后重试。");
+        throw new Error(
+          runtimeLocale === "zh"
+            ? "编辑上传服务暂时不可用，请稍后重试。"
+            : "The upload service for editing is temporarily unavailable. Please try again later.",
+        );
       }
 
       let usedReplicateReferenceKeyframe = false;
@@ -9603,21 +10456,42 @@ export async function POST(req: Request) {
                 keyframeFile,
                 frameFiles,
                 db: runtimeDbClient!,
+                locale: runtimeLocale,
               });
               usedReplicateReferenceKeyframe = replicateResult.usesReferenceKeyframe;
               return replicateResult.payload;
             })();
-      const videoUrls = extractReplicateOutputUrls(videoPayload.output).slice(
+      const rawVideoUrls = extractReplicateOutputUrls(videoPayload.output).slice(
         0,
         DEFAULT_VIDEO_OUTPUT_COUNT,
       );
-      if (videoUrls.length === 0) {
+      if (rawVideoUrls.length === 0) {
         throw new Error(
           modelConfig.provider === "aliyun"
             ? "阿里云百炼视频编辑未返回可用视频链接，请稍后重试。"
-            : "Replicate 视频编辑未返回可用视频链接，请稍后重试。",
+            : runtimeLocale === "zh"
+              ? "Replicate 视频编辑未返回可用视频链接，请稍后重试。"
+              : "Replicate video editing did not return any usable video URL. Please try again later.",
         );
       }
+
+      const resolvedVideos =
+        modelConfig.provider === "replicate"
+          ? await resolveGeneratedRemoteMediaOutputs({
+              origin: new URL(req.url).origin,
+              requestId,
+              sourceUrls: rawVideoUrls,
+              provider: modelConfig.provider,
+              kind: "video",
+              locale: runtimeLocale,
+            })
+          : {
+              mediaUrls: rawVideoUrls,
+              downloadLinks: rawVideoUrls.map((url, index) => ({
+                label: `video-${index + 1}`,
+                url,
+              })),
+            };
 
       const result: GenerationItem = {
         id: requestId,
@@ -9628,15 +10502,12 @@ export async function POST(req: Request) {
         provider: modelConfig.provider,
         status: "success",
         summary: buildVideoEditSummary(
-          videoUrls.length,
+          resolvedVideos.mediaUrls.length,
           runtimeLocale,
           modelConfig.provider === "aliyun" || usedReplicateReferenceKeyframe,
         ),
-        videoUrls,
-        downloadLinks: videoUrls.map((url, index) => ({
-          label: `video-${index + 1}`,
-          url,
-        })),
+        videoUrls: resolvedVideos.mediaUrls,
+        downloadLinks: resolvedVideos.downloadLinks,
         createdAt: new Date().toISOString(),
       };
       const persistedResult = await persistGenerationResult(result, {
@@ -9653,7 +10524,7 @@ export async function POST(req: Request) {
           type,
           model_id: modelConfig.id,
           model_provider: modelConfig.provider,
-          output_count: videoUrls.length,
+          output_count: resolvedVideos.mediaUrls.length,
           duration_ms: requestTimer.getTotalMs(),
           is_guest: isGuestRequest,
         },
@@ -9687,6 +10558,24 @@ export async function POST(req: Request) {
       );
     }
 
+    const resolvedVideos =
+      modelConfig.provider === "replicate"
+        ? await resolveGeneratedRemoteMediaOutputs({
+            origin: new URL(req.url).origin,
+            requestId,
+            sourceUrls: videoUrls,
+            provider: modelConfig.provider,
+            kind: "video",
+            locale: runtimeLocale,
+          })
+        : {
+            mediaUrls: videoUrls,
+            downloadLinks: videoUrls.map((url, index) => ({
+              label: `video-${index + 1}`,
+              url,
+            })),
+          };
+
     const result: GenerationItem = {
       id: requestId,
       type,
@@ -9695,12 +10584,9 @@ export async function POST(req: Request) {
       modelLabel: modelConfig.label,
       provider: modelConfig.provider,
       status: "success",
-      summary: buildVideoGenerationSummary(videoUrls.length, runtimeLocale),
-      videoUrls,
-      downloadLinks: videoUrls.map((url, index) => ({
-        label: `video-${index + 1}`,
-        url,
-      })),
+      summary: buildVideoGenerationSummary(resolvedVideos.mediaUrls.length, runtimeLocale),
+      videoUrls: resolvedVideos.mediaUrls,
+      downloadLinks: resolvedVideos.downloadLinks,
       createdAt: new Date().toISOString(),
     };
     const persistedResult = await persistGenerationResult(result, null);

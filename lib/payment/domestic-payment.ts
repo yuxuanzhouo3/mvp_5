@@ -488,6 +488,84 @@ function normalizeSubscriptionStatus(input: unknown) {
   return normalizeText(input, "").toLowerCase();
 }
 
+type DomesticCurrentPlanSnapshot = {
+  currentPlanCode: DomesticPlanCode | null;
+  planExpiresAt: string;
+  hasActivePaidPlan: boolean;
+  effectivePlanCode: DomesticPlanCode | "free";
+  activeSubscriptionRow: UserSubscriptionRow | null;
+};
+
+function isCurrentlyEffectiveDomesticSubscriptionRow(
+  row: Pick<UserSubscriptionRow, "status" | "current_period_end" | "plan_code">,
+  nowMs: number,
+) {
+  const planCode = resolveDomesticPlanCode(row.plan_code);
+  const status = normalizeSubscriptionStatus(row.status);
+  const periodEndIso = normalizeText(row.current_period_end, "");
+  const periodEndMs = periodEndIso ? new Date(periodEndIso).getTime() : 0;
+
+  return (
+    Boolean(planCode) &&
+    status !== "pending" &&
+    status !== "expired" &&
+    status !== "canceled" &&
+    Number.isFinite(periodEndMs) &&
+    periodEndMs > nowMs
+  );
+}
+
+function resolveDomesticCurrentPlanSnapshot(input: {
+  userRow?: AppUserRow | null;
+  subscriptionRows?: UserSubscriptionRow[];
+  now?: Date;
+}): DomesticCurrentPlanSnapshot {
+  const nowMs = (input.now || new Date()).getTime();
+  const activeSubscriptionRow =
+    [...(input.subscriptionRows || [])]
+      .filter((row) => isCurrentlyEffectiveDomesticSubscriptionRow(row, nowMs))
+      .sort((left, right) => compareByDateDesc(left.current_period_end, right.current_period_end))[0] ||
+    null;
+
+  const subscriptionPlanCode = resolveDomesticPlanCode(activeSubscriptionRow?.plan_code);
+  const subscriptionPlanExpiresAt = normalizeText(activeSubscriptionRow?.current_period_end, "");
+
+  if (subscriptionPlanCode && subscriptionPlanExpiresAt) {
+    return {
+      currentPlanCode: subscriptionPlanCode,
+      planExpiresAt: subscriptionPlanExpiresAt,
+      hasActivePaidPlan: true,
+      effectivePlanCode: subscriptionPlanCode,
+      activeSubscriptionRow,
+    };
+  }
+
+  const userPlanCode = resolveDomesticPlanCode(input.userRow?.current_plan_code);
+  const userPlanExpiresAt = normalizeText(input.userRow?.plan_expires_at, "");
+  const userPlanExpiresMs = userPlanExpiresAt ? new Date(userPlanExpiresAt).getTime() : 0;
+  const hasUserPaidPlan = Boolean(
+    userPlanCode && Number.isFinite(userPlanExpiresMs) && userPlanExpiresMs > nowMs,
+  );
+
+  if (userPlanCode && hasUserPaidPlan) {
+    return {
+      currentPlanCode: userPlanCode,
+      planExpiresAt: userPlanExpiresAt,
+      hasActivePaidPlan: true,
+      effectivePlanCode: userPlanCode,
+      activeSubscriptionRow: null,
+    };
+  }
+
+  return {
+    currentPlanCode: null,
+    planExpiresAt: "",
+    hasActivePaidPlan: false,
+    effectivePlanCode: "free",
+    activeSubscriptionRow: null,
+  };
+}
+
 export function isDomesticRuntime() {
   return resolveBackendFromLanguage() === "cloudbase";
 }
@@ -697,23 +775,37 @@ export async function assertDomesticSubscriptionPurchaseAllowed(input: {
     );
   }
 
-  const rows = await queryRows<AppUserRow>(
-    input.db
-      .from("app_users")
-      .select("id,source,current_plan_code,plan_expires_at")
-      .eq("id", input.userId)
-      .eq("source", DOMESTIC_SOURCE)
-      .limit(1),
-    "读取用户套餐状态失败",
-  );
+  const [userRows, subscriptionRows] = await Promise.all([
+    queryRows<AppUserRow>(
+      input.db
+        .from("app_users")
+        .select("id,source,current_plan_code,plan_expires_at")
+        .eq("id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(1),
+      "读取用户套餐状态失败",
+    ),
+    queryRows<UserSubscriptionRow>(
+      input.db
+        .from("user_subscriptions")
+        .select("id,plan_code,status,current_period_end")
+        .eq("user_id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(20),
+      "读取用户订阅状态失败",
+    ),
+  ]);
 
-  const userRow = rows[0];
-  const currentPlanCode = resolveDomesticPlanCode(userRow?.current_plan_code);
+  const currentPlanSnapshot = resolveDomesticCurrentPlanSnapshot({
+    userRow: userRows[0] || null,
+    subscriptionRows,
+  });
+  const currentPlanCode = currentPlanSnapshot.currentPlanCode;
   if (!currentPlanCode || currentPlanCode === input.targetPlanCode) {
     return;
   }
 
-  const expiresAtText = normalizeText(userRow?.plan_expires_at, "");
+  const expiresAtText = currentPlanSnapshot.planExpiresAt;
   const expiresAtMs = expiresAtText ? new Date(expiresAtText).getTime() : 0;
   if (expiresAtMs <= Date.now()) {
     return;
@@ -816,29 +908,15 @@ export async function prepareDomesticSubscriptionCheckout(input: {
     ),
   ]);
 
-  const userRow = userRows[0];
-  const activeSubscriptionRow = [...subscriptionRows]
-    .filter((row) => {
-      const status = normalizeSubscriptionStatus(row.status);
-      const periodEndMs = row.current_period_end
-        ? new Date(row.current_period_end).getTime()
-        : 0;
-      return (
-        status !== "pending" &&
-        status !== "expired" &&
-        status !== "canceled" &&
-        periodEndMs > Date.now()
-      );
-    })
-    .sort((left, right) =>
-      compareByDateDesc(left.current_period_end, right.current_period_end),
-    )[0];
-  const currentPlanCode = resolveDomesticPlanCode(userRow?.current_plan_code);
+  const currentPlanSnapshot = resolveDomesticCurrentPlanSnapshot({
+    userRow: userRows[0] || null,
+    subscriptionRows,
+  });
+  const activeSubscriptionRow = currentPlanSnapshot.activeSubscriptionRow;
+  const currentPlanCode = currentPlanSnapshot.currentPlanCode;
   const currentBillingPeriod =
     resolveDomesticBillingPeriod(activeSubscriptionRow?.billing_period) || "monthly";
-  const currentPlanExpiresAt =
-    normalizeText(activeSubscriptionRow?.current_period_end, "") ||
-    normalizeText(userRow?.plan_expires_at, "");
+  const currentPlanExpiresAt = currentPlanSnapshot.planExpiresAt;
   const currentPlanExpiresMs = currentPlanExpiresAt
     ? new Date(currentPlanExpiresAt).getTime()
     : 0;
@@ -994,25 +1072,32 @@ async function readCurrentDomesticQuotaSeed(input: {
   db: RoutedAdminDbClient;
   userId: string;
 }) {
-  const rows = await queryRows<AppUserRow>(
-    input.db
-      .from("app_users")
-      .select("id,current_plan_code,plan_expires_at")
-      .eq("id", input.userId)
-      .eq("source", DOMESTIC_SOURCE)
-      .limit(1),
-    "读取用户当前套餐失败",
-  );
+  const [userRows, subscriptionRows] = await Promise.all([
+    queryRows<AppUserRow>(
+      input.db
+        .from("app_users")
+        .select("id,current_plan_code,plan_expires_at")
+        .eq("id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(1),
+      "读取用户当前套餐失败",
+    ),
+    queryRows<UserSubscriptionRow>(
+      input.db
+        .from("user_subscriptions")
+        .select("id,plan_code,status,current_period_end")
+        .eq("user_id", input.userId)
+        .eq("source", DOMESTIC_SOURCE)
+        .limit(20),
+      "读取用户订阅状态失败",
+    ),
+  ]);
 
-  const row = rows[0];
-  const currentPlanCode = normalizeText(row?.current_plan_code, "free").toLowerCase();
-  const planExpiresAt = normalizeText(row?.plan_expires_at, "");
-  const planExpiresMs = planExpiresAt ? new Date(planExpiresAt).getTime() : 0;
-  const effectivePlanCode =
-    (currentPlanCode === "pro" || currentPlanCode === "enterprise") &&
-    planExpiresMs > Date.now()
-      ? currentPlanCode
-      : "free";
+  const currentPlanSnapshot = resolveDomesticCurrentPlanSnapshot({
+    userRow: userRows[0] || null,
+    subscriptionRows,
+  });
+  const effectivePlanCode = currentPlanSnapshot.effectivePlanCode;
 
   return readQuotaSeedDefinitionByCode({
     db: input.db,
@@ -1085,7 +1170,7 @@ export async function applyDueDomesticPendingSubscriptions(input: {
       );
 
       const activeRow = [...subscriptionRows]
-        .filter((row) => normalizeSubscriptionStatus(row.status) !== "pending")
+        .filter((row) => isCurrentlyEffectiveDomesticSubscriptionRow(row, now.getTime()))
         .sort((left, right) => compareByDateDesc(left.current_period_end, right.current_period_end))[0];
       const activePeriodEndIso = normalizeText(activeRow?.current_period_end, "");
       const activePeriodEndMs = activePeriodEndIso
@@ -1574,14 +1659,14 @@ async function upsertSubscription(input: {
     "��取用户订阅失败",
   );
 
+  const nowMs = new Date(input.nowIso).getTime();
   const latestActiveRow = [...rows]
-    .filter((row) => normalizeSubscriptionStatus(row.status) !== "pending")
+    .filter((row) => isCurrentlyEffectiveDomesticSubscriptionRow(row, nowMs))
     .sort((left, right) =>
       compareByDateDesc(left.current_period_end, right.current_period_end),
     )[0];
 
   const fromPlanCode = normalizeText(latestActiveRow?.plan_code, "free") as string;
-  const nowMs = new Date(input.nowIso).getTime();
   const currentPeriodEndIso = normalizeText(latestActiveRow?.current_period_end, "");
   const currentPeriodEndMs = currentPeriodEndIso
     ? new Date(currentPeriodEndIso).getTime()
@@ -1826,7 +1911,12 @@ async function upsertSubscription(input: {
         periodStart: normalizeText(row.current_period_start, ""),
         periodEnd: normalizeText(row.current_period_end, ""),
       }))
-      .filter((sub) => Boolean(sub.id));
+      .filter((sub) => Boolean(sub.id))
+      .sort(
+        (left, right) =>
+          compareByDateAsc(left.periodStart, right.periodStart) ||
+          compareByDateAsc(left.periodEnd, right.periodEnd),
+      );
 
     const toDeleteIds: string[] = [];
     const toKeepSubs: Array<{ id: string; planCode: string; billingPeriod: string }> = [];
@@ -2380,18 +2470,24 @@ export async function ensureDomesticUserQuotaState(input: {
 
   const userRow = userRows[0];
   const rawPlanCode = normalizeText(userRow?.current_plan_code, "free").toLowerCase();
+  const rawPlanExpiresAt = normalizeText(userRow?.plan_expires_at, "");
   const subscriptionStatus = normalizeText(userRow?.subscription_status, "inactive").toLowerCase();
-  const planExpiresAt = normalizeText(userRow?.plan_expires_at, "");
-  const planExpiresMs = planExpiresAt ? new Date(planExpiresAt).getTime() : 0;
-  const hasActivePaidPlan =
-    (rawPlanCode === "pro" || rawPlanCode === "enterprise") && planExpiresMs > nowMs;
-  const effectivePlanCode = hasActivePaidPlan ? rawPlanCode : "free";
+  const currentPlanSnapshot = resolveDomesticCurrentPlanSnapshot({
+    userRow,
+    subscriptionRows,
+    now,
+  });
+  const hasActivePaidPlan = currentPlanSnapshot.hasActivePaidPlan;
+  const effectivePlanCode = currentPlanSnapshot.effectivePlanCode;
+  const planExpiresAt = currentPlanSnapshot.planExpiresAt;
   const shouldUpdateUserPlanState =
     (hasActivePaidPlan && !["active", "trialing"].includes(subscriptionStatus)) ||
     (!hasActivePaidPlan &&
       (rawPlanCode !== "free" ||
         subscriptionStatus !== "inactive" ||
-        Boolean(planExpiresAt)));
+        Boolean(rawPlanExpiresAt))) ||
+    (hasActivePaidPlan &&
+      (rawPlanCode !== effectivePlanCode || rawPlanExpiresAt !== planExpiresAt));
 
   if (shouldUpdateUserPlanState) {
     await executeQuery(

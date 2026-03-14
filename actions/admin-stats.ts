@@ -106,6 +106,12 @@ type StatsSubscriptionRow = {
   current_period_end?: string | null;
 };
 
+type CurrentSubscribedUser = {
+  userId: string;
+  planCode: string;
+  planExpiresAt: string | null;
+};
+
 type StatsSessionRow = {
   source?: string | null;
   user_id?: string | null;
@@ -354,6 +360,73 @@ function buildDeviceDistribution(
   };
 }
 
+function isActiveSubscriptionStatus(status: string | null | undefined) {
+  const normalized = normalizeLowerText(status);
+  return normalized && !["pending", "expired", "canceled", "cancelled"].includes(normalized);
+}
+
+function buildCurrentSubscribedUsers(
+  users: StatsUserRow[],
+  subscriptions: StatsSubscriptionRow[],
+  nowMs: number,
+) {
+  const activeSubscriptionByUser = new Map<string, CurrentSubscribedUser>();
+
+  for (const item of subscriptions) {
+    const userId = normalizeKeyText(item.user_id);
+    const planCode = normalizeLowerText(item.plan_code, "free");
+    const planExpiresAt = item.current_period_end || null;
+    const planExpiresMs = toTimestampMs(planExpiresAt);
+
+    if (
+      !userId ||
+      !planCode ||
+      planCode === "free" ||
+      !isActiveSubscriptionStatus(item.status) ||
+      planExpiresMs === null ||
+      planExpiresMs < nowMs
+    ) {
+      continue;
+    }
+
+    const current = activeSubscriptionByUser.get(userId);
+    const currentExpiresMs = toTimestampMs(current?.planExpiresAt || null) ?? 0;
+    if (!current || planExpiresMs >= currentExpiresMs) {
+      activeSubscriptionByUser.set(userId, {
+        userId,
+        planCode,
+        planExpiresAt,
+      });
+    }
+  }
+
+  for (const item of users) {
+    const userId = normalizeKeyText(item.id);
+    const planCode = normalizeLowerText(item.current_plan_code, "free");
+    if (!userId || !planCode || planCode === "free" || activeSubscriptionByUser.has(userId)) {
+      continue;
+    }
+
+    const planExpiresMs = toTimestampMs(item.plan_expires_at);
+    if (planExpiresMs !== null && planExpiresMs < nowMs) {
+      continue;
+    }
+
+    const subscriptionStatus = normalizeLowerText(item.subscription_status);
+    if (planExpiresMs === null && !["active", "trialing"].includes(subscriptionStatus)) {
+      continue;
+    }
+
+    activeSubscriptionByUser.set(userId, {
+      userId,
+      planCode,
+      planExpiresAt: item.plan_expires_at || null,
+    });
+  }
+
+  return Array.from(activeSubscriptionByUser.values());
+}
+
 function ymd(date: Date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -510,23 +583,10 @@ export async function getDashboardStats(
       : { total: 0, today: 0, thisWeek: 0, thisMonth: 0 };
 
   const nowMs = Date.now();
-  const currentSubscribedUsers = users.filter((item) => {
-    const planCode = normalizeLowerText(item.current_plan_code, "free");
-    if (!planCode || planCode === "free") {
-      return false;
-    }
-
-    const planExpiresMs = toTimestampMs(item.plan_expires_at);
-    if (planExpiresMs !== null) {
-      return planExpiresMs >= nowMs;
-    }
-
-    const subscriptionStatus = normalizeLowerText(item.subscription_status);
-    return subscriptionStatus === "active" || subscriptionStatus === "trialing";
-  });
+  const currentSubscribedUsers = buildCurrentSubscribedUsers(users, subscriptions, nowMs);
   const byPlan: Record<string, number> = {};
   for (const item of currentSubscribedUsers) {
-    const plan = normalizeLowerText(item.current_plan_code, "free");
+    const plan = normalizeLowerText(item.planCode, "free");
     byPlan[plan] = (byPlan[plan] || 0) + 1;
   }
 

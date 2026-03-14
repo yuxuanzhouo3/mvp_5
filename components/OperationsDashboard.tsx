@@ -29,6 +29,19 @@ function getFileExtension(value: string) {
   return matched?.[1]?.toLowerCase() ?? "";
 }
 
+function buildPromptPreview(prompt: string, maxLength = 160) {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return normalized.slice(0, maxLength).trimEnd() + "?";
+}
+
 const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   generations,
   currentLanguage,
@@ -309,6 +322,14 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                 canDeletePersistedResults &&
                 Boolean(onDeleteGeneration) &&
                 !generation.id.startsWith("err_");
+              const shouldHideDocumentFullText =
+                (generation.type === "text" || generation.type === "edit_text") &&
+                Array.isArray(generation.downloadLinks) &&
+                generation.downloadLinks.length > 0;
+              const promptPreviewText = buildPromptPreview(
+                generation.prompt,
+                generation.type === "text" || generation.type === "edit_text" ? 120 : 160,
+              );
 
               return (
               <div
@@ -352,9 +373,9 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
               </div>
 
               <div className="text-sm text-gray-700 dark:text-gray-200 leading-6 space-y-1">
-                {generation.prompt.split(/(?<=\s)(?=编辑要求:|编辑文件:)/g).map((line, i) => (
-                  <p key={i} className="break-words">{line.trim()}</p>
-                ))}
+                {promptPreviewText ? (
+                  <p className="break-words">{promptPreviewText}</p>
+                ) : null}
               </div>
 
               {generation.summary && (
@@ -369,7 +390,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                 </p>
               )}
 
-              {generation.text && (
+              {generation.text && !shouldHideDocumentFullText && (
                 <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-gray-50 px-3 py-2 text-xs leading-6 text-gray-700 dark:bg-gray-900/70 dark:text-gray-200">
                   {generation.text}
                 </pre>

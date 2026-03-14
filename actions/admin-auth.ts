@@ -11,6 +11,7 @@ import {
   verifyAdminSession,
 } from "@/lib/admin/session";
 import { hashPassword, verifyPassword } from "@/lib/admin/password";
+import { writeAdminAuditLogWithContext } from "@/actions/admin-common";
 
 type LoginResult = {
   success: boolean;
@@ -65,10 +66,43 @@ export async function adminLogin(formData: FormData): Promise<LoginResult> {
     role: admin.role || "admin",
   });
 
+  await writeAdminAuditLogWithContext({
+    db,
+    adminUserId: admin.id,
+    sourceScope: getAdminSourceScope(),
+    action: "admin_login",
+    targetType: "admin_users",
+    targetId: admin.id,
+    afterJson: {
+      username: admin.username,
+      role: admin.role || "admin",
+      status: admin.status || "active",
+    },
+  });
+
   return { success: true };
 }
 
 export async function adminLogout() {
+  const session = await getAdminSession();
+  const sourceScope = getAdminSourceScope();
+  const db = await getRoutedAdminDbClient(sourceScope);
+
+  if (session && db) {
+    await writeAdminAuditLogWithContext({
+      db,
+      session,
+      sourceScope,
+      action: "admin_logout",
+      targetType: "admin_users",
+      targetId: session.userId,
+      afterJson: {
+        username: session.username,
+        role: session.role,
+      },
+    });
+  }
+
   await destroyAdminSession();
   redirect("/admin/login");
 }
@@ -138,6 +172,18 @@ export async function changeAdminPassword(formData: FormData): Promise<ActionRes
   if (updateError) {
     return { success: false, error: "更新密码失败" };
   }
+
+  await writeAdminAuditLogWithContext({
+    db,
+    session,
+    sourceScope: getAdminSourceScope(),
+    action: "admin_change_password",
+    targetType: "admin_users",
+    targetId: admin.id,
+    afterJson: {
+      password_changed_at: new Date().toISOString(),
+    },
+  });
 
   revalidatePath("/admin");
   return { success: true };

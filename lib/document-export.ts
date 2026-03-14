@@ -67,28 +67,71 @@ export type GeneratedExportedFile = {
   bytes: Uint8Array;
 };
 
-const PDF_FONT_PATH_CANDIDATES = [
-  process.env.PDF_FONT_PATH,
-  "C:/Windows/Fonts/msyh.ttf",
-  "C:/Windows/Fonts/simhei.ttf",
-  "C:/Windows/Fonts/simsun.ttf",
-  "C:/Windows/Fonts/simkai.ttf",
-  "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-  path.join(
-    process.cwd(),
-    "node_modules",
-    "@fontsource",
-    "noto-sans-sc",
-    "files",
-    "noto-sans-sc-chinese-simplified-400-normal.woff",
+const PDF_FONT_OVERRIDE_PATH = process.env.PDF_FONT_PATH;
+const PDF_FONT_LATIN_PATH_CANDIDATES = Array.from(
+  new Set(
+    [
+      PDF_FONT_OVERRIDE_PATH,
+      "C:/Windows/Fonts/arial.ttf",
+      "C:/Windows/Fonts/segoeui.ttf",
+      "C:/Windows/Fonts/calibri.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "C:/Windows/Fonts/msyh.ttf",
+      "C:/Windows/Fonts/simhei.ttf",
+      "C:/Windows/Fonts/simsun.ttf",
+      "C:/Windows/Fonts/simkai.ttf",
+      "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@fontsource",
+        "noto-sans-sc",
+        "files",
+        "noto-sans-sc-chinese-simplified-400-normal.woff",
+      ),
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
   ),
-].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+);
+const PDF_FONT_CJK_PATH_CANDIDATES = Array.from(
+  new Set(
+    [
+      PDF_FONT_OVERRIDE_PATH,
+      "C:/Windows/Fonts/msyh.ttf",
+      "C:/Windows/Fonts/simhei.ttf",
+      "C:/Windows/Fonts/simsun.ttf",
+      "C:/Windows/Fonts/simkai.ttf",
+      "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+      "C:/Windows/Fonts/arial.ttf",
+      "C:/Windows/Fonts/segoeui.ttf",
+      "C:/Windows/Fonts/calibri.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@fontsource",
+        "noto-sans-sc",
+        "files",
+        "noto-sans-sc-chinese-simplified-400-normal.woff",
+      ),
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+  ),
+);
 
 type LoadedPdfFont = {
   bytes: Uint8Array;
   path: string;
 };
+
+const UTF8_BOM = Uint8Array.from([0xef, 0xbb, 0xbf]);
+const DOCX_DEFAULT_FONT = {
+  ascii: "Calibri",
+  hAnsi: "Calibri",
+  eastAsia: "Microsoft YaHei",
+  cs: "Calibri",
+} as const;
+const EXPORT_CONTROL_CHAR_REGEX = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+const EXPORT_ZERO_WIDTH_CHAR_REGEX = /[\u200B-\u200D\uFEFF]/g;
+const WORKSHEET_NAME_FORBIDDEN_CHAR_REGEX = /[:\\/?*\[\]]/g;
 
 let cachedPdfFont: LoadedPdfFont | null | undefined;
 
@@ -96,10 +139,28 @@ function isSupportedPdfFontFile(fontPath: string) {
   return /\.(ttf|otf)$/i.test(fontPath);
 }
 
+function normalizeExportText(value: string) {
+  return value
+    .normalize("NFC")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00A0/g, " ")
+    .replace(EXPORT_ZERO_WIDTH_CHAR_REGEX, "")
+    .replace(EXPORT_CONTROL_CHAR_REGEX, "")
+    .trim();
+}
+
+function normalizeExportParagraphText(value: string) {
+  return normalizeExportText(value).replace(/\n{3,}/g, "\n\n");
+}
+
+function normalizeExportCellText(value: string) {
+  return normalizeExportText(value).replace(/\n{2,}/g, "\n");
+}
+
 function sanitizeFileBaseName(rawTitle: string) {
-  const sanitized = rawTitle
+  const sanitized = normalizeExportText(rawTitle)
     .replace(/[\/:*?"<>|{}\[\],]/g, "-")
-    .replace(/[“”]/g, "")
+    .replace(/[“”‘’]/g, "")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
@@ -108,6 +169,74 @@ function sanitizeFileBaseName(rawTitle: string) {
   return sanitized.length > 0 ? sanitized : "generated-document";
 }
 
+function normalizeWorksheetName(rawName: string, fallback: string) {
+  const sanitized = normalizeExportText(rawName)
+    .replace(WORKSHEET_NAME_FORBIDDEN_CHAR_REGEX, "-")
+    .replace(/^'+|'+$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/-+/g, "-")
+    .trim()
+    .slice(0, 31);
+
+  return sanitized.length > 0 ? sanitized : fallback;
+}
+
+function getUniqueWorksheetName(rawName: string, fallback: string, usedNames: Set<string>) {
+  const baseName = normalizeWorksheetName(rawName, fallback);
+  let candidate = baseName;
+  let suffixIndex = 2;
+
+  while (usedNames.has(candidate.toLowerCase())) {
+    const suffix = `-${suffixIndex}`;
+    candidate = `${baseName.slice(0, Math.max(31 - suffix.length, 1))}${suffix}`;
+    suffixIndex += 1;
+  }
+
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function prependUtf8Bom(bytes: Uint8Array) {
+  const normalizedBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const output = new Uint8Array(UTF8_BOM.length + normalizedBytes.length);
+  output.set(UTF8_BOM, 0);
+  output.set(normalizedBytes, UTF8_BOM.length);
+  return output;
+}
+
+function normalizeDocumentForExport(document: GeneratedDocument): GeneratedDocument {
+  return {
+    title: normalizeExportText(document.title),
+    summary: normalizeExportParagraphText(document.summary),
+    sections: document.sections.map((section) => ({
+      heading: normalizeExportText(section.heading),
+      paragraphs: section.paragraphs.map((paragraph) => normalizeExportParagraphText(paragraph)),
+      bullets: section.bullets.map((bullet) => normalizeExportText(bullet)),
+      ...(section.table
+        ? {
+            table: {
+              ...(section.table.title
+                ? {
+                    title: normalizeExportText(section.table.title),
+                  }
+                : {}),
+              columns: section.table.columns.map((column) => normalizeExportCellText(column)),
+              rows: normalizeTableRows(section.table.columns, section.table.rows).map((row) =>
+                row.map((value) => normalizeExportCellText(value)),
+              ),
+            },
+          }
+        : {}),
+    })),
+    spreadsheets: document.spreadsheets.map((sheet, index) => ({
+      name: normalizeWorksheetName(sheet.name, `Sheet ${index + 1}`),
+      columns: sheet.columns.map((column) => normalizeExportCellText(column)),
+      rows: normalizeTableRows(sheet.columns, sheet.rows).map((row) =>
+        row.map((value) => normalizeExportCellText(value)),
+      ),
+    })),
+  };
+}
 function normalizeTableRows(columns: string[], rows: string[][]) {
   return rows.map((row) => {
     const normalized = row.slice(0, columns.length);
@@ -127,9 +256,10 @@ function buildMarkdownTable(columns: string[], rows: string[][]) {
 }
 
 export function buildMarkdownDocument(document: GeneratedDocument) {
-  const lines: string[] = [`# ${document.title}`, "", document.summary.trim(), ""];
+  const normalizedDocument = normalizeDocumentForExport(document);
+  const lines: string[] = [`# ${normalizedDocument.title}`, "", normalizedDocument.summary.trim(), ""];
 
-  for (const section of document.sections) {
+  for (const section of normalizedDocument.sections) {
     lines.push(`## ${section.heading}`);
     lines.push("");
 
@@ -156,10 +286,10 @@ export function buildMarkdownDocument(document: GeneratedDocument) {
     }
   }
 
-  if (document.spreadsheets.length > 0) {
+  if (normalizedDocument.spreadsheets.length > 0) {
     lines.push("## Spreadsheet Data");
     lines.push("");
-    for (const sheet of document.spreadsheets) {
+    for (const sheet of normalizedDocument.spreadsheets) {
       lines.push(`### ${sheet.name}`);
       lines.push("");
       lines.push(buildMarkdownTable(sheet.columns, sheet.rows));
@@ -171,9 +301,10 @@ export function buildMarkdownDocument(document: GeneratedDocument) {
 }
 
 export function buildPlainTextDocument(document: GeneratedDocument) {
-  const lines: string[] = [document.title, "", document.summary.trim(), ""];
+  const normalizedDocument = normalizeDocumentForExport(document);
+  const lines: string[] = [normalizedDocument.title, "", normalizedDocument.summary.trim(), ""];
 
-  for (const section of document.sections) {
+  for (const section of normalizedDocument.sections) {
     lines.push(section.heading);
     lines.push("-".repeat(Math.max(section.heading.length, 6)));
     for (const paragraph of section.paragraphs) {
@@ -198,10 +329,10 @@ export function buildPlainTextDocument(document: GeneratedDocument) {
     }
   }
 
-  if (document.spreadsheets.length > 0) {
+  if (normalizedDocument.spreadsheets.length > 0) {
     lines.push("Spreadsheet Data");
     lines.push("--------------");
-    for (const sheet of document.spreadsheets) {
+    for (const sheet of normalizedDocument.spreadsheets) {
       lines.push(sheet.name);
       lines.push(sheet.columns.join(" | "));
       for (const row of normalizeTableRows(sheet.columns, sheet.rows)) {
@@ -240,53 +371,61 @@ export async function loadPdfFontBytes() {
 }
 
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number) {
-  const words = text.replace(/\s+/g, " ").trim().split(" ");
-  if (words.length === 1 && words[0] === "") {
+  const normalizedText = normalizeExportParagraphText(text);
+  if (!normalizedText) {
     return [""];
   }
 
   const lines: string[] = [];
-  let currentLine = "";
 
-  for (const word of words) {
-    const candidate = currentLine.length > 0 ? `${currentLine} ${word}` : word;
-    if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
-      currentLine = candidate;
+  for (const block of normalizedText.split("\n")) {
+    const words = block.replace(/\s+/g, " ").trim().split(" ");
+    if (words.length === 1 && words[0] === "") {
+      lines.push("");
       continue;
+    }
+
+    let currentLine = "";
+
+    for (const word of words) {
+      const candidate = currentLine.length > 0 ? `${currentLine} ${word}` : word;
+      if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
+        currentLine = candidate;
+        continue;
+      }
+
+      if (currentLine.length > 0) {
+        lines.push(currentLine);
+        currentLine = "";
+      }
+
+      if (font.widthOfTextAtSize(word, fontSize) <= maxWidth) {
+        currentLine = word;
+        continue;
+      }
+
+      let segment = "";
+      for (const char of word) {
+        const nextSegment = `${segment}${char}`;
+        if (font.widthOfTextAtSize(nextSegment, fontSize) <= maxWidth) {
+          segment = nextSegment;
+          continue;
+        }
+        if (segment.length > 0) {
+          lines.push(segment);
+        }
+        segment = char;
+      }
+      currentLine = segment;
     }
 
     if (currentLine.length > 0) {
       lines.push(currentLine);
-      currentLine = "";
     }
-
-    if (font.widthOfTextAtSize(word, fontSize) <= maxWidth) {
-      currentLine = word;
-      continue;
-    }
-
-    let segment = "";
-    for (const char of word) {
-      const nextSegment = `${segment}${char}`;
-      if (font.widthOfTextAtSize(nextSegment, fontSize) <= maxWidth) {
-        segment = nextSegment;
-        continue;
-      }
-      if (segment.length > 0) {
-        lines.push(segment);
-      }
-      segment = char;
-    }
-    currentLine = segment;
-  }
-
-  if (currentLine.length > 0) {
-    lines.push(currentLine);
   }
 
   return lines.length > 0 ? lines : [""];
 }
-
 function createPdfPage(pdf: PDFDocument) {
   return pdf.addPage([595.28, 841.89]);
 }
@@ -493,11 +632,11 @@ async function exportPdf(document: GeneratedDocument) {
 }
 
 async function exportTxt(document: GeneratedDocument) {
-  return new TextEncoder().encode(buildPlainTextDocument(document));
+  return prependUtf8Bom(new TextEncoder().encode(buildPlainTextDocument(document)));
 }
 
 async function exportMd(document: GeneratedDocument) {
-  return new TextEncoder().encode(buildMarkdownDocument(document));
+  return prependUtf8Bom(new TextEncoder().encode(buildMarkdownDocument(document)));
 }
 
 async function exportDocx(document: GeneratedDocument) {
@@ -564,6 +703,19 @@ async function exportDocx(document: GeneratedDocument) {
   }
 
   const doc = new DocxDocument({
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: DOCX_DEFAULT_FONT,
+            language: {
+              value: "en-US",
+              eastAsia: "zh-CN",
+            },
+          },
+        },
+      },
+    },
     sections: [
       {
         children,
@@ -576,8 +728,21 @@ async function exportDocx(document: GeneratedDocument) {
 
 async function exportXlsx(document: GeneratedDocument) {
   const workbook = new ExcelJS.Workbook();
+  const usedSheetNames = new Set<string>();
 
-  const overviewSheet = workbook.addWorksheet("Overview");
+  const configureWorksheet = (worksheet: ExcelJS.Worksheet) => {
+    worksheet.views = [{ state: "frozen", ySplit: 1 }];
+    worksheet.eachRow((row, rowNumber) => {
+      row.alignment = { vertical: "top", wrapText: true };
+      if (rowNumber === 1) {
+        row.font = { bold: true };
+      }
+    });
+  };
+
+  const overviewSheet = workbook.addWorksheet(
+    getUniqueWorksheetName("Overview", "Overview", usedSheetNames),
+  );
   overviewSheet.columns = [
     { header: "Section", key: "section", width: 24 },
     { header: "Content", key: "content", width: 60 },
@@ -591,23 +756,29 @@ async function exportXlsx(document: GeneratedDocument) {
     }
   }
 
+  configureWorksheet(overviewSheet);
+
   for (const section of document.sections.filter((item) => item.table)) {
     const table = section.table!;
     const sheet = workbook.addWorksheet(
-      sanitizeFileBaseName(table.title ?? section.heading).slice(0, 31) || "SectionTable",
+      getUniqueWorksheetName(table.title ?? section.heading, "SectionTable", usedSheetNames),
     );
     sheet.columns = table.columns.map((column) => ({ header: column, key: column, width: 24 }));
     for (const row of normalizeTableRows(table.columns, table.rows)) {
       sheet.addRow(row);
     }
+    configureWorksheet(sheet);
   }
 
   for (const sheetData of document.spreadsheets) {
-    const sheet = workbook.addWorksheet(sheetData.name.slice(0, 31));
+    const sheet = workbook.addWorksheet(
+      getUniqueWorksheetName(sheetData.name, "Sheet", usedSheetNames),
+    );
     sheet.columns = sheetData.columns.map((column) => ({ header: column, key: column, width: 24 }));
     for (const row of normalizeTableRows(sheetData.columns, sheetData.rows)) {
       sheet.addRow(row);
     }
+    configureWorksheet(sheet);
   }
 
   return new Uint8Array(await workbook.xlsx.writeBuffer());
@@ -617,7 +788,7 @@ export async function generateDocumentFiles(
   input: GeneratedDocument,
   formats: readonly GeneratedFileFormat[] = GENERATED_FILE_FORMATS,
 ): Promise<GeneratedExportedFile[]> {
-  const document = generatedDocumentSchema.parse(input);
+  const document = normalizeDocumentForExport(generatedDocumentSchema.parse(input));
   const fileBaseName = sanitizeFileBaseName(document.title);
 
   const uniqueFormats = Array.from(new Set(formats));

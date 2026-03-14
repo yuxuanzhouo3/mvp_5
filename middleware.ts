@@ -10,6 +10,14 @@ const ADMIN_SESSION_COOKIE_NAME = "admin_session";
 export async function middleware(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
 
+  if (
+    pathname === "/api/payment/stripe/webhook" ||
+    pathname === "/api/domestic/payment/webhook/alipay" ||
+    pathname === "/api/domestic/payment/webhook/wechat"
+  ) {
+    return NextResponse.next();
+  }
+
   // 跳过静态资源
   if (
     pathname.startsWith("/_next/") ||

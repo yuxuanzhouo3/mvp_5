@@ -4,6 +4,7 @@ import { getSupabaseAnonKeyFromEnv, getSupabaseUrlFromEnv } from "@/lib/supabase
 import { IS_DOMESTIC_VERSION } from "@/config";
 import { trackLoginEvent, trackRegisterEvent } from "@/services/analytics";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { syncGlobalAuthUser } from "@/lib/server/supabase-auth-user-sync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,19 @@ function sanitizeNextPath(next: string | null): string {
   if (!next.startsWith("/")) return "/";
   if (next.startsWith("//")) return "/";
   return next;
+}
+
+function wasAuthUserRecentlyCreated(createdAt: string | null | undefined) {
+  if (!createdAt) {
+    return false;
+  }
+
+  const createdAtMs = new Date(createdAt).getTime();
+  if (!Number.isFinite(createdAtMs)) {
+    return false;
+  }
+
+  return Date.now() - createdAtMs < 5 * 60 * 1000;
 }
 
 export async function GET(request: NextRequest) {
@@ -103,26 +117,51 @@ export async function GET(request: NextRequest) {
   if (data?.session?.user) {
     const user = data.session.user;
 
-    // 使用 profiles 表检查是否为新用户
-    let isNewUser = false;
+    let hasExistingAppUser = false;
     if (supabaseAdmin) {
       try {
-        const { data: profile, error: profileError } = await supabaseAdmin
-          .from("profiles")
+        const normalizedEmail = typeof user.email === "string" ? user.email.trim().toLowerCase() : "";
+        const { data: existingById, error: existingByIdError } = await supabaseAdmin
+          .from("app_users")
           .select("id")
+          .eq("source", "global")
           .eq("id", user.id)
-          .single();
+          .limit(1);
 
-        isNewUser = !profile || !!profileError;
-        console.info("[auth/callback] Profile check:", { userId: user.id, isNewUser });
+        if (existingByIdError) {
+          throw existingByIdError;
+        }
+
+        hasExistingAppUser = Array.isArray(existingById) && existingById.length > 0;
+
+        if (!hasExistingAppUser && normalizedEmail) {
+          const { data: existingByEmail, error: existingByEmailError } = await supabaseAdmin
+            .from("app_users")
+            .select("id")
+            .eq("source", "global")
+            .eq("email_normalized", normalizedEmail)
+            .limit(1);
+
+          if (existingByEmailError) {
+            throw existingByEmailError;
+          }
+
+          hasExistingAppUser = Array.isArray(existingByEmail) && existingByEmail.length > 0;
+        }
       } catch (err) {
-        console.warn("[auth/callback] Profile check failed, falling back to time-based check:", err);
-        isNewUser = !!(user.created_at &&
-          (new Date().getTime() - new Date(user.created_at).getTime()) < 5 * 60 * 1000);
+        console.warn("[auth/callback] app_users existence check failed:", err);
       }
-    } else {
-      isNewUser = !!(user.created_at &&
-        (new Date().getTime() - new Date(user.created_at).getTime()) < 5 * 60 * 1000);
+    }
+
+    const isNewUser = !hasExistingAppUser && wasAuthUserRecentlyCreated(user.created_at);
+
+    try {
+      await syncGlobalAuthUser(user, {
+        markVerified: true,
+        touchLastLoginAt: true,
+      });
+    } catch (syncError) {
+      console.warn("[auth/callback] syncGlobalAuthUser failed:", syncError);
     }
 
     const trackFn = isNewUser ? trackRegisterEvent : trackLoginEvent;
@@ -134,7 +173,6 @@ export async function GET(request: NextRequest) {
     }).catch((err) => console.warn("[auth/callback] track event error:", err));
   }
 
-  // 创建响应并设置 cookie
   const successUrl = new URL(next, origin);
   const response = NextResponse.redirect(successUrl);
 

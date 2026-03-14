@@ -6,6 +6,7 @@
 import { IS_DOMESTIC_VERSION } from "@/config";
 import { CloudBaseConnector } from "@/lib/cloudbase/connector";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { trackAnalyticsSessionEvent } from "@/lib/analytics/tracker";
 
 export type AnalyticsEventType =
   | "session_start"
@@ -77,16 +78,56 @@ export function generateSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+async function trackUnifiedAnalyticsEvent(params: AnalyticsEventParams): Promise<TrackResult> {
+  try {
+    await trackAnalyticsSessionEvent({
+      source: params.source || (IS_DOMESTIC_VERSION ? "cn" : "global"),
+      userId: params.userId,
+      sessionId: params.sessionId || undefined,
+      ensureSession: params.eventType === "session_start",
+      eventType: params.eventType,
+      eventData: params.eventData,
+      meta: {
+        deviceType: params.deviceType,
+        os: params.os,
+        browser: params.browser,
+        appVersion: params.appVersion,
+        countryCode: params.country,
+        region: params.region,
+        city: params.city,
+        referrer: params.referrer,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.warn("[analytics] unified track error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unified analytics tracking failed",
+    };
+  }
+}
+
 export async function trackAnalyticsEvent(params: AnalyticsEventParams): Promise<TrackResult> {
-  if (!params.source) {
-    params.source = IS_DOMESTIC_VERSION ? "cn" : "global";
+  const normalizedParams: AnalyticsEventParams = {
+    ...params,
+    source: params.source || (IS_DOMESTIC_VERSION ? "cn" : "global"),
+  };
+
+  const legacyResult = IS_DOMESTIC_VERSION
+    ? await trackCloudBaseEvent(normalizedParams)
+    : await trackSupabaseEvent(normalizedParams);
+  const unifiedResult = await trackUnifiedAnalyticsEvent(normalizedParams);
+
+  if (legacyResult.success || unifiedResult.success) {
+    return { success: true };
   }
 
-  if (IS_DOMESTIC_VERSION) {
-    return trackCloudBaseEvent(params);
-  } else {
-    return trackSupabaseEvent(params);
-  }
+  return {
+    success: false,
+    error: unifiedResult.error || legacyResult.error || "Analytics tracking failed",
+  };
 }
 
 async function trackSupabaseEvent(params: AnalyticsEventParams): Promise<TrackResult> {

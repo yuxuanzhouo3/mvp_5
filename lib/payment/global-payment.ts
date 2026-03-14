@@ -166,6 +166,7 @@ type UserSubscriptionRow = {
   latest_order_id?: string | null;
   current_period_start?: string | null;
   current_period_end?: string | null;
+  created_at?: string | null;
 };
 
 type UserQuotaAccountRow = {
@@ -1521,7 +1522,7 @@ async function upsertSubscription(input: {
     input.db
       .from("user_subscriptions")
       .select(
-        "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end",
+        "id,user_id,plan_code,billing_period,status,latest_order_id,current_period_start,current_period_end,created_at",
       )
       .eq("user_id", input.userId)
       .eq("source", GLOBAL_SOURCE)
@@ -1622,65 +1623,113 @@ async function upsertSubscription(input: {
   }
 
   if (effectiveStatus === "pending") {
-    const pendingSubscriptionId = normalizeText(latestPendingRow?.id, "") || createTextId("sub");
-    const pendingPayload = {
-      plan_code: input.planCode,
-      billing_period: input.billingPeriod,
-      status: "pending",
-      provider: input.provider,
-      provider_subscription_id: input.providerOrderId,
-      latest_order_id: input.orderId,
-      current_period_start: periodStartIso,
-      current_period_end: periodEndIso,
-      cancel_at_period_end: false,
-      canceled_at: null,
-      updated_at: input.nowIso,
-      metadata_json: {
-        last_paid_order_id: input.orderId,
-        source: GLOBAL_SOURCE,
-        schedule_mode: "at_period_end",
-      },
-    };
-
-    if (latestPendingRow?.id) {
-      await executeQuery(
-        input.db
-          .from("user_subscriptions")
-          .update(pendingPayload)
-          .eq("id", pendingSubscriptionId),
-        "更新待生效订阅失败",
-      );
-    } else {
-      await executeQuery(
-        input.db.from("user_subscriptions").insert({
-          id: pendingSubscriptionId,
-          user_id: input.userId,
-          source: GLOBAL_SOURCE,
-          start_at: input.nowIso,
-          created_at: input.nowIso,
-          ...pendingPayload,
-        }),
-        "创建待生效订阅失败",
-      );
-    }
-
-    const stalePendingIds = rows
+    const existingPendingSubscriptions = rows
       .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
-      .map((row) => normalizeText(row.id, ""))
-      .filter((id) => Boolean(id) && id !== pendingSubscriptionId);
+      .map((row) => ({
+        id: normalizeText(row.id, ""),
+        planCode: normalizeText(row.plan_code, ""),
+        periodStartIso: normalizeText(row.current_period_start, ""),
+        periodEndIso: normalizeText(row.current_period_end, ""),
+        createdAt: normalizeText(row.created_at, input.nowIso),
+      }))
+      .filter((subscription) => Boolean(subscription.id));
 
-    for (const pendingId of stalePendingIds) {
-      await executeQuery(
-        input.db
-          .from("user_subscriptions")
-          .update({
-            status: "canceled",
-            canceled_at: input.nowIso,
-            updated_at: input.nowIso,
-          })
-          .eq("id", pendingId),
-        "清理重复待生效订阅失败",
+    const planLevels = new Map<string, number>();
+    for (const subscription of existingPendingSubscriptions) {
+      if (planLevels.has(subscription.planCode)) {
+        continue;
+      }
+
+      try {
+        const pendingPlan = await readGlobalPlanDefinition({
+          db: input.db,
+          planCode: subscription.planCode as GlobalPlanCode,
+        });
+        planLevels.set(subscription.planCode, pendingPlan.planLevel);
+      } catch {
+        planLevels.set(subscription.planCode, 0);
+      }
+    }
+    planLevels.set(input.planCode, targetPlanLevel);
+
+    const pendingQueue = [
+      ...existingPendingSubscriptions.map((subscription) => ({
+        ...subscription,
+        planLevel: planLevels.get(subscription.planCode) || 0,
+      })),
+      {
+        id: "",
+        planCode: input.planCode,
+        periodStartIso,
+        periodEndIso,
+        createdAt: input.nowIso,
+        planLevel: targetPlanLevel,
+      },
+    ].sort((left, right) => {
+      if (right.planLevel !== left.planLevel) {
+        return right.planLevel - left.planLevel;
+      }
+
+      return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    });
+
+    let nextStartIso = currentPeriodEndIso;
+    for (const subscription of pendingQueue) {
+      const durationDays = Math.max(
+        1,
+        Math.ceil(
+          Math.max(
+            0,
+            new Date(subscription.periodEndIso).getTime() -
+              new Date(subscription.periodStartIso).getTime(),
+          ) /
+            (1000 * 60 * 60 * 24),
+        ),
       );
+      const nextEndIso = addDays(new Date(nextStartIso), durationDays).toISOString();
+
+      if (subscription.id) {
+        await executeQuery(
+          input.db
+            .from("user_subscriptions")
+            .update({
+              current_period_start: nextStartIso,
+              current_period_end: nextEndIso,
+              updated_at: input.nowIso,
+            })
+            .eq("id", subscription.id),
+          "更新降级队列订阅时间失败",
+        );
+      } else {
+        await executeQuery(
+          input.db.from("user_subscriptions").insert({
+            id: createTextId("sub"),
+            user_id: input.userId,
+            source: GLOBAL_SOURCE,
+            plan_code: input.planCode,
+            billing_period: input.billingPeriod,
+            status: "pending",
+            provider: input.provider,
+            provider_subscription_id: input.providerOrderId,
+            latest_order_id: input.orderId,
+            start_at: input.nowIso,
+            current_period_start: nextStartIso,
+            current_period_end: nextEndIso,
+            cancel_at_period_end: false,
+            canceled_at: null,
+            metadata_json: {
+              last_paid_order_id: input.orderId,
+              source: GLOBAL_SOURCE,
+              schedule_mode: "at_period_end",
+            },
+            created_at: input.nowIso,
+            updated_at: input.nowIso,
+          }),
+          "创建待生效订阅失败",
+        );
+      }
+
+      nextStartIso = nextEndIso;
     }
   } else if (latestActiveRow?.id) {
     await executeQuery(
@@ -1734,12 +1783,40 @@ async function upsertSubscription(input: {
   }
 
   if (effectiveStatus === "active") {
-    const stalePendingIds = rows
+    const pendingSubscriptions = rows
       .filter((row) => normalizeSubscriptionStatus(row.status) === "pending")
-      .map((row) => normalizeText(row.id, ""))
-      .filter((id) => Boolean(id));
+      .map((row) => ({
+        id: normalizeText(row.id, ""),
+        planCode: normalizeText(row.plan_code, ""),
+        billingPeriod: normalizeText(row.billing_period, ""),
+      }))
+      .filter((subscription) => Boolean(subscription.id));
 
-    for (const pendingId of stalePendingIds) {
+    const subscriptionsToCancel: string[] = [];
+    const subscriptionsToKeep: Array<{
+      id: string;
+      planCode: string;
+      billingPeriod: string;
+    }> = [];
+
+    for (const subscription of pendingSubscriptions) {
+      try {
+        const pendingPlan = await readGlobalPlanDefinition({
+          db: input.db,
+          planCode: subscription.planCode as GlobalPlanCode,
+        });
+
+        if (pendingPlan.planLevel <= targetPlanLevel) {
+          subscriptionsToCancel.push(subscription.id);
+        } else {
+          subscriptionsToKeep.push(subscription);
+        }
+      } catch {
+        subscriptionsToCancel.push(subscription.id);
+      }
+    }
+
+    for (const pendingId of subscriptionsToCancel) {
       await executeQuery(
         input.db
           .from("user_subscriptions")
@@ -1749,8 +1826,30 @@ async function upsertSubscription(input: {
             updated_at: input.nowIso,
           })
           .eq("id", pendingId),
-        "清理历史待生效订阅失败",
+        "清理低等级待生效订阅失败",
       );
+    }
+
+    let nextStartIso = periodEndIso;
+    for (const subscription of subscriptionsToKeep) {
+      const durationDays = getGlobalDurationDays(
+        resolveGlobalBillingPeriod(subscription.billingPeriod),
+      );
+      const nextEndIso = addDays(new Date(nextStartIso), durationDays).toISOString();
+
+      await executeQuery(
+        input.db
+          .from("user_subscriptions")
+          .update({
+            current_period_start: nextStartIso,
+            current_period_end: nextEndIso,
+            updated_at: input.nowIso,
+          })
+          .eq("id", subscription.id),
+        "更新保留的高等级订阅时间失败",
+      );
+
+      nextStartIso = nextEndIso;
     }
   }
 
