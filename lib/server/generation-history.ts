@@ -209,6 +209,34 @@ function sanitizeFileName(input: string, fallback: string) {
   return normalized || fallback;
 }
 
+function sanitizeStorageKeySegment(input: string, fallback: string) {
+  const normalized = normalizeText(input, fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, 80);
+
+  return normalized || fallback;
+}
+
+function buildStorageSafeFileName(fileName: string, fallback: string) {
+  const normalizedFileName = sanitizeFileName(fileName, fallback);
+  const extension = getFileExtensionFromFileName(normalizedFileName);
+  const fallbackExtension = getFileExtensionFromFileName(fallback);
+  const effectiveExtension = extension || fallbackExtension;
+  const baseName = effectiveExtension
+    ? normalizedFileName.replace(new RegExp(`\.${effectiveExtension}$`, "i"), "")
+    : normalizedFileName;
+  const fallbackBaseName = effectiveExtension
+    ? fallback.replace(new RegExp(`\.${effectiveExtension}$`, "i"), "")
+    : fallback;
+  const safeBaseName = sanitizeStorageKeySegment(baseName, fallbackBaseName || "file");
+
+  return effectiveExtension ? `${safeBaseName}.${effectiveExtension.toLowerCase()}` : safeBaseName;
+}
+
 function getFileExtensionFromFileName(fileName: string) {
   const normalized = normalizeText(fileName, "");
   const matched = normalized.match(/\.([a-z0-9]{1,10})$/i);
@@ -297,7 +325,7 @@ function buildObjectKey(userId: string, taskId: string, sequenceNo: number, file
   const yyyy = String(now.getUTCFullYear());
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(now.getUTCDate()).padStart(2, "0");
-  const safeFileName = sanitizeFileName(fileName, `output-${sequenceNo}`);
+  const safeFileName = buildStorageSafeFileName(fileName, `output-${sequenceNo}`);
   return `${userId}/${yyyy}/${mm}/${dd}/${taskId}/${String(sequenceNo).padStart(2, "0")}-${safeFileName}`;
 }
 

@@ -1677,10 +1677,10 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
 
         formData.set("file", uploadFile);
 
-        if (activeTab === "edit_video" && isDomesticVersion) {
+        if (activeTab === "edit_video") {
           const frames = await extractVideoFrameFiles(selectedOperationFile!, {
             frameCount: 3,
-            maxDimension: 1024,
+            maxDimension: isDomesticVersion ? 1024 : 768,
           });
           if (frames.length === 0) {
             throw new Error("视频关键帧提取失败，请更换文件后重试。");

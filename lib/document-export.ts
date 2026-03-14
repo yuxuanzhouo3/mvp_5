@@ -98,7 +98,8 @@ function isSupportedPdfFontFile(fontPath: string) {
 
 function sanitizeFileBaseName(rawTitle: string) {
   const sanitized = rawTitle
-    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/[\/:*?"<>|{}\[\],]/g, "-")
+    .replace(/[“”]/g, "")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
