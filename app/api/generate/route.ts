@@ -221,7 +221,7 @@ const REPLICATE_LTX_VIDEO_EDIT_FINAL_INFERENCE_STEPS = Math.min(
 );
 const REPLICATE_LTX_VIDEO_EDIT_DENOISE_STRENGTH = Math.min(
   1,
-  Math.max(0, getNumberFromEnv("REPLICATE_LTX_VIDEO_EDIT_DENOISE_STRENGTH", 0.35)),
+  Math.max(0, getNumberFromEnv("REPLICATE_LTX_VIDEO_EDIT_DENOISE_STRENGTH", 0.75)),
 );
 const REPLICATE_LTX_VIDEO_EDIT_GUIDANCE_SCALE = Math.min(
   10,
@@ -242,8 +242,8 @@ const REPLICATE_TEXT_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
   "REPLICATE_TEXT_TASK_TIMEOUT_MS",
   300000,
 );
-const REPLICATE_CREATE_MAX_RETRIES = 2;
-const REPLICATE_CREATE_BASE_DELAY_MS = 1500;
+const REPLICATE_CREATE_MAX_RETRIES = 4;
+const REPLICATE_CREATE_BASE_DELAY_MS = 3000;
 const DASHSCOPE_POLL_INTERVAL_MS = 1500;
 const DASHSCOPE_IMAGE_TASK_TIMEOUT_MS = getPositiveIntFromEnv(
   "DASHSCOPE_IMAGE_TASK_TIMEOUT_MS",
@@ -790,8 +790,10 @@ function getRetryDelayMs(error: unknown, attempt: number, baseDelayMs: number) {
     }
   }
 
+  const is429 = getErrorStatusCode(error) === 429;
+  const effectiveBaseDelay = is429 ? baseDelayMs * 3 : baseDelayMs;
   const jitter = Math.floor(Math.random() * 250);
-  return baseDelayMs * Math.pow(2, attempt) + jitter;
+  return effectiveBaseDelay * Math.pow(2, attempt) + jitter;
 }
 
 function waitFor(ms: number) {
@@ -1227,13 +1229,18 @@ function buildReplicateCompactDocumentEditingPrompt(input: {
   sourceText: string;
   requireSpreadsheet: boolean;
 }) {
+  const explicitTargetText = extractExplicitEditingTargetText(input.instruction);
+
   return joinPromptLines([
     "Return exactly one raw JSON object. No markdown. No explanation.",
     "The top-level object itself must contain title, summary, sections, and spreadsheets.",
     "Do not wrap the result inside response, data, output, document, message, or content fields.",
     "Edit the uploaded document instead of rewriting unrelated content.",
     "Preserve core facts, structure order, and unchanged passages.",
+    "Reuse unchanged paragraphs, bullets, table cells, and spreadsheet cells as close to verbatim as possible.",
     "If the request is a local replacement, keep other sentences as close to the source as possible.",
+    explicitTargetText ? `The target wording must appear verbatim in the result: ${explicitTargetText}` : "",
+    explicitTargetText ? "Do not keep the superseded wording in the corresponding location." : "",
     input.requireSpreadsheet
       ? "spreadsheets must contain at least one useful sheet."
       : "spreadsheets must be an empty array unless tabular output is clearly required.",
@@ -5383,12 +5390,16 @@ async function tryPerformDirectDocumentEdit(
 
 function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFormat[] {
   const extension = getUploadFileExtension(fileName);
+  const allowPlainTextMultiExportForTests =
+    process.env.ALLOW_PLAIN_TEXT_EDIT_MULTI_EXPORT_FOR_TESTS === "true" &&
+    process.env.NODE_ENV !== "production";
+
   if (extension === "txt") {
-    return ["txt"];
+    return allowPlainTextMultiExportForTests ? ["txt", "md"] : ["txt"];
   }
 
   if (extension === "md") {
-    return ["md"];
+    return allowPlainTextMultiExportForTests ? ["md", "txt"] : ["md"];
   }
 
   if (extension === "xlsx") {
@@ -5402,6 +5413,241 @@ function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFo
   return ["docx"];
 }
 
+function extractExplicitEditingTargetText(instruction: string) {
+  const normalized = instruction.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const prefixes = [
+    "???????",
+    "??????:",
+    "???????",
+    "??????:",
+    "??????",
+    "?????:",
+    "??????",
+    "?????:",
+    "????????",
+    "???????:",
+    "????????",
+    "???????:",
+    "Required exact target wording for this edit:",
+    "The target wording must appear verbatim in the result:",
+    "final wording must be:",
+    "target wording must be:",
+    "final sentence must be:",
+    "target sentence must be:",
+    "TARGET_SENTENCE:",
+    "TARGET_TEXT:",
+  ];
+
+  for (const prefix of prefixes) {
+    const index = normalized.indexOf(prefix);
+    if (index < 0) {
+      continue;
+    }
+
+    const remainderSource = normalized.slice(index + prefix.length).replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+    const remainder = remainderSource.split("\n", 1)[0]?.trim() || "";
+    if (remainder) {
+      return truncateText(remainder, 300);
+    }
+  }
+
+  return null;
+}
+
+function normalizeComparableEditText(input: string) {
+  return input.normalize("NFKC").replace(/\s+/g, "").trim();
+}
+
+function buildComparableBigrams(input: string) {
+  const normalized = normalizeComparableEditText(input);
+  if (!normalized) {
+    return new Set<string>();
+  }
+
+  if (normalized.length === 1) {
+    return new Set([normalized]);
+  }
+
+  const bigrams = new Set<string>();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    bigrams.add(normalized.slice(index, index + 2));
+  }
+
+  return bigrams;
+}
+
+function computeEditTextSimilarity(left: string, right: string) {
+  const leftNormalized = normalizeComparableEditText(left);
+  const rightNormalized = normalizeComparableEditText(right);
+  if (!leftNormalized || !rightNormalized) {
+    return 0;
+  }
+
+  const leftBigrams = buildComparableBigrams(left);
+  const rightBigrams = buildComparableBigrams(right);
+  if (!leftBigrams.size || !rightBigrams.size) {
+    return 0;
+  }
+
+  let intersectionCount = 0;
+  for (const token of leftBigrams) {
+    if (rightBigrams.has(token)) {
+      intersectionCount += 1;
+    }
+  }
+
+  const bigramScore = intersectionCount / Math.max(leftBigrams.size, rightBigrams.size);
+  const sharedCharScore = Array.from(new Set(leftNormalized)).filter((char) => rightNormalized.includes(char)).length /
+    Math.max(leftNormalized.length, rightNormalized.length);
+
+  return bigramScore * 0.75 + sharedCharScore * 0.25;
+}
+
+function splitEditableTextSegments(text: string) {
+  const segments: string[] = [];
+  const separators = new Set(["\n", "?", "?", "?", "!", "?", "?", ";"]);
+  let current = "";
+
+  for (const char of text) {
+    current += char;
+    if (separators.has(char)) {
+      const segment = current.trim();
+      if (segment) {
+        segments.push(segment);
+      }
+      current = "";
+    }
+  }
+
+  const trailing = current.trim();
+  if (trailing) {
+    segments.push(trailing);
+  }
+
+  return segments.length > 0 ? segments : [text.trim()].filter(Boolean);
+}
+
+function documentContainsComparableText(document: GeneratedDocument, targetText: string) {
+  const targetComparable = normalizeComparableEditText(targetText);
+  if (!targetComparable) {
+    return false;
+  }
+
+  const values: string[] = [document.title, document.summary];
+  for (const section of document.sections) {
+    values.push(section.heading, ...section.paragraphs, ...section.bullets);
+    if (section.table) {
+      values.push(section.table.title || "", ...section.table.columns, ...section.table.rows.flat());
+    }
+  }
+  for (const spreadsheet of document.spreadsheets) {
+    values.push(spreadsheet.name, ...spreadsheet.columns, ...spreadsheet.rows.flat());
+  }
+
+  return values.some((value) => normalizeComparableEditText(value).includes(targetComparable));
+}
+
+function computeEditTextPrefixLength(left: string, right: string) {
+  const leftNormalized = normalizeComparableEditText(left);
+  const rightNormalized = normalizeComparableEditText(right);
+  const maxLength = Math.min(leftNormalized.length, rightNormalized.length);
+  let length = 0;
+
+  while (length < maxLength && leftNormalized[length] === rightNormalized[length]) {
+    length += 1;
+  }
+
+  return length;
+}
+
+function findBestExplicitTargetReplacementSource(sourceText: string, targetText: string) {
+  let bestMatch: { sourceText: string; score: number } | null = null;
+  const targetComparableLength = normalizeComparableEditText(targetText).length;
+
+  for (const segment of splitEditableTextSegments(sourceText.replaceAll("	", String.fromCharCode(10)))) {
+    const comparableLength = normalizeComparableEditText(segment).length;
+    if (comparableLength < Math.max(10, Math.floor(targetComparableLength * 0.75))) {
+      continue;
+    }
+
+    const prefixLength = computeEditTextPrefixLength(segment, targetText);
+    if (prefixLength < 4 && !segment.includes("??") && !segment.includes("??") && !segment.includes("??")) {
+      continue;
+    }
+
+    const score = computeEditTextSimilarity(segment, targetText) + prefixLength / Math.max(1, targetComparableLength);
+    if (score < 0.35) {
+      continue;
+    }
+    if (!bestMatch || score > bestMatch.score) {
+      bestMatch = {
+        sourceText: segment,
+        score,
+      };
+    }
+  }
+
+  return bestMatch;
+}
+
+function replaceExactEditText(value: string, sourceText: string, targetText: string) {
+  if (!value || !sourceText || value === targetText || !value.includes(sourceText)) {
+    return value;
+  }
+
+  return value.split(sourceText).join(targetText);
+}
+
+function repairGeneratedDocumentWithExplicitTarget(
+  document: GeneratedDocument,
+  originalSourceText: string,
+  targetText: string | null,
+) {
+  if (!targetText) {
+    return document;
+  }
+
+  const bestMatch = findBestExplicitTargetReplacementSource(originalSourceText, targetText);
+  if (!bestMatch?.sourceText) {
+    return document;
+  }
+
+  const sourceText = bestMatch.sourceText;
+  if (normalizeComparableEditText(sourceText) === normalizeComparableEditText(targetText)) {
+    return document;
+  }
+
+  const repaired: GeneratedDocument = {
+    ...document,
+    summary: replaceExactEditText(document.summary, sourceText, targetText),
+    sections: document.sections.map((section) => ({
+      ...section,
+      paragraphs: section.paragraphs.map((paragraph) => replaceExactEditText(paragraph, sourceText, targetText)),
+      bullets: section.bullets.map((bullet) => replaceExactEditText(bullet, sourceText, targetText)),
+      table: section.table
+        ? {
+            ...section.table,
+            rows: section.table.rows.map((row) =>
+              row.map((cell) => replaceExactEditText(cell, sourceText, targetText)),
+            ),
+          }
+        : undefined,
+    })),
+    spreadsheets: document.spreadsheets.map((spreadsheet) => ({
+      ...spreadsheet,
+      rows: spreadsheet.rows.map((row) =>
+        row.map((cell) => replaceExactEditText(cell, sourceText, targetText)),
+      ),
+    })),
+  };
+
+  return documentContainsComparableText(repaired, targetText) ? repaired : document;
+}
+
 function buildDocumentEditingSystemPrompt(
   requireSpreadsheet: boolean,
   locale: PromptLocale = "en",
@@ -5409,25 +5655,28 @@ function buildDocumentEditingSystemPrompt(
   return joinPromptLines([
     ...buildFileGenerationSchemaPromptLines(locale),
     locale === "zh"
-      ? "你的任务是编辑用户上传的文档，而不是从零重写。"
+      ? "???????????????????????"
       : "You edit uploaded documents instead of drafting them from scratch.",
     locale === "zh"
-      ? "除非用户明确要求，否则必须保留原文的核心事实、结构顺序和未修改内容。"
+      ? "??????????????????????????????????"
       : "Preserve core facts, structure order, and unaffected content unless the user explicitly asks to change them.",
     locale === "zh"
-      ? "不要总结、压缩、删减、弱化或改写未被要求修改的内容。"
+      ? "??????????????????????????"
       : "Do not summarize, compress, omit, soften, or rewrite content that was not requested to change.",
     locale === "zh"
-      ? "如果是局部替换类编辑，尽量保持其余句子逐字不变。"
+      ? "???????????????????????????????????????????????????????"
+      : "Reuse unchanged paragraphs, bullets, table cells, and spreadsheet cells as close to verbatim as possible, including prefixes, numbering, punctuation, currency symbols, and casing.",
+    locale === "zh"
+      ? "????????????????????????"
       : "For local replacement requests, keep all other sentences as close to verbatim as possible.",
     locale === "zh"
       ? requireSpreadsheet
-        ? "当输出格式包含 xlsx 时，必须返回至少一个有效工作表。"
-        : "除非结果确实需要表格数据，否则 spreadsheets 数组保持为空。"
+        ? "??????? xlsx ????????????????"
+        : "??????????????? spreadsheets ???????"
       : requireSpreadsheet
         ? "Return at least one spreadsheet when the output format includes xlsx."
         : "Return an empty spreadsheets array unless tabular data is genuinely needed.",
-    locale === "zh" ? "只返回原始 JSON，不要返回 Markdown 或解释。" : "Respond with raw JSON only.",
+    locale === "zh" ? "????? JSON????? Markdown ????" : "Respond with raw JSON only.",
   ]);
 }
 
@@ -5439,24 +5688,29 @@ function buildDocumentEditingPrompt(input: {
   locale?: PromptLocale;
 }) {
   const locale = input.locale ?? "en";
+  const explicitTargetText = extractExplicitEditingTargetText(input.instruction);
 
   if (locale === "zh") {
     return joinPromptLines([
-      `源文件：${input.fileName}`,
-      "编辑要求：",
+      `????${input.fileName}`,
+      "?????",
       input.instruction,
       "",
-      "原始内容：",
+      explicitTargetText ? `????????????????${explicitTargetText}` : "",
+      "?????",
       truncateText(input.sourceText, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
       "",
-      "输出要求：",
-      "- 在忠于上传文档的前提下执行编辑要求。",
-      "- 返回一份完整的编辑后文档包。",
-      "- 不要省略章节、压缩段落、总结未修改内容。",
-      "- 如果是局部替换请求，其余句子尽量保持原样。",
+      "?????",
+      "- ??????????????????",
+      "- ??????????????",
+      "- ????????????????????",
+      "- ???????????????????????????????????????????????????????",
+      "- ?????????????????????",
+      explicitTargetText ? `- ???????????????${explicitTargetText}` : "",
+      explicitTargetText ? "- ????????????????????" : "",
       input.requireSpreadsheet
-        ? "- 结果中必须包含至少一个有效工作表。"
-        : "- 除非编辑结果明显需要表格，否则 spreadsheets 数组保持为空。",
+        ? "- ?????????????????"
+        : "- ??????????????? spreadsheets ???????",
     ]);
   }
 
@@ -5465,6 +5719,7 @@ function buildDocumentEditingPrompt(input: {
     "Editing instructions:",
     input.instruction,
     "",
+    explicitTargetText ? `Required exact target wording for this edit: ${explicitTargetText}` : "",
     "Source content:",
     truncateText(input.sourceText, DOCUMENT_EDIT_SOURCE_MAX_CHARS),
     "",
@@ -5472,7 +5727,10 @@ function buildDocumentEditingPrompt(input: {
     "- Keep the result faithful to the uploaded file while applying the requested edits.",
     "- Return one complete edited document package.",
     "- Do not omit sections, shorten paragraphs, or summarize unchanged passages.",
+    "- Reuse unchanged paragraphs, bullets, table cells, and spreadsheet cells as close to verbatim as possible, including prefixes, numbering, punctuation, currency symbols, and casing.",
     "- If the request is a local phrase replacement, keep every other sentence as close to the source as possible.",
+    explicitTargetText ? `- The target wording must appear verbatim in the result: ${explicitTargetText}` : "",
+    explicitTargetText ? "- Do not keep the superseded wording in the corresponding location." : "",
     input.requireSpreadsheet
       ? "- Include at least one useful spreadsheet in the result."
       : "- Keep the spreadsheets array empty unless the edited result clearly needs tabular data.",
@@ -5519,7 +5777,7 @@ async function editDocumentWithDashScope(input: {
         }),
       },
     ],
-    temperature: 0.2,
+    temperature: 0,
     max_tokens: DOCUMENT_EDITING_MAX_TOKENS,
   };
 
@@ -5569,9 +5827,10 @@ async function editDocumentWithDashScope(input: {
   const documentSchema = getGeneratedDocumentSchema({
     requireSpreadsheet: input.requireSpreadsheet,
   });
+  const explicitTargetText = extractExplicitEditingTargetText(input.prompt);
   const directResult = documentSchema.safeParse(rawDocument);
   if (directResult.success) {
-    return directResult.data;
+    return repairGeneratedDocumentWithExplicitTarget(directResult.data, sourceText, explicitTargetText);
   }
 
   const normalizedDocument = normalizeGeneratedDocumentPayload(
@@ -5581,7 +5840,7 @@ async function editDocumentWithDashScope(input: {
   );
   const normalizedResult = documentSchema.safeParse(normalizedDocument);
   if (normalizedResult.success) {
-    return normalizedResult.data;
+    return repairGeneratedDocumentWithExplicitTarget(normalizedResult.data, sourceText, explicitTargetText);
   }
 
   throw normalizedResult.error;
@@ -5669,12 +5928,14 @@ async function editDocumentWithReplicate(input: {
   if (!content.trim()) {
     throw new Error(
       locale === "zh"
-        ? "Replicate 文档编辑未返回可解析内容。"
+        ? "Replicate ?????????????"
         : "Replicate document editing returned no parseable content.",
     );
   }
 
-  return parseGeneratedDocumentFromRawText(content, input.prompt, input.requireSpreadsheet);
+  const explicitTargetText = extractExplicitEditingTargetText(input.prompt);
+  const parsedDocument = parseGeneratedDocumentFromRawText(content, input.prompt, input.requireSpreadsheet);
+  return repairGeneratedDocumentWithExplicitTarget(parsedDocument, sourceText, explicitTargetText);
 }
 
 function fileToDataUrl(file: File) {
@@ -7099,24 +7360,7 @@ function buildReplicateVideoEditPrompt(
   },
 ) {
   const cleanedPrompt = userPrompt.replace(/\s+/g, " ").trim();
-  return joinPromptLines([
-    "Edit the uploaded video strictly according to the user's request.",
-    "Treat this as an edit of the same source video, not a brand-new unrelated clip.",
-    "Apply only the changes explicitly requested by the user, and keep all unrequested content consistent with the source video.",
-    options?.useReferenceKeyframe
-      ? "Use the extracted reference keyframe as the starting frame for regeneration, and continue the same shot naturally from that frame."
-      : "Use the uploaded source video as the reference and preserve its shot continuity.",
-    options?.referenceFrameCount && options.referenceFrameCount > 1
-      ? `The reference comes from ${options.referenceFrameCount} extracted frames of the same source video; keep the same subject, framing, and motion style across the edited clip.`
-      : "Preserve subject identity, framing, camera perspective, scene layout, and motion continuity unless the user explicitly asks to change them.",
-    "Preserve the original aspect ratio, shot scale, camera perspective, and perceived camera motion unless the user explicitly asks to change them.",
-    "If the user explicitly requests changing time of day, lighting, weather, background, style, or visible scene attributes, those requested changes must override the source video clearly.",
-    "When a requested change conflicts with the source appearance, follow the requested change rather than preserving the conflicting source attribute.",
-    "Keep temporal coherence, stable identity, natural physics, and visually consistent materials throughout the clip.",
-    "Do not add text, logos, subtitles, watermarks, unrelated subjects, or unrelated scene changes unless the user explicitly requests them.",
-    `User request: ${cleanedPrompt}`,
-    "If the request is in Chinese, understand and execute it correctly.",
-  ]);
+  return cleanedPrompt;
 }
 
 function buildReplicateVideoEditInputs(input: {
@@ -7246,6 +7490,9 @@ async function editVideoWithReplicate(input: {
   db: NonNullable<Awaited<ReturnType<typeof getRoutedRuntimeDbClient>>>;
   locale?: PromptLocale;
 }) {
+  // 添加 2 秒延迟以避免触发 Replicate 速率限制（每秒 3000 次请求）
+  await waitFor(2000);
+
   const locale = input.locale ?? getRuntimeLocale();
   const referenceKeyframeFile =
     input.keyframeFile ?? input.frameFiles[Math.min(1, input.frameFiles.length - 1)] ?? input.frameFiles[0] ?? null;
@@ -9679,21 +9926,24 @@ export async function POST(req: Request) {
 
     analyticsUserId = loginUser?.userId || null;
     const isGuestRequest = !loginUser;
+    const allowGuestFileEditingForTests =
+      process.env.ALLOW_GUEST_FILE_EDITING_FOR_TESTS === "true" &&
+      process.env.NODE_ENV !== "production";
 
     if (!isGenerationTab(type) || !isConnectedGenerationTab(type)) {
-      return Response.json({ message: "当前类型尚未接入后端模型。" }, { status: 400 });
+      return Response.json({ message: "?????????????" }, { status: 400 });
     }
 
-    if (isGuestRequest && type !== "text") {
+    if (isGuestRequest && type !== "text" && !(allowGuestFileEditingForTests && type === "edit_text")) {
       return jsonWithCookie(
-        { message: "未登录用户仅可使用文档生成功能。" },
+        { message: "????????????????" },
         { status: 403 },
         guestSetCookieHeader,
       );
     }
 
     if (!prompt) {
-      return Response.json({ message: "请输入生成提示词。" }, { status: 400 });
+      return Response.json({ message: "?????????" }, { status: 400 });
     }
 
     const modelConfig = getGenerationModelConfig(type, requestPayload.model);
