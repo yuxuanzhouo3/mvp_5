@@ -261,6 +261,49 @@ function normalizeTableRows(columns: string[], rows: string[][]) {
   });
 }
 
+function shouldPromoteFirstRowToWorksheetHeader(columns: string[], rows: string[][]) {
+  if (rows.length === 0) {
+    return false;
+  }
+
+  if (columns.length === 0) {
+    return true;
+  }
+
+  return columns.every((column, index) => {
+    const normalized = normalizeExportCellText(column).toLowerCase();
+    return (
+      normalized.length === 0 ||
+      normalized === `?${index + 1}` ||
+      normalized === `${index + 1}` ||
+      normalized === `column ${index + 1}` ||
+      normalized === `column${index + 1}`
+    );
+  });
+}
+
+function resolveWorksheetColumnsAndRows(columns: string[], rows: string[][]) {
+  const normalizedColumns = columns.map((column) => normalizeExportCellText(column));
+  const normalizedRows = rows.map((row) => row.map((cell) => normalizeExportCellText(cell)));
+
+  if (!shouldPromoteFirstRowToWorksheetHeader(normalizedColumns, normalizedRows)) {
+    return {
+      columns: normalizedColumns,
+      rows: normalizeTableRows(normalizedColumns, normalizedRows),
+    };
+  }
+
+  const promotedColumns = (normalizedRows[0] ?? []).map((cell, index) => {
+    const normalized = normalizeExportCellText(cell);
+    return normalized || `Column ${index + 1}`;
+  });
+
+  return {
+    columns: promotedColumns,
+    rows: normalizeTableRows(promotedColumns, normalizedRows.slice(1)),
+  };
+}
+
 function buildMarkdownTable(columns: string[], rows: string[][]) {
   const normalizedRows = normalizeTableRows(columns, rows);
   const header = `| ${columns.join(" | ")} |`;
@@ -795,8 +838,9 @@ async function exportXlsx(document: GeneratedDocument) {
     const sheet = workbook.addWorksheet(
       getUniqueWorksheetName(table.title ?? section.heading, "SectionTable", usedSheetNames),
     );
-    sheet.columns = table.columns.map((column) => ({ header: column, key: column, width: 24 }));
-    for (const row of normalizeTableRows(table.columns, table.rows)) {
+    const worksheetData = resolveWorksheetColumnsAndRows(table.columns, table.rows);
+    sheet.columns = worksheetData.columns.map((column) => ({ header: column, key: column, width: 24 }));
+    for (const row of worksheetData.rows) {
       sheet.addRow(row);
     }
     configureWorksheet(sheet);
@@ -806,8 +850,9 @@ async function exportXlsx(document: GeneratedDocument) {
     const sheet = workbook.addWorksheet(
       getUniqueWorksheetName(sheetData.name, "Sheet", usedSheetNames),
     );
-    sheet.columns = sheetData.columns.map((column) => ({ header: column, key: column, width: 24 }));
-    for (const row of normalizeTableRows(sheetData.columns, sheetData.rows)) {
+    const worksheetData = resolveWorksheetColumnsAndRows(sheetData.columns, sheetData.rows);
+    sheet.columns = worksheetData.columns.map((column) => ({ header: column, key: column, width: 24 }));
+    for (const row of worksheetData.rows) {
       sheet.addRow(row);
     }
     configureWorksheet(sheet);
