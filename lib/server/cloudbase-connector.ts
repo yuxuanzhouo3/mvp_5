@@ -27,9 +27,7 @@ function resolveCloudBaseConfig(config?: CloudBaseConnectorConfig) {
     "";
 
   if (!envId || !secretId || !secretKey) {
-    throw new Error(
-      "CloudBase 配置缺失：需要 WECHAT_CLOUDBASE_ID/CLOUDBASE_SECRET_ID/CLOUDBASE_SECRET_KEY。",
-    );
+    return null;
   }
 
   return { envId, secretId, secretKey };
@@ -49,7 +47,13 @@ export async function getCloudBaseAdminDb(config?: CloudBaseConnectorConfig) {
     // 动态加载，避免进入不需要 CloudBase 的打包路径
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const cloudbase = require("@cloudbase/node-sdk");
-    const { envId, secretId, secretKey } = resolveCloudBaseConfig(config);
+    const cloudbaseConfig = resolveCloudBaseConfig(config);
+
+    if (!cloudbaseConfig) {
+      throw new Error("CloudBase 配置缺失");
+    }
+
+    const { envId, secretId, secretKey } = cloudbaseConfig;
 
     const client = cloudbase.init({
       env: envId,
