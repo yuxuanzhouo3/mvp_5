@@ -28,3 +28,4 @@ pnpm-debug.log*
 
 # 其他
 .vscode
+.codex-temp

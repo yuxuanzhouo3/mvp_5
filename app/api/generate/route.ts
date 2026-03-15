@@ -267,7 +267,7 @@ const DEFAULT_AUDIO_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
 const DEFAULT_VIDEO_OUTPUT_COUNT = DEFAULT_GENERATION_OUTPUT_COUNT;
 const DOCUMENT_GENERATION_MAX_TOKENS = getPositiveIntFromEnv(
   "DOCUMENT_GENERATION_MAX_TOKENS",
-  1000,
+  2200,
 );
 const REPLICATE_DOCUMENT_GENERATION_MAX_NEW_TOKENS = getPositiveIntFromEnv(
   "REPLICATE_DOCUMENT_GENERATION_MAX_NEW_TOKENS",
@@ -1152,24 +1152,32 @@ function buildReplicateVideoPrompt(userPrompt: string) {
   ]);
 }
 
-function buildReplicateDocumentPrompt(userPrompt: string, targetFormat: DocumentFileFormat) {
+function buildReplicateDocumentSystemPrompt(
+  targetFormat: DocumentFileFormat,
+  locale: PromptLocale = "en",
+) {
   const requireSpreadsheet = targetFormat === "xlsx";
 
   return joinPromptLines([
-    "Return exactly one raw JSON object. No markdown. No explanation.",
-    "The top-level object itself must contain title, summary, sections, and spreadsheets.",
+    ...buildFileGenerationSchemaPromptLines(locale),
+    ...getDocumentFormatGenerationGuidance(targetFormat, locale),
+    requireSpreadsheet
+      ? "Include at least one meaningful spreadsheet that matches the user's request."
+      : "Return an empty spreadsheets array unless tabular output is explicitly requested.",
+    "Return exactly one raw JSON object.",
     "Do not wrap the result inside response, data, output, document, message, or content fields.",
-    `Target format: ${targetFormat}.`,
-    requireSpreadsheet
-      ? "spreadsheets must contain at least one useful sheet."
-      : "spreadsheets must be an empty array unless tabular output is explicitly requested.",
-    "JSON shape:",
-    requireSpreadsheet
-      ? '{"title":"string","summary":"string","sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"table":{"title":"string","columns":["string"],"rows":[["string"]]}}],"spreadsheets":[{"name":"string","columns":["string"],"rows":[["string"]]}]}'
-      : '{"title":"string","summary":"string","sections":[{"heading":"string","paragraphs":["string"],"bullets":["string"],"table":{"title":"string","columns":["string"],"rows":[["string"]]}}],"spreadsheets":[]}',
-    "User request:",
-    userPrompt,
+    "If the user provides exact wording, copy that wording verbatim into the correct fields.",
+    "Do not summarize, compress, paraphrase, or omit any explicitly requested heading, sentence, bullet, or table row.",
+    "Do not output markdown fences or explanations.",
   ]);
+}
+
+function buildReplicateDocumentPrompt(
+  userPrompt: string,
+  targetFormat: DocumentFileFormat,
+  locale: PromptLocale = "en",
+) {
+  return buildFileGenerationPrompt(userPrompt, targetFormat, locale);
 }
 
 function getReplicateDocumentGenerationMaxNewTokens(targetFormat: DocumentFileFormat) {
@@ -1182,24 +1190,20 @@ function buildReplicateDocumentGenerationInputs(
   modelId: string,
   documentPrompt: string,
   maxNewTokens?: number,
+  systemPrompt = "You are a structured document generator. Return raw JSON only.",
 ) {
   if (modelId.startsWith("openai/")) {
     const primaryInput: Record<string, unknown> = {
       prompt: documentPrompt,
-      system_prompt: "You are a structured document generator. Return raw JSON only.",
+      system_prompt: systemPrompt,
       ...(maxNewTokens ? { max_completion_tokens: maxNewTokens } : {}),
     };
-
-    if (modelId === "openai/gpt-5-nano") {
-      primaryInput.reasoning_effort = "minimal";
-      primaryInput.verbosity = "low";
-    }
 
     return {
       primaryInput,
       fallbackInput: {
         prompt: documentPrompt,
-        system_prompt: "You are a structured document generator. Return raw JSON only.",
+        system_prompt: systemPrompt,
       },
     };
   }
@@ -1830,6 +1834,17 @@ function buildReplicateAudioInputs(modelId: string, promptForModel: string) {
     };
   }
 
+  if (modelId === "inworld/tts-1.5-mini") {
+    return {
+      primaryInput: {
+        text: promptForModel,
+      },
+      fallbackInput: {
+        text: promptForModel,
+      },
+    };
+  }
+
   return {
     primaryInput: {
       prompt: promptForModel,
@@ -2266,7 +2281,14 @@ function stripMarkdownCodeFence(rawText: string) {
 }
 
 function normalizeExtractedJsonCandidate(candidate: string) {
-  return candidate.replace(/"Sections":/g, '"sections":');
+  return candidate
+    .replace(/"Sections":/g, '"sections":')
+    .replace(/,(\s*[}\]])/g, '$1')
+    .replace(/\n/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/\t/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function findBalancedJsonObjectEnd(text: string, startIndex: number) {
@@ -2387,6 +2409,19 @@ function extractJsonObjectText(rawText: string) {
   }
 
   return cleaned;
+}
+
+function looksLikeStructuredDocumentJsonResponse(rawText: string) {
+  const cleaned = stripMarkdownCodeFence(rawText).trim();
+  if (!cleaned) {
+    return false;
+  }
+
+  if (!cleaned.includes("{") || !cleaned.includes("}")) {
+    return false;
+  }
+
+  return /"(title|summary|sections|spreadsheets)"\s*:/.test(cleaned);
 }
 
 function extractChatMessageText(content: unknown) {
@@ -2970,24 +3005,55 @@ function normalizeTabularData(
     (Array.isArray(record.items) ? record.items : null) ??
     (Array.isArray(record.records) ? record.records : null);
 
-  const columns = uniqueTexts(
+  const explicitColumns = uniqueTexts(
     [
       ...extractTextFragments(record.columns),
       ...extractTextFragments(record.headers),
       ...extractTextFragments(record.header),
       ...extractTextFragments(record.fields),
-      ...extractColumnsFromRows(rowsSource, options.maxColumns),
     ],
     options.maxColumns,
     40,
   );
+  const columns =
+    explicitColumns.length > 0
+      ? explicitColumns
+      : uniqueTexts(extractColumnsFromRows(rowsSource, options.maxColumns), options.maxColumns, 40);
 
   const rows = buildTableRows(rowsSource, columns, options.maxRows, 200);
   if (columns.length === 0 || rows.length === 0) {
     return null;
   }
 
-  const title = firstNonEmptyText(record, ["title", "name", "label"], 80) || options.titleFallback;
+  const title =
+    firstNonEmptyText(
+      record,
+      [
+        "title",
+        "name",
+        "label",
+        "sheetName",
+        "sheet_name",
+        "sheetTitle",
+        "sheet_title",
+        "worksheetName",
+        "worksheet_name",
+        "worksheetTitle",
+        "worksheet_title",
+        "tabName",
+        "tab_name",
+        "tabTitle",
+        "tab_title",
+        "tableName",
+        "table_name",
+        "tableTitle",
+        "table_title",
+        "sheet",
+        "worksheet",
+        "tab",
+      ],
+      80,
+    ) || options.titleFallback;
   return {
     title,
     columns,
@@ -3102,6 +3168,204 @@ function buildFallbackSpreadsheet(sections: GeneratedDocument["sections"]) {
   } satisfies GeneratedDocument["spreadsheets"][number];
 }
 
+﻿function trimPromptSpreadsheetInstructionValue(value: string) {
+  return value.trim().replace(/[.]+$/, "").trim();
+}
+
+function resolveSpreadsheetInstructionIndex(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (["first", "1", "1st", "one"].includes(normalized)) {
+    return 0;
+  }
+  if (["second", "2", "2nd", "two"].includes(normalized)) {
+    return 1;
+  }
+  if (["third", "3", "3rd", "three"].includes(normalized)) {
+    return 2;
+  }
+  return null;
+}
+
+function parsePromptSpreadsheetColumns(value: string) {
+  return uniqueTexts(
+    trimPromptSpreadsheetInstructionValue(value)
+      .split(/\s*,\s*/)
+      .map((column) => trimPromptSpreadsheetInstructionValue(column))
+      .filter(Boolean),
+    8,
+    40,
+  );
+}
+
+function parsePromptSpreadsheetRows(value: string, columnCount: number) {
+  const normalized = value
+    .replace(/\|\s*Pass\s*[.;]\s*(?=[^|]+\|)/g, "| Pass\n")
+    .replace(/[;]/g, "\n");
+
+  const rows: string[][] = [];
+  for (const rawSegment of normalized.split(/\n/)) {
+    const segment = trimPromptSpreadsheetInstructionValue(rawSegment);
+    if (!segment || !segment.includes("|")) {
+      continue;
+    }
+
+    const parts = segment
+      .split("|")
+      .map((part) => truncateText(trimPromptSpreadsheetInstructionValue(part), 200));
+    if (parts.length < columnCount) {
+      continue;
+    }
+
+    const row = parts.slice(0, columnCount - 1);
+    row.push(parts.slice(columnCount - 1).join(" | "));
+    if (row.some((cell) => cell.length > 0)) {
+      rows.push(row);
+    }
+  }
+
+  return rows.slice(0, 50);
+}
+
+type PromptSpreadsheetDraft = {
+  name: string;
+  columns: string[];
+  rows: string[][];
+};
+
+function getPromptSpreadsheetDraft(drafts: PromptSpreadsheetDraft[], index: number) {
+  while (drafts.length <= index) {
+    drafts.push({ name: "", columns: [], rows: [] });
+  }
+  return drafts[index]!;
+}
+
+function extractPromptDefinedSpreadsheets(prompt: string): GeneratedDocument["spreadsheets"] {
+  const drafts: PromptSpreadsheetDraft[] = [];
+  let pendingRowsIndex: number | null = null;
+
+  for (const rawLine of prompt.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    let match = line.match(/^The result must contain exactly one spreadsheet named:\s*(.+)$/i);
+    if (match) {
+      getPromptSpreadsheetDraft(drafts, 0).name = truncateText(trimPromptSpreadsheetInstructionValue(match[1]), 31);
+      pendingRowsIndex = null;
+      continue;
+    }
+
+    match = line.match(/^The (first|second|third) spreadsheet name must be:\s*(.+)$/i);
+    if (match) {
+      const index = resolveSpreadsheetInstructionIndex(match[1]);
+      if (index !== null) {
+        getPromptSpreadsheetDraft(drafts, index).name = truncateText(
+          trimPromptSpreadsheetInstructionValue(match[2]),
+          31,
+        );
+      }
+      pendingRowsIndex = null;
+      continue;
+    }
+
+    match = line.match(/^The spreadsheet headers must be exactly:\s*(.+)$/i);
+    if (match) {
+      getPromptSpreadsheetDraft(drafts, 0).columns = parsePromptSpreadsheetColumns(match[1]);
+      pendingRowsIndex = null;
+      continue;
+    }
+
+    match = line.match(/^The (first|second|third) spreadsheet headers must be exactly:\s*(.+)$/i);
+    if (match) {
+      const index = resolveSpreadsheetInstructionIndex(match[1]);
+      if (index !== null) {
+        getPromptSpreadsheetDraft(drafts, index).columns = parsePromptSpreadsheetColumns(match[2]);
+      }
+      pendingRowsIndex = null;
+      continue;
+    }
+
+    match = line.match(/^The spreadsheet must contain exactly these .* rows:\s*(.*)$/i);
+    if (match) {
+      const draft = getPromptSpreadsheetDraft(drafts, 0);
+      const inlineRows = match[1].trim();
+      if (inlineRows) {
+        draft.rows = parsePromptSpreadsheetRows(inlineRows, Math.max(draft.columns.length, 3));
+        pendingRowsIndex = null;
+      } else {
+        pendingRowsIndex = 0;
+      }
+      continue;
+    }
+
+    match = line.match(/^The (first|second|third) spreadsheet must contain exactly these .* rows:\s*(.*)$/i);
+    if (match) {
+      const index = resolveSpreadsheetInstructionIndex(match[1]);
+      if (index !== null) {
+        const draft = getPromptSpreadsheetDraft(drafts, index);
+        const inlineRows = match[2].trim();
+        if (inlineRows) {
+          draft.rows = parsePromptSpreadsheetRows(inlineRows, Math.max(draft.columns.length, 3));
+          pendingRowsIndex = null;
+        } else {
+          pendingRowsIndex = index;
+        }
+      }
+      continue;
+    }
+
+    if (pendingRowsIndex !== null && /[|]/.test(line)) {
+      const draft = getPromptSpreadsheetDraft(drafts, pendingRowsIndex);
+      draft.rows.push(...parsePromptSpreadsheetRows(line, Math.max(draft.columns.length, 3)));
+      continue;
+    }
+
+    pendingRowsIndex = null;
+  }
+
+  return drafts
+    .map((draft, index) => ({
+      name: truncateText(draft.name || `Sheet ${index + 1}`, 31),
+      columns: uniqueTexts(draft.columns, 8, 40),
+      rows: draft.rows.slice(0, 50).map((row) => row.slice(0, Math.max(draft.columns.length, 1))),
+    }))
+    .filter((sheet) => sheet.name && sheet.columns.length > 0 && sheet.rows.length > 0)
+    .slice(0, 3);
+}
+
+function isAutoGeneratedSpreadsheetName(name: string) {
+  return /^(table|sheet|worksheet)\s+\d+$/i.test(name.trim());
+}
+
+function resolveGeneratedSpreadsheets(
+  spreadsheets: GeneratedDocument["spreadsheets"],
+  prompt: string,
+  sections: GeneratedDocument["sections"],
+  requireSpreadsheet: boolean,
+) {
+  if (!requireSpreadsheet) {
+    return [] satisfies GeneratedDocument["spreadsheets"];
+  }
+
+  const promptDefinedSpreadsheets = extractPromptDefinedSpreadsheets(prompt);
+  if (promptDefinedSpreadsheets.length > 0) {
+    if (spreadsheets.length === 0) {
+      return promptDefinedSpreadsheets;
+    }
+
+    if (
+      promptDefinedSpreadsheets.length > spreadsheets.length ||
+      spreadsheets.every((sheet) => isAutoGeneratedSpreadsheetName(sheet.name))
+    ) {
+      return promptDefinedSpreadsheets;
+    }
+  }
+
+  return spreadsheets.length > 0 ? spreadsheets : [buildFallbackSpreadsheet(sections)];
+}
+
+
 function normalizeLooseJsonObjectKey(key: string) {
   return key.replace(/[​-‍﻿]/g, "").replace(/\s+/g, "").trim();
 }
@@ -3180,12 +3444,7 @@ function normalizeGeneratedDocumentPayload(
     title,
     summary,
     sections,
-    spreadsheets:
-      spreadsheets.length > 0
-        ? spreadsheets
-        : requireSpreadsheet
-          ? [buildFallbackSpreadsheet(sections)]
-          : [],
+    spreadsheets: resolveGeneratedSpreadsheets(spreadsheets, prompt, sections, requireSpreadsheet),
   };
 }
 
@@ -3681,7 +3940,7 @@ function buildGeneratedDocumentFromPlainText(
     title: title || truncateText(prompt, 120) || (containsCjkText(cleaned) ? "生成文档" : "Generated Document"),
     summary: normalizedSummary,
     sections: normalizedSections,
-    spreadsheets: requireSpreadsheet ? [buildFallbackSpreadsheet(normalizedSections)] : [],
+    spreadsheets: resolveGeneratedSpreadsheets([], prompt, normalizedSections, requireSpreadsheet),
   };
 }
 
@@ -3981,6 +4240,10 @@ function parseGeneratedDocumentFromRawText(
       rawDocument = JSON.parse(extractJsonObjectText(rawDocument));
     }
   } catch {
+    if (looksLikeStructuredDocumentJsonResponse(rawText)) {
+      throw new Error("文档生成返回了不完整或非法的 JSON，已阻止导出损坏的 PDF。请重试生成。");
+    }
+
     const plainTextDocument = buildGeneratedDocumentFromPlainText(
       rawText,
       prompt,
@@ -4001,6 +4264,10 @@ function parseGeneratedDocumentFromRawText(
   );
   if (resolvedDocument) {
     return resolvedDocument;
+  }
+
+  if (looksLikeStructuredDocumentJsonResponse(rawText)) {
+    throw new Error("文档生成返回了不完整或非法的 JSON，已阻止导出损坏的 PDF。请重试生成。");
   }
 
   const plainTextDocument = buildGeneratedDocumentFromPlainText(
@@ -4094,12 +4361,14 @@ async function generateDocumentWithDashScope(
 ) {
   const requireSpreadsheet = targetFormat === "xlsx";
   const normalizedModelId = normalizeReplicateTextModelId(modelId);
-  const documentPrompt = buildReplicateDocumentPrompt(prompt, targetFormat);
+  const documentSystemPrompt = buildReplicateDocumentSystemPrompt(targetFormat, "en");
+  const documentPrompt = buildReplicateDocumentPrompt(prompt, targetFormat, "en");
   const runDocumentGeneration = async (maxNewTokens?: number) => {
     const { primaryInput, fallbackInput } = buildReplicateDocumentGenerationInputs(
       normalizedModelId,
       documentPrompt,
       maxNewTokens,
+      documentSystemPrompt,
     );
 
     let payload: ReplicatePredictionPayload;
@@ -7225,7 +7494,7 @@ function getReplicateAudioEditingPipelineModelIds(modelId: string) {
     synthesisModelId: isReplicateAudioEditingPipelineModelId(modelId)
       ? "minimax/speech-02-turbo"
       : normalizeReplicateAudioModelId(modelId),
-    rewriteModelId: "lucataco/qwen1.5-1.8b-chat",
+    rewriteModelId: "openai/gpt-5-nano",
   };
 }
 
@@ -7609,11 +7878,12 @@ async function transcribeAudioWithReplicate(
 
 function buildReplicateAudioEditingPrompt(instruction: string, transcript: string) {
   return joinPromptLines([
-    "You are an audio script editor. Rewrite the transcript strictly according to the user's requirements.",
-    "Preserve the core meaning, key facts, named entities, and information density unless the user explicitly requests deletions or rewrites.",
-    "Only modify what the user explicitly mentions. Do not add, delete, summarize, soften, or restyle unrelated content.",
-    "The output must be directly speakable, natural when read aloud, and free of explanations or markdown.",
-    "If the instruction is in Chinese, understand and execute it correctly.",
+    "You are an audio script editor. Apply ONLY the exact changes requested.",
+    "CRITICAL RULES:",
+    "1. Make MINIMAL modifications - only change what is explicitly mentioned",
+    "2. PRESERVE the original length - do NOT add, expand, or generate new content",
+    "3. If instruction says 'change X to Y', ONLY replace X with Y, keep everything else identical",
+    "4. Output ONLY the modified transcript, no explanations or markdown",
     "",
     "Editing requirements:",
     instruction,
@@ -8670,6 +8940,29 @@ async function detectAudioWithReplicate(input: {
     input.file,
     input.locale,
   );
+  if (input.modelId === "vaibhavs10/incredibly-fast-whisper-detect") {
+    const transcription = await transcribeAudioWithReplicate(
+      input.requestId,
+      "vaibhavs10/incredibly-fast-whisper",
+      uploaded.publicUrl,
+      input.locale,
+    );
+    const detectionPrompt = buildReplicateCompactAudioDetectionPrompt(input.file.name, input.locale);
+    const detectionResult = await waitForReplicateDetectionResult({
+      requestId: input.requestId,
+      modelId: "openai/gpt-5-nano",
+      primaryInput: {
+        prompt: `${detectionPrompt}\n\nTranscript:\n${transcription}`,
+      },
+      fallbackInput: {
+        prompt: `${detectionPrompt}\n\nTranscript:\n${transcription}`,
+      },
+      timeoutMessage: input.locale === "zh" ? "文本检测超时" : "Text detection timed out",
+      locale: input.locale,
+    });
+    return detectionResult;
+  }
+
   const normalizedModelId = resolveReplicateAudioDetectionModelId(input.modelId);
   const systemPrompt = buildReplicateAudioDetectionSystemPrompt(input.locale);
   const userPrompt = buildReplicateAudioDetectionUserPrompt(input.file.name, input.locale);

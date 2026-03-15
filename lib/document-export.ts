@@ -29,28 +29,28 @@ export type GeneratedFileFormat = DocumentFileFormat;
 const generatedDocumentTableSchema = z.object({
   title: z.string().trim().min(1).max(80).optional(),
   columns: z.array(z.string().trim().min(1).max(40)).min(1).max(8),
-  rows: z.array(z.array(z.string().trim().max(200)).min(1).max(8)).max(30),
+  rows: z.array(z.array(z.string().trim().transform(s => s.slice(0, 200))).min(1).max(8)).max(30),
 });
 
 const generatedDocumentSectionSchema = z.object({
-  heading: z.string().trim().min(1).max(80),
-  paragraphs: z.array(z.string().trim().min(1).max(1500)).min(1).max(4),
-  bullets: z.array(z.string().trim().min(1).max(200)).max(8).default([]),
+  heading: z.string().trim().min(1).transform(s => s.slice(0, 80)),
+  paragraphs: z.array(z.string().trim().min(1).transform(s => s.slice(0, 1500))).min(1).max(4),
+  bullets: z.array(z.string().trim().min(1).transform(s => s.slice(0, 200))).max(8).default([]),
   table: generatedDocumentTableSchema.optional(),
 });
 
 const generatedSpreadsheetSchema = z.object({
   name: z.string().trim().min(1).max(31),
   columns: z.array(z.string().trim().min(1).max(40)).min(1).max(8),
-  rows: z.array(z.array(z.string().trim().max(200)).min(1).max(8)).min(1).max(50),
+  rows: z.array(z.array(z.string().trim().transform(s => s.slice(0, 200))).min(1).max(8)).min(1).max(50),
 });
 
 export function getGeneratedDocumentSchema(options?: { requireSpreadsheet?: boolean }) {
   const requireSpreadsheet = options?.requireSpreadsheet ?? false;
 
   return z.object({
-    title: z.string().trim().min(1).max(120),
-    summary: z.string().trim().min(1).max(1200),
+    title: z.string().trim().min(1).transform(s => s.slice(0, 120)),
+    summary: z.string().trim().min(1).transform(s => s.slice(0, 1200)),
     sections: z.array(generatedDocumentSectionSchema).min(1).max(8),
     spreadsheets: z.array(generatedSpreadsheetSchema).min(requireSpreadsheet ? 1 : 0).max(3),
   });
@@ -150,13 +150,13 @@ function normalizeExportText(value: string) {
     .replace(/\r\n?/g, "\n")
     .replace(/\u00A0/g, " ")
     .replace(EXPORT_PDF_SPACE_CHAR_REGEX, " ")
-    .replace(EXPORT_PDF_HYPHEN_CHAR_REGEX, "-")
-    .replace(EXPORT_PDF_APOSTROPHE_CHAR_REGEX, "'")
-    .replace(EXPORT_PDF_QUOTE_CHAR_REGEX, `"`)
-    .replace(EXPORT_PDF_ELLIPSIS_CHAR_REGEX, "...")
     .replace(EXPORT_ZERO_WIDTH_CHAR_REGEX, "")
     .replace(EXPORT_CONTROL_CHAR_REGEX, "")
     .trim();
+}
+
+function normalizePdfText(value: string) {
+  return normalizeExportText(value);
 }
 
 function normalizeExportParagraphText(value: string) {
@@ -165,6 +165,10 @@ function normalizeExportParagraphText(value: string) {
 
 function normalizeExportCellText(value: string) {
   return normalizeExportText(value).replace(/\n{2,}/g, "\n");
+}
+
+function normalizePdfParagraphText(value: string) {
+  return normalizePdfText(value).replace(/\n{3,}/g, "\n\n");
 }
 
 function sanitizeFileBaseName(rawTitle: string) {
@@ -393,7 +397,7 @@ export async function loadPdfFontBytes(text = "") {
 }
 
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number) {
-  const normalizedText = normalizeExportParagraphText(text);
+  const normalizedText = normalizePdfParagraphText(text);
   if (!normalizedText) {
     return [""];
   }
@@ -696,6 +700,7 @@ async function exportDocx(document: GeneratedDocument) {
       }
 
       const rows = normalizeTableRows(section.table.columns, section.table.rows);
+
       const docxRows = [
         new TableRow({
           children: section.table.columns.map(
@@ -708,13 +713,13 @@ async function exportDocx(document: GeneratedDocument) {
           ),
         }),
         ...rows.map(
-          (row) =>
-            new TableRow({
-              children: row.map(
-                (value) =>
-                  new TableCell({
-                    children: [new Paragraph({ text: value })],
-                  }),
+            (row) =>
+              new TableRow({
+                children: row.map(
+                  (value) =>
+                    new TableCell({
+                      children: [new Paragraph({ text: value })],
+                    }),
               ),
             }),
         ),
