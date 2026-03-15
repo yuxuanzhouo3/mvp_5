@@ -540,16 +540,14 @@ async function exportPdf(document: GeneratedDocument) {
 
   let font: PDFFont;
   if (!embeddedFont) {
-    if (containsCjkText(pdfFontProbeText)) {
-      throw new Error("Unable to find a PDF font that supports the current document content. Please configure PDF_FONT_PATH or install a compatible font.");
-    }
-
+    console.warn("PDF font not found, using standard Helvetica font. Chinese characters may not display correctly.");
     font = await pdf.embedFont(StandardFonts.Helvetica);
   } else {
     try {
       font = await pdf.embedFont(embeddedFont.bytes, { subset: true });
     } catch (error) {
-      throw new Error("PDF font load failed: " + embeddedFont.path + ". Error: " + String(error));
+      console.warn("PDF font load failed: " + embeddedFont.path + ". Falling back to Helvetica. Error: " + String(error));
+      font = await pdf.embedFont(StandardFonts.Helvetica);
     }
   }
   const marginX = 50;
