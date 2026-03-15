@@ -18,13 +18,13 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     title: isDomesticVersion
-      ? `${appDisplayName} - ?????????`
+      ? `${appDisplayName} - 多媒体AI创作平台`
       : `${appDisplayName} - Multimedia AI Creation Platform`,
     description: isDomesticVersion
-      ? "????????????????"
+      ? "统一的多媒体生成、编辑与AI检测平台"
       : "Unified platform for multimedia generation, editing and AI detection",
     keywords: isDomesticVersion
-      ? `${appDisplayName}, AI??, AI??, ?????, ????, ????, ????, AI??`
+      ? `${appDisplayName}, AI生成, AI编辑, 多媒体生成, 图片, 视频, 文档, AI检测`
       : `${appDisplayName}, AI creation, AI editing, multimedia generation, image, video, document, detection`,
     authors: [{ name: `${appDisplayName} Team` }],
   };
