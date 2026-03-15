@@ -5711,6 +5711,7 @@ function repairGeneratedDocumentMissingSourceSegments(
       heading: 'Recovered Content',
       paragraphs: missingSegments.slice(0, 4),
       bullets: [],
+      table: undefined,
     });
   } else {
     const lastSection = nextSections[nextSections.length - 1]!;
