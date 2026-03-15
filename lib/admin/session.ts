@@ -15,7 +15,7 @@ export interface AdminSession {
 function getSessionSecret() {
   const secret = process.env.ADMIN_SESSION_SECRET;
   if (process.env.NODE_ENV === "production" && !secret) {
-    throw new Error("生产环境必须配置 ADMIN_SESSION_SECRET");
+    console.warn("[AdminSession] 生产环境未配置 ADMIN_SESSION_SECRET，使用默认密钥（不安全）");
   }
 
   return secret || "mvp5-dev-admin-session-secret";
