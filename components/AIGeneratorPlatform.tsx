@@ -2342,12 +2342,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   };
 
   const handleTierQuotaTriggerClick = () => {
-    if (isCompactViewport) {
-      setShowTierQuota((previous) => !previous);
-      return;
-    }
-
-    setShowTierQuota(true);
+    setShowTierQuota((previous) => !previous);
   };
 
   return (
@@ -2356,8 +2351,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         <header className="relative z-30 overflow-visible rounded-xl sm:rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-[#1f2937]/70 backdrop-blur shadow-sm px-3 sm:px-5 py-3 sm:py-4">
           <div className="flex flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center">
             <div className="min-w-0 w-full flex-1">
-              <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                <h1 className="w-full max-w-full text-[1.45rem] font-bold leading-tight bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent break-words sm:text-[1.9rem] lg:text-3xl lg:truncate">
+              <div className="flex min-w-0 flex-col items-start gap-2.5 sm:flex-row sm:flex-wrap sm:items-center">
+                <h1 className="min-w-0 w-full max-w-full text-[clamp(1.2rem,8vw,1.75rem)] font-bold leading-[1.15] bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent break-all sm:text-[1.9rem] sm:break-words lg:text-3xl lg:truncate">
                   {appDisplayName || text.appName}
                 </h1>
                 <div
@@ -2368,7 +2363,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
                 >
                   <Badge
                     variant="outline"
-                    className={`self-start text-xs px-2.5 py-1 rounded-full font-semibold border-0 cursor-pointer ${tierClassName}`}
+                    className={`self-start max-w-full text-xs px-2.5 py-1 rounded-full font-semibold border-0 cursor-pointer ${tierClassName}`}
                     role="button"
                     tabIndex={0}
                     aria-expanded={showTierQuota}

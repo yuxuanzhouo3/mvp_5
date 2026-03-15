@@ -22,19 +22,27 @@ const LanguageContext = createContext<LanguageContextValue | undefined>(
   undefined,
 );
 
+function resolvePreferredLanguage(): UILanguage {
+  return DEFAULT_LANGUAGE === "en" ? "en" : "zh";
+}
+
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  const isDomesticVersion = DEFAULT_LANGUAGE === "zh";
-  const storageKey = `mornstudio-language-${DEFAULT_LANGUAGE}`;
+  const preferredLanguage = resolvePreferredLanguage();
+  const isDomesticVersion = preferredLanguage === "zh";
+  const storageKey = `mornstudio-language-${preferredLanguage}`;
   const [currentLanguage, setCurrentLanguage] = useState<UILanguage>(
-    DEFAULT_LANGUAGE as UILanguage,
+    preferredLanguage,
   );
 
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved === "zh" || saved === "en") {
       setCurrentLanguage(saved);
+      return;
     }
-  }, [storageKey]);
+
+    setCurrentLanguage(preferredLanguage);
+  }, [preferredLanguage, storageKey]);
 
   useEffect(() => {
     localStorage.setItem(storageKey, currentLanguage);
