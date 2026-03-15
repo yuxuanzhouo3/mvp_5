@@ -41,6 +41,7 @@ import {
 import { persistGenerationHistory } from "@/lib/server/generation-history";
 import { ensureDomesticAppUser } from "@/lib/payment/domestic-payment";
 import { ensureGlobalAppUser } from "@/lib/payment/global-payment";
+import { isDomesticRuntimeLanguage } from "@/config/runtime";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 180;
@@ -50,9 +51,7 @@ void generateObject;
 
 const CLOUDBASE_ACCESS_TOKEN_HEADER = "x-cloudbase-access-token";
 const AUTHORIZATION_HEADER = "authorization";
-const IS_DOMESTIC_RUNTIME = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
-  .toLowerCase()
-  .startsWith("zh");
+const IS_DOMESTIC_RUNTIME = isDomesticRuntimeLanguage();
 
 type PromptLocale = "zh" | "en";
 type ReplicateImageOutputFormat = "jpg" | "png" | "webp";

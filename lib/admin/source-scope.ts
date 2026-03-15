@@ -1,18 +1,14 @@
+import { getServerRuntimeLanguage } from "@/config/runtime";
+
 export type AdminSourceScope = "cn" | "global";
 
 export function getAdminSourceScope(): AdminSourceScope {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
-    .trim()
-    .toLowerCase();
-
-  if (language.startsWith("zh")) {
-    return "cn";
-  }
-  return "global";
+  const language = getServerRuntimeLanguage();
+  return language.startsWith("zh") ? "cn" : "global";
 }
 
 export function getAdminSourceLabel(source: AdminSourceScope) {
-  return source === "cn" ? "国内版" : "国际版";
+  return source === "cn" ? "???" : "???";
 }
 
 export function normalizeSource(value: string | null | undefined): AdminSourceScope {

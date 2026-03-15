@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { getRuntimeLanguage } from "@/config/runtime";
 import { formatDateTime } from "@/lib/utils/date-format";
 import {
   getDashboardStats,
@@ -48,7 +49,7 @@ function toNumericValue(value: unknown) {
 }
 
 function getFixedSource(): "global" | "cn" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  const language = getRuntimeLanguage();
   return language.startsWith("zh") ? "cn" : "global";
 }
 

@@ -1,3 +1,4 @@
+import { getServerRuntimeLanguage } from "@/config/runtime";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { getCloudBaseAdminDb } from "@/lib/server/cloudbase-connector";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -77,8 +78,7 @@ function toSafeInt(value: unknown, fallback: number) {
 }
 
 function resolveGuestQuotaBackend(): GuestQuotaBackend {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
-  return language.startsWith("zh") ? "cloudbase" : "supabase";
+  return getServerRuntimeLanguage().startsWith("zh") ? "cloudbase" : "supabase";
 }
 
 function getErrorMessage(error: unknown) {

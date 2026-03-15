@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getRuntimeLanguage } from "@/config/runtime";
 import {
   getOrders,
   getOrderStats,
@@ -113,7 +114,7 @@ function getPaymentStatusLabel(status: string): string {
 }
 
 function getFixedSourceScope(): "global" | "cn" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  const language = getRuntimeLanguage();
   return language.startsWith("zh") ? "cn" : "global";
 }
 

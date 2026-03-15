@@ -8,13 +8,11 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import { DEFAULT_LANGUAGE } from "@/config";
-
-type UILanguage = "zh" | "en";
+import type { RuntimeLanguage } from "@/config/runtime";
 
 interface LanguageContextValue {
-  currentLanguage: UILanguage;
-  setCurrentLanguage: (language: UILanguage) => void;
+  currentLanguage: RuntimeLanguage;
+  setCurrentLanguage: (language: RuntimeLanguage) => void;
   isDomesticVersion: boolean;
 }
 
@@ -22,16 +20,17 @@ const LanguageContext = createContext<LanguageContextValue | undefined>(
   undefined,
 );
 
-function resolvePreferredLanguage(): UILanguage {
-  return DEFAULT_LANGUAGE === "en" ? "en" : "zh";
-}
-
-export function LanguageProvider({ children }: { children: ReactNode }) {
-  const preferredLanguage = resolvePreferredLanguage();
-  const isDomesticVersion = preferredLanguage === "zh";
-  const storageKey = `mornstudio-language-${preferredLanguage}`;
-  const [currentLanguage, setCurrentLanguage] = useState<UILanguage>(
-    preferredLanguage,
+export function LanguageProvider({
+  children,
+  defaultLanguage,
+}: {
+  children: ReactNode;
+  defaultLanguage: RuntimeLanguage;
+}) {
+  const isDomesticVersion = defaultLanguage === "zh";
+  const storageKey = `mornstudio-language-${defaultLanguage}`;
+  const [currentLanguage, setCurrentLanguage] = useState<RuntimeLanguage>(
+    defaultLanguage,
   );
 
   useEffect(() => {
@@ -41,13 +40,14 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    setCurrentLanguage(preferredLanguage);
-  }, [preferredLanguage, storageKey]);
+    setCurrentLanguage(defaultLanguage);
+  }, [defaultLanguage, storageKey]);
 
   useEffect(() => {
     localStorage.setItem(storageKey, currentLanguage);
     document.documentElement.lang = currentLanguage;
-  }, [currentLanguage, storageKey]);
+    document.documentElement.setAttribute("data-default-language", defaultLanguage);
+  }, [currentLanguage, defaultLanguage, storageKey]);
 
   const value = useMemo(
     () => ({ currentLanguage, setCurrentLanguage, isDomesticVersion }),
@@ -66,4 +66,3 @@ export function useLanguage(): LanguageContextValue {
   }
   return context;
 }
-

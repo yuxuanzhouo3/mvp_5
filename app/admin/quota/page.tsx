@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { getRuntimeLanguage } from "@/config/runtime";
 import {
   getQuotaConfig,
   updateAddonPackageLimits,
@@ -22,12 +23,12 @@ import { Input } from "@/components/ui/input";
 import { Loader2, RefreshCw } from "lucide-react";
 
 function getSourceCode() {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  const language = getRuntimeLanguage();
   return language.startsWith("zh") ? "cn" : "global";
 }
 
 function getSourceLabel() {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  const language = getRuntimeLanguage();
   return language.startsWith("zh") ? "国内版（cn）" : "国际版（global）";
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { getRuntimeLanguage } from "@/config/runtime";
 import { formatDateTime } from "@/lib/utils/date-format";
 import {
   listReleases,
@@ -100,7 +101,7 @@ const VARIANTS: Record<Platform, { value: Variant; label: string }[]> = {
 };
 
 function getFixedUploadTarget(): "supabase" | "cloudbase" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  const language = getRuntimeLanguage();
   return language.startsWith("zh") ? "cloudbase" : "supabase";
 }
 

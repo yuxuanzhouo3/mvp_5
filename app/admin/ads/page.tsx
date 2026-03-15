@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { getRuntimeLanguage } from "@/config/runtime";
 import { formatDateTime } from "@/lib/utils/date-format";
 import {
   getAdminAds,
@@ -75,7 +76,7 @@ type Advertisement = Omit<AdminAd, "source" | "status" | "link_url"> & {
 };
 
 function getUiSourceFromEnv(): "supabase" | "cloudbase" {
-  const language = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase();
+  const language = getRuntimeLanguage();
   return language.startsWith("zh") ? "cloudbase" : "supabase";
 }
 

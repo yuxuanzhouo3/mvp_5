@@ -1,3 +1,4 @@
+import { getServerRuntimeLanguage } from "@/config/runtime";
 import "server-only";
 
 import type { AdminSourceScope } from "@/lib/admin/source-scope";
@@ -170,7 +171,7 @@ function resolveLanguage(input: string | null | undefined) {
 }
 
 export function resolveBackendFromLanguage(
-  input: string | null | undefined = process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE,
+  input: string | null | undefined = getServerRuntimeLanguage(),
 ): DatabaseBackend {
   return resolveLanguage(input).startsWith("zh") ? "cloudbase" : "supabase";
 }

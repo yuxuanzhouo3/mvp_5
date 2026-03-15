@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { getRuntimeLanguage } from "@/config/runtime";
 import { useRouter } from "next/navigation";
 import { adminLogin } from "@/actions/admin-auth";
 
@@ -13,7 +14,7 @@ export default function AdminLoginForm({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string>("");
   const sourceLabel =
-    (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh").toLowerCase().startsWith("zh")
+    getRuntimeLanguage() === "zh"
       ? "国内版"
       : "国际版";
 

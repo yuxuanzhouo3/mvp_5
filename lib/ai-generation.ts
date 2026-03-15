@@ -1,4 +1,4 @@
-import { DEFAULT_LANGUAGE } from "@/config";
+import { getRuntimeLanguage } from "@/config/runtime";
 
 export type GenerationTab =
   | "text"
@@ -389,41 +389,48 @@ const GENERATION_MODELS: readonly GenerationModelConfig[] = [
   },
   ] as const;
 
-const DEFAULT_MODEL_BY_TAB: Record<GenerationTab, string> = {
-  text: DEFAULT_LANGUAGE === "zh" ? "qwen-flash" : "openai/gpt-5-nano",
-  image: DEFAULT_LANGUAGE === "zh" ? "wanx2.0-t2i-turbo" : "prunaai/flux.1-dev-lora",
-  video: DEFAULT_LANGUAGE === "zh" ? "wan2.2-i2v-flash" : "wan-video/wan-2.2-t2v-fast",
-  audio:
-    DEFAULT_LANGUAGE === "zh"
-      ? "qwen3-tts-flash"
-      : "minimax/speech-2.8-turbo",
-  edit_text:
-    DEFAULT_LANGUAGE === "zh" ? "qwen-flash-edit" : "openai/gpt-5-nano-edit",
-  edit_image:
-    DEFAULT_LANGUAGE === "zh" ? "wanx2.1-imageedit" : "prunaai/p-image-edit",
-  edit_audio:
-    DEFAULT_LANGUAGE === "zh"
-      ? "paraformer-v2-qwen3-tts-flash"
-      : "vaibhavs10/incredibly-fast-whisper+minimax/speech-02-turbo",
-  edit_video:
-    DEFAULT_LANGUAGE === "zh" ? "wan2.2-i2v-flash" : "lightricks/ltx-video-0.9.7-distilled",
-  detect_text:
-    DEFAULT_LANGUAGE === "zh"
-      ? "qwen-flash-detect"
-      : "openai/gpt-5-nano-detect",
-  detect_image:
-    DEFAULT_LANGUAGE === "zh"
-      ? "qwen3-vl-flash-image-detect"
-      : "openai/gpt-5-nano-image-detect",
-  detect_audio:
-    DEFAULT_LANGUAGE === "zh"
-      ? "qwen3-omni-flash-realtime-detect"
-      : "vaibhavs10/incredibly-fast-whisper-detect",
-  detect_video:
-    DEFAULT_LANGUAGE === "zh"
-      ? "qwen3-vl-flash-video-detect"
-      : "openai/gpt-5-nano-video-detect",
-};
+function getDefaultModelIdByTab(tab: GenerationTab) {
+  const runtimeLanguage = getRuntimeLanguage();
+
+  switch (tab) {
+    case "text":
+      return runtimeLanguage === "zh" ? "qwen-flash" : "openai/gpt-5-nano";
+    case "image":
+      return runtimeLanguage === "zh" ? "wanx2.0-t2i-turbo" : "prunaai/flux.1-dev-lora";
+    case "video":
+      return runtimeLanguage === "zh" ? "wan2.2-i2v-flash" : "wan-video/wan-2.2-t2v-fast";
+    case "audio":
+      return runtimeLanguage === "zh" ? "qwen3-tts-flash" : "minimax/speech-2.8-turbo";
+    case "edit_text":
+      return runtimeLanguage === "zh" ? "qwen-flash-edit" : "openai/gpt-5-nano-edit";
+    case "edit_image":
+      return runtimeLanguage === "zh" ? "wanx2.1-imageedit" : "prunaai/p-image-edit";
+    case "edit_audio":
+      return runtimeLanguage === "zh"
+        ? "paraformer-v2-qwen3-tts-flash"
+        : "vaibhavs10/incredibly-fast-whisper+minimax/speech-02-turbo";
+    case "edit_video":
+      return runtimeLanguage === "zh"
+        ? "wan2.2-i2v-flash"
+        : "lightricks/ltx-video-0.9.7-distilled";
+    case "detect_text":
+      return runtimeLanguage === "zh" ? "qwen-flash-detect" : "openai/gpt-5-nano-detect";
+    case "detect_image":
+      return runtimeLanguage === "zh"
+        ? "qwen3-vl-flash-image-detect"
+        : "openai/gpt-5-nano-image-detect";
+    case "detect_audio":
+      return runtimeLanguage === "zh"
+        ? "qwen3-omni-flash-realtime-detect"
+        : "vaibhavs10/incredibly-fast-whisper-detect";
+    case "detect_video":
+      return runtimeLanguage === "zh"
+        ? "qwen3-vl-flash-video-detect"
+        : "openai/gpt-5-nano-video-detect";
+    default:
+      return runtimeLanguage === "zh" ? "qwen-flash" : "openai/gpt-5-nano";
+  }
+}
 
 function shouldIncludeGenerationModel(
   model: GenerationModelConfig,
@@ -468,19 +475,21 @@ function isGenerationModelAvailable(model: GenerationModelConfig) {
     return true;
   }
 
+  const runtimeLanguage = getRuntimeLanguage();
+
   if (model.region === "domestic") {
-    return DEFAULT_LANGUAGE === "zh";
+    return runtimeLanguage === "zh";
   }
 
-  return DEFAULT_LANGUAGE === "en";
+  return runtimeLanguage === "en";
 }
 
 export function isInternationalGenerationEnabled() {
-  return DEFAULT_LANGUAGE === "en";
+  return getRuntimeLanguage() === "en";
 }
 
 export function isDomesticGenerationEnabled() {
-  return DEFAULT_LANGUAGE === "zh";
+  return getRuntimeLanguage() === "zh";
 }
 
 export function getInternationalModelDisabledMessage(
@@ -502,7 +511,7 @@ export function getDomesticModelDisabledMessage(
 export function getNoAvailableGenerationModelMessage(
   language: GenerationUILanguage = "zh",
 ) {
-  if (DEFAULT_LANGUAGE === "zh") {
+  if (getRuntimeLanguage() === "zh") {
     return language === "zh"
       ? "当前类型暂无可用国内模型。"
       : "No available domestic model for this content type.";
@@ -518,7 +527,20 @@ export function getNoAvailableGenerationModelMessage(
 }
 
 export function isGenerationTab(value: string): value is GenerationTab {
-  return Object.prototype.hasOwnProperty.call(DEFAULT_MODEL_BY_TAB, value);
+  return (
+    value === "text" ||
+    value === "image" ||
+    value === "video" ||
+    value === "audio" ||
+    value === "edit_text" ||
+    value === "edit_image" ||
+    value === "edit_audio" ||
+    value === "edit_video" ||
+    value === "detect_text" ||
+    value === "detect_image" ||
+    value === "detect_audio" ||
+    value === "detect_video"
+  );
 }
 
 export function isConnectedGenerationTab(
@@ -541,7 +563,7 @@ export function isConnectedGenerationTab(
 }
 
 export function getDefaultModelIdForTab(tab: GenerationTab) {
-  return DEFAULT_MODEL_BY_TAB[tab];
+  return getDefaultModelIdByTab(tab);
 }
 
 export function getGenerationModelsForTab(

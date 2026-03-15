@@ -10,12 +10,11 @@ import {
   trackAnalyticsSessionEvent,
 } from "@/lib/analytics/tracker";
 import { syncGlobalAuthUser } from "@/lib/server/supabase-auth-user-sync";
+import { isDomesticRuntimeLanguage } from "@/config/runtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-const IS_DOMESTIC_RUNTIME = (process.env.NEXT_PUBLIC_DEFAULT_LANGUAGE || "zh")
-  .toLowerCase()
-  .startsWith("zh");
+const IS_DOMESTIC_RUNTIME = isDomesticRuntimeLanguage();
 
 function getRequestOrigin(request: NextRequest): string {
   const forwardedProto = request.headers
