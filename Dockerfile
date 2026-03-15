@@ -12,7 +12,7 @@ RUN mkdir -p public
 ARG NEXT_PUBLIC_SUPABASE_URL=https://build-placeholder.supabase.co
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY=build-placeholder-key
 ARG NEXT_PUBLIC_DEFAULT_LANGUAGE=zh
-ARG NEXT_PUBLIC_CLOUDBASE_ENV_ID=build-placeholder-env-id
+ARG NEXT_PUBLIC_CLOUDBASE_ENV_ID=mornstudio-8gvvxjtpf4d99724
 ARG NEXT_PUBLIC_CLOUDBASE_REGION=ap-shanghai
 ARG NEXT_PUBLIC_CLOUDBASE_ACCESS_KEY=build-placeholder-access-key
 ARG ADMIN_SESSION_SECRET=build-placeholder-admin-session-secret
