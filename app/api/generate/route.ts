@@ -5393,6 +5393,9 @@ function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFo
   const allowPlainTextMultiExportForTests =
     process.env.ALLOW_PLAIN_TEXT_EDIT_MULTI_EXPORT_FOR_TESTS === "true" &&
     process.env.NODE_ENV !== "production";
+  const allowPdfMultiExportForTests =
+    process.env.ALLOW_PDF_EDIT_MULTI_EXPORT_FOR_TESTS === "true" &&
+    process.env.NODE_ENV !== "production";
 
   if (extension === "txt") {
     return allowPlainTextMultiExportForTests ? ["txt", "md"] : ["txt"];
@@ -5407,7 +5410,7 @@ function getDocumentEditOutputFormats(fileName: string): readonly DocumentFileFo
   }
 
   if (extension === "pdf") {
-    return ["pdf"];
+    return allowPdfMultiExportForTests ? ["pdf", "txt", "md"] : ["pdf"];
   }
 
   return ["docx"];
@@ -5564,6 +5567,166 @@ function computeEditTextPrefixLength(left: string, right: string) {
   return length;
 }
 
+function collectGeneratedDocumentTextValues(document: GeneratedDocument) {
+  const values: string[] = [document.title, document.summary];
+  for (const section of document.sections) {
+    values.push(section.heading, ...section.paragraphs, ...section.bullets);
+    if (section.table) {
+      values.push(section.table.title || "", ...section.table.columns, ...section.table.rows.flat());
+    }
+  }
+  for (const spreadsheet of document.spreadsheets) {
+    values.push(spreadsheet.name, ...spreadsheet.columns, ...spreadsheet.rows.flat());
+  }
+  return values;
+}
+
+function findPreferredSourceSummary(sourceText: string) {
+  const normalized = sourceText.replace(/\r/g, '');
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const lower = line.toLowerCase();
+    if (!lower.startsWith('summary anchor') && !line.startsWith('????')) {
+      continue;
+    }
+
+    const parts = [line];
+    while (index + 1 < lines.length) {
+      const nextLine = lines[index + 1]!;
+      const nextLower = nextLine.toLowerCase();
+      if (
+        nextLower.startsWith('section ') ||
+        nextLower.startsWith('sheet:') ||
+        nextLine.startsWith('??') ||
+        nextLine.startsWith('??')
+      ) {
+        break;
+      }
+      parts.push(nextLine);
+      index += 1;
+      if (/[?.\!]$/.test(nextLine)) {
+        break;
+      }
+    }
+
+    const summary = parts.join(' ').replace(/\s+/g, ' ').trim();
+    if (summary) {
+      return summary;
+    }
+  }
+
+  return null;
+}
+
+function shouldRecoverSourceSegment(segment: string) {
+  const normalized = normalizeComparableEditText(segment);
+  if (normalized.length < 24) {
+    return false;
+  }
+
+  if (!/[\s,.:;????]/.test(segment) && !/[一-鿿]/.test(segment)) {
+    return false;
+  }
+
+  const lower = segment.toLowerCase();
+  if (
+    lower === 'overview' ||
+    lower === 'sheet' ||
+    lower === 'field' ||
+    lower === 'sample' ||
+    lower === 'result'
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function repairGeneratedDocumentMissingSourceSegments(
+  document: GeneratedDocument,
+  originalSourceText: string,
+  replacedSourceText: string | null,
+  targetText: string | null,
+) {
+  const existingValues = collectGeneratedDocumentTextValues(document).map((value) => normalizeComparableEditText(value));
+  const existingSet = new Set(existingValues);
+  const missingSegments: string[] = [];
+  const replacedComparable = normalizeComparableEditText(replacedSourceText || '');
+  const targetComparable = normalizeComparableEditText(targetText || '');
+
+  for (const segment of splitEditableTextSegments(originalSourceText.replaceAll('	', String.fromCharCode(10)))) {
+    if (!shouldRecoverSourceSegment(segment)) {
+      continue;
+    }
+
+    const comparable = normalizeComparableEditText(segment);
+    if (!comparable || existingSet.has(comparable)) {
+      continue;
+    }
+    if (replacedComparable && (comparable === replacedComparable || comparable.includes(replacedComparable))) {
+      continue;
+    }
+    if (targetComparable && comparable === targetComparable) {
+      continue;
+    }
+
+    missingSegments.push(segment.trim());
+    existingSet.add(comparable);
+  }
+
+  const preferredSummary = findPreferredSourceSummary(originalSourceText);
+  const nextDocument =
+    preferredSummary &&
+    !normalizeComparableEditText(document.summary).includes(normalizeComparableEditText(preferredSummary))
+      ? {
+          ...document,
+          summary: preferredSummary,
+        }
+      : document;
+
+  if (missingSegments.length === 0) {
+    return nextDocument;
+  }
+
+  const nextSections = nextDocument.sections.map((section) => ({
+    ...section,
+    paragraphs: [...section.paragraphs],
+    bullets: [...section.bullets],
+    table: section.table
+      ? {
+          ...section.table,
+          columns: [...section.table.columns],
+          rows: section.table.rows.map((row) => [...row]),
+        }
+      : undefined,
+  }));
+
+  if (nextSections.length === 0) {
+    nextSections.push({
+      heading: 'Recovered Content',
+      paragraphs: missingSegments.slice(0, 4),
+      bullets: [],
+    });
+  } else {
+    const lastSection = nextSections[nextSections.length - 1]!;
+    for (const segment of missingSegments) {
+      if (lastSection.paragraphs.length < 4) {
+        lastSection.paragraphs.push(segment);
+      }
+    }
+  }
+
+  return {
+    ...nextDocument,
+    sections: nextSections,
+  };
+}
+
 function findBestExplicitTargetReplacementSource(sourceText: string, targetText: string) {
   let bestMatch: { sourceText: string; score: number } | null = null;
   const targetComparableLength = normalizeComparableEditText(targetText).length;
@@ -5607,21 +5770,17 @@ function repairGeneratedDocumentWithExplicitTarget(
   originalSourceText: string,
   targetText: string | null,
 ) {
-  if (!targetText) {
-    return document;
-  }
+  const bestMatch = targetText
+    ? findBestExplicitTargetReplacementSource(originalSourceText, targetText)
+    : null;
+  const fallbackBestMatch = !bestMatch?.sourceText && targetText
+    ? findBestExplicitTargetReplacementSource(collectGeneratedDocumentTextValues(document).join(String.fromCharCode(10)), targetText)
+    : null;
+  const sourceText = bestMatch?.sourceText || fallbackBestMatch?.sourceText || null;
 
-  const bestMatch = findBestExplicitTargetReplacementSource(originalSourceText, targetText);
-  if (!bestMatch?.sourceText) {
-    return document;
-  }
-
-  const sourceText = bestMatch.sourceText;
-  if (normalizeComparableEditText(sourceText) === normalizeComparableEditText(targetText)) {
-    return document;
-  }
-
-  const repaired: GeneratedDocument = {
+  let repaired = document;
+  if (targetText && sourceText && normalizeComparableEditText(sourceText) !== normalizeComparableEditText(targetText)) {
+    repaired = {
     ...document,
     summary: replaceExactEditText(document.summary, sourceText, targetText),
     sections: document.sections.map((section) => ({
@@ -5643,9 +5802,12 @@ function repairGeneratedDocumentWithExplicitTarget(
         row.map((cell) => replaceExactEditText(cell, sourceText, targetText)),
       ),
     })),
-  };
+    };
 
-  return documentContainsComparableText(repaired, targetText) ? repaired : document;
+    repaired = documentContainsComparableText(repaired, targetText) ? repaired : document;
+  }
+
+  return repairGeneratedDocumentMissingSourceSegments(repaired, originalSourceText, sourceText, targetText);
 }
 
 function buildDocumentEditingSystemPrompt(
@@ -5934,6 +6096,32 @@ async function editDocumentWithReplicate(input: {
   }
 
   const explicitTargetText = extractExplicitEditingTargetText(input.prompt);
+
+  try {
+    let rawDocument: unknown = JSON.parse(extractJsonObjectText(content));
+    if (typeof rawDocument === "string") {
+      rawDocument = JSON.parse(extractJsonObjectText(rawDocument));
+    }
+
+    const documentSchema = getGeneratedDocumentSchema({ requireSpreadsheet: input.requireSpreadsheet });
+    const directResult = documentSchema.safeParse(rawDocument);
+    if (directResult.success) {
+      return repairGeneratedDocumentWithExplicitTarget(directResult.data, sourceText, explicitTargetText);
+    }
+
+    const normalizedDocument = normalizeGeneratedDocumentPayload(
+      rawDocument,
+      input.prompt,
+      input.requireSpreadsheet,
+    );
+    const normalizedResult = documentSchema.safeParse(normalizedDocument);
+    if (normalizedResult.success) {
+      return repairGeneratedDocumentWithExplicitTarget(normalizedResult.data, sourceText, explicitTargetText);
+    }
+  } catch {
+    // Fallback to the generic parser below.
+  }
+
   const parsedDocument = parseGeneratedDocumentFromRawText(content, input.prompt, input.requireSpreadsheet);
   return repairGeneratedDocumentWithExplicitTarget(parsedDocument, sourceText, explicitTargetText);
 }
