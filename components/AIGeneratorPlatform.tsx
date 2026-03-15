@@ -2301,12 +2301,12 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-blue-50/50 dark:from-[#0f1115] dark:via-[#111827] dark:to-[#0f172a]">
-      <div className="max-w-[1680px] mx-auto w-full px-3 sm:px-4 py-4 sm:py-6 min-h-screen flex flex-col gap-4 sm:gap-6">
+      <div className="max-w-[1680px] mx-auto w-full px-3 sm:px-4 py-4 sm:py-6 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:pb-6 min-h-screen flex flex-col gap-4 sm:gap-6">
         <header className="relative z-30 overflow-visible rounded-xl sm:rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-[#1f2937]/70 backdrop-blur shadow-sm px-3 sm:px-5 py-3 sm:py-4">
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 min-w-0">
-                <h1 className="text-[1.45rem] leading-tight sm:text-[1.9rem] lg:text-3xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent truncate">
+              <div className="flex flex-wrap items-start gap-2 min-w-0 sm:items-center">
+                <h1 className="text-[1.45rem] leading-tight sm:text-[1.9rem] lg:text-3xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent break-words sm:truncate">
                   {appDisplayName || text.appName}
                 </h1>
                 <div
@@ -2417,7 +2417,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
               </div>
             </div>
 
-            <div className="ml-auto flex items-center justify-end gap-1.5 sm:gap-2 shrink-0">
+            <div className="flex w-full flex-wrap items-center justify-end gap-1.5 sm:gap-2 lg:ml-auto lg:w-auto shrink-0">
               <LanguageThemeToggle
                 currentLanguage={currentLanguage}
                 setCurrentLanguage={setCurrentLanguage}

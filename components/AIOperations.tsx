@@ -248,7 +248,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
 
   return (
     <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-6 h-full min-h-0 overflow-hidden flex flex-col">
-      <div className="min-h-0 flex-1 flex flex-col gap-4 sm:gap-5 overflow-y-auto pr-1">
+      <div className="min-h-0 flex-1 flex flex-col gap-4 sm:gap-5 overflow-y-auto pr-0 sm:pr-1">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <h2 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-gray-100">
           {operationsTitle}
@@ -266,11 +266,11 @@ const AIOperations: React.FC<AIOperationsProps> = ({
         </select>
       </div>
 
-      <div className="flex items-center rounded-xl p-1 bg-gray-100 dark:bg-gray-800 w-full sm:w-fit">
+      <div className="grid w-full grid-cols-1 gap-2 rounded-xl p-1 bg-gray-100 dark:bg-gray-800 sm:flex sm:w-fit sm:gap-0">
         <button
           type="button"
           onClick={() => handleCategorySwitch("generate")}
-          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
+          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors w-full sm:w-auto ${
             activeCategory === "generate"
               ? "bg-blue-600 text-white shadow-sm"
               : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -288,7 +288,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
                 : "Guests can browse, sign in to use AI Editing"
               : undefined
           }
-          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
+          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors w-full sm:w-auto ${
             activeCategory === "edit"
               ? "bg-blue-600 text-white shadow-sm"
               : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -306,7 +306,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
                 : "Guests can browse, sign in to use AI Detection"
               : undefined
           }
-          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors flex-1 sm:flex-none ${
+          className={`h-10 sm:h-9 px-4 rounded-lg text-sm font-semibold transition-colors w-full sm:w-auto ${
             activeCategory === "detect"
               ? "bg-blue-600 text-white shadow-sm"
               : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -345,7 +345,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
             {DOCUMENT_FILE_FORMATS.map((format) => {
               const selected = selectedDocumentFormats.includes(format);
               return (
@@ -353,7 +353,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
                   key={format}
                   type="button"
                   onClick={() => onToggleDocumentFormat(format)}
-                  className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                  className={`inline-flex w-full items-center justify-center rounded-lg border px-3 py-2 text-sm transition-colors sm:w-auto ${
                     selected
                       ? "border-blue-600 bg-blue-600 text-white"
                       : "border-gray-300 bg-white text-gray-700 hover:border-blue-400 hover:text-blue-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-blue-500"
@@ -378,7 +378,7 @@ const AIOperations: React.FC<AIOperationsProps> = ({
       {isDetectMode ? (
         uploadPanel
       ) : isEditMode ? (
-        <div className="w-full lg:flex-1 lg:min-h-[240px] flex flex-col gap-3">
+        <div className="w-full lg:flex-1 lg:min-h-[240px] flex flex-col gap-3 sm:gap-4">
           {uploadPanel}
           <textarea
             value={prompt}

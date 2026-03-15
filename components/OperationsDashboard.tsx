@@ -22,7 +22,7 @@ export type ResultCategory = "generate" | "edit" | "detect";
 export type ResultFolder = "all" | "text" | "image" | "audio" | "video";
 
 const ACTION_BUTTON_CLASS_NAME =
-  "inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-blue-600 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-900 dark:text-blue-300";
+  "inline-flex w-full items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-blue-600 transition-colors hover:text-blue-700 dark:border-gray-700 dark:bg-gray-900 dark:text-blue-300 sm:w-auto";
 
 function getFileExtension(value: string) {
   const matched = value.trim().match(/\.([a-z0-9]{1,8})(?:$|[?#])/i);
@@ -252,15 +252,15 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   return (
     <>
       <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-5 h-full overflow-hidden flex flex-col">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-gray-100">
           {resultTitle}
         </h2>
-        <div className="inline-flex items-center rounded-lg p-1 bg-gray-100 dark:bg-gray-800 w-full sm:w-fit">
+        <div className="grid w-full grid-cols-1 gap-2 rounded-lg p-1 bg-gray-100 dark:bg-gray-800 sm:flex sm:w-fit sm:gap-0">
           <button
             type="button"
             onClick={() => handleResultCategorySwitch("generate")}
-            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors flex-1 sm:flex-none ${
+            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${
               activeResultCategory === "generate"
                 ? "bg-blue-600 text-white"
                 : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -271,7 +271,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
           <button
             type="button"
             onClick={() => handleResultCategorySwitch("edit")}
-            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors flex-1 sm:flex-none ${
+            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${
               activeResultCategory === "edit"
                 ? "bg-blue-600 text-white"
                 : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -282,7 +282,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
           <button
             type="button"
             onClick={() => handleResultCategorySwitch("detect")}
-            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors flex-1 sm:flex-none ${
+            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${
               activeResultCategory === "detect"
                 ? "bg-blue-600 text-white"
                 : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
@@ -315,7 +315,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
             <p className="text-sm text-gray-500 dark:text-gray-400">{emptyText}</p>
           </div>
         ) : (
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0 sm:pr-1">
             {filteredGenerations.map((generation) => {
               const isDeleting = deletingGenerationIds.includes(generation.id);
               const canDelete =
@@ -334,13 +334,13 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
               return (
               <div
                 key={generation.id}
-                className={`rounded-xl border p-3 ${
+                className={`rounded-xl border p-3 sm:p-4 ${
                   generation.status === "error"
                     ? "border-red-200 bg-red-50/80 dark:border-red-900/60 dark:bg-red-950/20"
                     : "border-gray-200 bg-white/70 dark:border-gray-700 dark:bg-[#111827]/40"
                 }`}
               >
-              <div className="flex items-center justify-between gap-3 mb-2">
+              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between lg:items-center">
                 <div className="flex flex-wrap items-center gap-2">
                   <span
                     className={`text-xs px-2 py-1 rounded-full ${
@@ -355,7 +355,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                     {generation.modelLabel}
                   </span>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex w-full flex-shrink-0 flex-wrap items-center justify-between gap-2 sm:w-auto sm:flex-nowrap sm:justify-end">
                   <span className="text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     {formatDateTime(generation.createdAt)}
                   </span>
@@ -391,7 +391,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
               )}
 
               {generation.text && !shouldHideDocumentFullText && (
-                <pre className="mt-2 whitespace-pre-wrap rounded-lg bg-gray-50 px-3 py-2 text-xs leading-6 text-gray-700 dark:bg-gray-900/70 dark:text-gray-200">
+                <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-gray-50 px-3 py-2 text-xs leading-6 text-gray-700 dark:bg-gray-900/70 dark:text-gray-200">
                   {generation.text}
                 </pre>
               )}
@@ -440,7 +440,7 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
                               className="max-h-64 w-full object-cover"
                             />
                           </button>
-                          <div className="flex gap-2 border-t border-gray-200 p-3 dark:border-gray-700">
+                          <div className="flex flex-col gap-2 border-t border-gray-200 p-3 dark:border-gray-700 sm:flex-row">
                             <button
                               type="button"
                               onClick={() => setPreviewImage({ url, alt: generation.prompt })}
