@@ -555,6 +555,7 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   const [showSubscriptionDialog, setShowSubscriptionDialog] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showTierQuota, setShowTierQuota] = useState(false);
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
   const [targetResultView, setTargetResultView] = useState<{
     category: ResultCategory;
     folder: ResultFolder;
@@ -1391,6 +1392,31 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
   }, [currentLanguage, isDomesticVersion, user?.id]);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(max-width: 639px)");
+    const syncCompactViewport = () => {
+      setIsCompactViewport(mediaQuery.matches);
+    };
+
+    syncCompactViewport();
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncCompactViewport);
+      return () => mediaQuery.removeEventListener("change", syncCompactViewport);
+    }
+
+    mediaQuery.addListener(syncCompactViewport);
+    return () => mediaQuery.removeListener(syncCompactViewport);
+  }, []);
+
+  useEffect(() => {
+    setShowTierQuota(false);
+  }, [isCompactViewport]);
+
+  useEffect(() => {
     const handleEsc = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setShowAuthDialog(false);
@@ -1412,8 +1438,8 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
         setShowTierQuota(false);
       }
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("pointerdown", handleClickOutside);
+    return () => document.removeEventListener("pointerdown", handleClickOutside);
   }, []);
 
   const toggleTheme = () => {
@@ -2299,31 +2325,66 @@ const AIGeneratorPlatform: React.FC<{ appDisplayName: string }> = ({ appDisplayN
       ? `游客仅可使用文档生成（单次单格式），本月额度 ${displayedDocumentRemaining}/${displayedDocumentLimit}`
       : `Guest mode: docs-only, single format each time, quota ${displayedDocumentRemaining}/${displayedDocumentLimit}`;
 
+  const tierQuotaPanelClassName = isCompactViewport
+    ? "absolute left-0 top-full z-[70] mt-2 w-[min(18rem,calc(100vw-2.5rem))] max-h-[70vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-[#1f2937]/95 backdrop-blur p-3 shadow-2xl space-y-2"
+    : "absolute left-0 top-full z-[70] mt-2 w-64 max-h-[calc(100vh-9rem)] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-[#1f2937]/95 backdrop-blur p-3 shadow-2xl space-y-2";
+
+  const handleTierQuotaMouseEnter = () => {
+    if (!isCompactViewport) {
+      setShowTierQuota(true);
+    }
+  };
+
+  const handleTierQuotaMouseLeave = () => {
+    if (!isCompactViewport) {
+      setShowTierQuota(false);
+    }
+  };
+
+  const handleTierQuotaTriggerClick = () => {
+    if (isCompactViewport) {
+      setShowTierQuota((previous) => !previous);
+      return;
+    }
+
+    setShowTierQuota(true);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-blue-50/50 dark:from-[#0f1115] dark:via-[#111827] dark:to-[#0f172a]">
       <div className="max-w-[1680px] mx-auto w-full px-3 sm:px-4 py-4 sm:py-6 pb-[calc(env(safe-area-inset-bottom)+1rem)] sm:pb-6 min-h-screen flex flex-col gap-4 sm:gap-6">
         <header className="relative z-30 overflow-visible rounded-xl sm:rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-[#1f2937]/70 backdrop-blur shadow-sm px-3 sm:px-5 py-3 sm:py-4">
           <div className="flex flex-col gap-3 sm:gap-4 lg:flex-row lg:items-center">
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-start gap-2 min-w-0 sm:items-center">
-                <h1 className="text-[1.45rem] leading-tight sm:text-[1.9rem] lg:text-3xl font-bold bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent break-words sm:truncate">
+            <div className="min-w-0 w-full flex-1">
+              <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                <h1 className="w-full max-w-full text-[1.45rem] font-bold leading-tight bg-gradient-to-r from-blue-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent break-words sm:text-[1.9rem] lg:text-3xl lg:truncate">
                   {appDisplayName || text.appName}
                 </h1>
                 <div
                   ref={tierQuotaRef}
                   className="relative shrink-0"
-                  onMouseEnter={() => setShowTierQuota(true)}
-                  onMouseLeave={() => setShowTierQuota(false)}
+                  onMouseEnter={handleTierQuotaMouseEnter}
+                  onMouseLeave={handleTierQuotaMouseLeave}
                 >
                   <Badge
                     variant="outline"
-                    className={`text-xs px-2.5 py-1 rounded-full font-semibold border-0 cursor-pointer ${tierClassName}`}
-                    onClick={() => setShowTierQuota((previous) => !previous)}
+                    className={`self-start text-xs px-2.5 py-1 rounded-full font-semibold border-0 cursor-pointer ${tierClassName}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={showTierQuota}
+                    aria-haspopup="dialog"
+                    onClick={handleTierQuotaTriggerClick}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        handleTierQuotaTriggerClick();
+                      }
+                    }}
                   >
                     {tierLabel}
                   </Badge>
                   {showTierQuota && (
-                    <div className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+4.75rem)] max-h-[70vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white/95 dark:bg-[#1f2937]/95 backdrop-blur p-3 shadow-2xl z-[70] space-y-2 sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-2 sm:w-64 sm:max-h-[calc(100vh-9rem)]">
+                    <div className={tierQuotaPanelClassName}>
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-semibold text-gray-900 dark:text-gray-100">{text.monthlyDocument}</span>
                         <span className="text-gray-600 dark:text-gray-300">
