@@ -135,33 +135,33 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   const typeLabelMap: Record<string, string> =
     currentLanguage === "zh"
       ? {
-          text: "文档",
-          image: "图片",
-          audio: "音频",
-          video: "视频",
-          edit_text: "文档编辑",
-          edit_image: "图片编辑",
-          edit_audio: "音频编辑",
-          edit_video: "视频编辑",
-          detect_text: "文档检测",
-          detect_image: "图片检测",
-          detect_audio: "音频检测",
-          detect_video: "视频检测",
-        }
+        text: "文档",
+        image: "图片",
+        audio: "音频",
+        video: "视频",
+        edit_text: "文档编辑",
+        edit_image: "图片编辑",
+        edit_audio: "音频编辑",
+        edit_video: "视频编辑",
+        detect_text: "文档检测",
+        detect_image: "图片检测",
+        detect_audio: "音频检测",
+        detect_video: "视频检测",
+      }
       : {
-          text: "Docs",
-          image: "Image",
-          audio: "Audio",
-          video: "Video",
-          edit_text: "Docs Editing",
-          edit_image: "Image Editing",
-          edit_audio: "Audio Editing",
-          edit_video: "Video Editing",
-          detect_text: "Docs Detection",
-          detect_image: "Image Detection",
-          detect_audio: "Audio Detection",
-          detect_video: "Video Detection",
-        };
+        text: "Docs",
+        image: "Image",
+        audio: "Audio",
+        video: "Video",
+        edit_text: "Docs Editing",
+        edit_image: "Image Editing",
+        edit_audio: "Audio Editing",
+        edit_video: "Video Editing",
+        detect_text: "Docs Detection",
+        detect_image: "Image Detection",
+        detect_audio: "Audio Detection",
+        detect_video: "Video Detection",
+      };
   const previewLabel = currentLanguage === "zh" ? "预览" : "Preview";
   const downloadLabel = currentLanguage === "zh" ? "下载" : "Download";
   const exportFilesLabel = currentLanguage === "zh" ? "导出文件" : "Export Files";
@@ -172,19 +172,19 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
   const folderLabelMap: Record<ResultFolder, string> =
     currentLanguage === "zh"
       ? {
-          all: "全部",
-          text: "文档",
-          image: "图片",
-          audio: "音频",
-          video: "视频",
-        }
+        all: "全部",
+        text: "文档",
+        image: "图片",
+        audio: "音频",
+        video: "视频",
+      }
       : {
-          all: "All",
-          text: "Docs",
-          image: "Images",
-          audio: "Audio",
-          video: "Videos",
-        };
+        all: "All",
+        text: "Docs",
+        image: "Images",
+        audio: "Audio",
+        video: "Videos",
+      };
   const folderList: ResultFolder[] = ["all", "text", "image", "audio", "video"];
   const [previewImage, setPreviewImage] = useState<{ url: string; alt: string } | null>(null);
 
@@ -253,57 +253,53 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
     <>
       <section className="rounded-xl sm:rounded-2xl bg-white/90 dark:bg-[#1f2937]/80 backdrop-blur border border-gray-200 dark:border-gray-700 shadow-sm p-4 sm:p-5 h-full overflow-hidden flex flex-col">
         <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-gray-100">
-          {resultTitle}
-        </h2>
-        <div className="grid w-full grid-cols-1 gap-2 rounded-lg p-1 bg-gray-100 dark:bg-gray-800 sm:flex sm:w-fit sm:gap-0">
-          <button
-            type="button"
-            onClick={() => handleResultCategorySwitch("generate")}
-            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${
-              activeResultCategory === "generate"
-                ? "bg-blue-600 text-white"
-                : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
-            }`}
-          >
-            {categoryLabel.generate}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleResultCategorySwitch("edit")}
-            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${
-              activeResultCategory === "edit"
-                ? "bg-blue-600 text-white"
-                : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
-            }`}
-          >
-            {categoryLabel.edit}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleResultCategorySwitch("detect")}
-            className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${
-              activeResultCategory === "detect"
-                ? "bg-blue-600 text-white"
-                : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
-            }`}
-          >
-            {categoryLabel.detect}
-          </button>
+          <h2 className="text-lg sm:text-xl font-semibold text-gray-900 dark:text-gray-100">
+            {resultTitle}
+          </h2>
+          <div className="grid w-full grid-cols-3 gap-1 rounded-lg p-1 bg-gray-100 dark:bg-gray-800 sm:flex sm:w-fit sm:gap-0">
+            <button
+              type="button"
+              onClick={() => handleResultCategorySwitch("generate")}
+              className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${activeResultCategory === "generate"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+                }`}
+            >
+              {categoryLabel.generate}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleResultCategorySwitch("edit")}
+              className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${activeResultCategory === "edit"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+                }`}
+            >
+              {categoryLabel.edit}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleResultCategorySwitch("detect")}
+              className={`h-8 sm:h-7 px-3 rounded-md text-xs font-semibold transition-colors w-full sm:w-auto ${activeResultCategory === "detect"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700"
+                }`}
+            >
+              {categoryLabel.detect}
+            </button>
+          </div>
         </div>
-      </div>
 
-        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
+        <div className="mb-3 grid grid-cols-5 gap-1.5 sm:grid-cols-5 sm:gap-2">
           {folderList.map((folder) => (
             <button
               key={folder}
               type="button"
               onClick={() => setActiveResultFolder(folder)}
-              className={`w-full rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${
-                activeResultFolder === folder
+              className={`w-full rounded-lg px-2 py-1.5 text-xs sm:text-sm sm:px-3 sm:py-2.5 sm:rounded-xl font-medium transition-colors ${activeResultFolder === folder
                   ? "bg-blue-600 text-white"
                   : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-              }`}
+                }`}
             >
               {folderLabelMap[folder]}
             </button>
@@ -332,180 +328,177 @@ const OperationsDashboard: React.FC<OperationsDashboardProps> = ({
               );
 
               return (
-              <div
-                key={generation.id}
-                className={`rounded-xl border p-3 sm:p-4 ${
-                  generation.status === "error"
-                    ? "border-red-200 bg-red-50/80 dark:border-red-900/60 dark:bg-red-950/20"
-                    : "border-gray-200 bg-white/70 dark:border-gray-700 dark:bg-[#111827]/40"
-                }`}
-              >
-              <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between lg:items-center">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`text-xs px-2 py-1 rounded-full ${
-                      generation.status === "error"
-                        ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
-                        : "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                <div
+                  key={generation.id}
+                  className={`rounded-xl border p-3 sm:p-4 ${generation.status === "error"
+                      ? "border-red-200 bg-red-50/80 dark:border-red-900/60 dark:bg-red-950/20"
+                      : "border-gray-200 bg-white/70 dark:border-gray-700 dark:bg-[#111827]/40"
                     }`}
-                  >
-                    {typeLabelMap[generation.type] || generation.type}
-                  </span>
-                  <span className="text-[11px] px-2 py-1 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                    {generation.modelLabel}
-                  </span>
-                </div>
-                <div className="flex w-full flex-shrink-0 flex-wrap items-center justify-between gap-2 sm:w-auto sm:flex-nowrap sm:justify-end">
-                  <span className="text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                    {formatDateTime(generation.createdAt)}
-                  </span>
-                  {canDelete && (
-                    <button
-                      type="button"
-                      onClick={() => onDeleteGeneration?.(generation)}
-                      disabled={isDeleting}
-                      className="inline-flex items-center rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] text-red-600 transition-colors hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300 whitespace-nowrap"
-                    >
-                      {isDeleting ? deletingLabel : deleteLabel}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="text-sm text-gray-700 dark:text-gray-200 leading-6 space-y-1">
-                {promptPreviewText ? (
-                  <p className="break-words">{promptPreviewText}</p>
-                ) : null}
-              </div>
-
-              {generation.summary && (
-                <p
-                  className={`mt-2 text-sm leading-6 ${
-                    generation.status === "error"
-                      ? "text-red-700 dark:text-red-300"
-                      : "text-gray-900 dark:text-gray-100"
-                  }`}
                 >
-                  {generation.summary}
-                </p>
-              )}
-
-              {generation.text && !shouldHideDocumentFullText && (
-                <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-gray-50 px-3 py-2 text-xs leading-6 text-gray-700 dark:bg-gray-900/70 dark:text-gray-200">
-                  {generation.text}
-                </pre>
-              )}
-
-              {generation.errorMessage && (
-                <p className="mt-2 text-sm leading-6 text-red-700 dark:text-red-300">
-                  {generation.errorMessage}
-                </p>
-              )}
-
-              {(generation.type === "text" || generation.type === "edit_text") &&
-                generation.downloadLinks &&
-                generation.downloadLinks.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {generation.downloadLinks.map((link) => (
-                    <a
-                      key={link.url}
-                      href={link.url}
-                      title={link.label}
-                      className={ACTION_BUTTON_CLASS_NAME}
-                    >
-                      {exportFilesLabel} · {getDocumentDownloadLabel(link.label || link.url)}
-                    </a>
-                  ))}
-                </div>
-              )}
-
-                {generation.imageUrls && generation.imageUrls.length > 0 && (
-                  <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {generation.imageUrls.map((url, index) => {
-                      const downloadUrl = generation.downloadLinks?.[index]?.url ?? url;
-
-                      return (
-                        <div
-                          key={`${generation.id}-${index}`}
-                          className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900/50"
+                  <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between lg:items-center">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`text-xs px-2 py-1 rounded-full ${generation.status === "error"
+                            ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                            : "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                          }`}
+                      >
+                        {typeLabelMap[generation.type] || generation.type}
+                      </span>
+                      <span className="text-[11px] px-2 py-1 rounded-full bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                        {generation.modelLabel}
+                      </span>
+                    </div>
+                    <div className="flex w-full flex-shrink-0 flex-wrap items-center justify-between gap-2 sm:w-auto sm:flex-nowrap sm:justify-end">
+                      <span className="text-[11px] text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                        {formatDateTime(generation.createdAt)}
+                      </span>
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={() => onDeleteGeneration?.(generation)}
+                          disabled={isDeleting}
+                          className="inline-flex items-center rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-[11px] text-red-600 transition-colors hover:border-red-300 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/60 dark:bg-gray-900 dark:text-red-300 whitespace-nowrap"
                         >
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImage({ url, alt: generation.prompt })}
-                            className="block w-full"
+                          {isDeleting ? deletingLabel : deleteLabel}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="text-sm text-gray-700 dark:text-gray-200 leading-6 space-y-1">
+                    {promptPreviewText ? (
+                      <p className="break-words">{promptPreviewText}</p>
+                    ) : null}
+                  </div>
+
+                  {generation.summary && (
+                    <p
+                      className={`mt-2 text-sm leading-6 ${generation.status === "error"
+                          ? "text-red-700 dark:text-red-300"
+                          : "text-gray-900 dark:text-gray-100"
+                        }`}
+                    >
+                      {generation.summary}
+                    </p>
+                  )}
+
+                  {generation.text && !shouldHideDocumentFullText && (
+                    <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-gray-50 px-3 py-2 text-xs leading-6 text-gray-700 dark:bg-gray-900/70 dark:text-gray-200">
+                      {generation.text}
+                    </pre>
+                  )}
+
+                  {generation.errorMessage && (
+                    <p className="mt-2 text-sm leading-6 text-red-700 dark:text-red-300">
+                      {generation.errorMessage}
+                    </p>
+                  )}
+
+                  {(generation.type === "text" || generation.type === "edit_text") &&
+                    generation.downloadLinks &&
+                    generation.downloadLinks.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {generation.downloadLinks.map((link) => (
+                          <a
+                            key={link.url}
+                            href={link.url}
+                            title={link.label}
+                            className={ACTION_BUTTON_CLASS_NAME}
                           >
-                            <img
-                              src={url}
-                              alt={generation.prompt}
-                              className="max-h-64 w-full object-cover"
-                            />
-                          </button>
-                          <div className="flex flex-col gap-2 border-t border-gray-200 p-3 dark:border-gray-700 sm:flex-row">
+                            {exportFilesLabel} · {getDocumentDownloadLabel(link.label || link.url)}
+                          </a>
+                        ))}
+                      </div>
+                    )}
+
+                  {generation.imageUrls && generation.imageUrls.length > 0 && (
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      {generation.imageUrls.map((url, index) => {
+                        const downloadUrl = generation.downloadLinks?.[index]?.url ?? url;
+
+                        return (
+                          <div
+                            key={`${generation.id}-${index}`}
+                            className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900/50"
+                          >
                             <button
                               type="button"
                               onClick={() => setPreviewImage({ url, alt: generation.prompt })}
-                              className={ACTION_BUTTON_CLASS_NAME}
+                              className="block w-full"
                             >
-                              {previewLabel}
+                              <img
+                                src={url}
+                                alt={generation.prompt}
+                                className="max-h-64 w-full object-cover"
+                              />
                             </button>
-                            <a
-                              href={downloadUrl}
-                              className={ACTION_BUTTON_CLASS_NAME}
-                            >
+                            <div className="flex flex-col gap-2 border-t border-gray-200 p-3 dark:border-gray-700 sm:flex-row">
+                              <button
+                                type="button"
+                                onClick={() => setPreviewImage({ url, alt: generation.prompt })}
+                                className={ACTION_BUTTON_CLASS_NAME}
+                              >
+                                {previewLabel}
+                              </button>
+                              <a
+                                href={downloadUrl}
+                                className={ACTION_BUTTON_CLASS_NAME}
+                              >
+                                {downloadLabel}
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {generation.audioUrls && generation.audioUrls.length > 0 && (
+                    <div className="mt-3 space-y-3">
+                      {generation.audioUrls.map((url, index) => {
+                        const downloadUrl = generation.downloadLinks?.[index]?.url ?? url;
+
+                        return (
+                          <div key={`${generation.id}-audio-${index}`} className="space-y-2">
+                            <audio
+                              controls
+                              preload="none"
+                              src={url}
+                              className="w-full rounded-lg"
+                            />
+                            <a href={downloadUrl} className={ACTION_BUTTON_CLASS_NAME}>
                               {downloadLabel}
                             </a>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  )}
 
-              {generation.audioUrls && generation.audioUrls.length > 0 && (
-                <div className="mt-3 space-y-3">
-                  {generation.audioUrls.map((url, index) => {
-                    const downloadUrl = generation.downloadLinks?.[index]?.url ?? url;
+                  {generation.videoUrls && generation.videoUrls.length > 0 && (
+                    <div className="mt-3 space-y-3">
+                      {generation.videoUrls.map((url, index) => {
+                        const downloadUrl = generation.downloadLinks?.[index]?.url ?? url;
 
-                    return (
-                      <div key={`${generation.id}-audio-${index}`} className="space-y-2">
-                        <audio
-                          controls
-                          preload="none"
-                          src={url}
-                          className="w-full rounded-lg"
-                        />
-                        <a href={downloadUrl} className={ACTION_BUTTON_CLASS_NAME}>
-                          {downloadLabel}
-                        </a>
-                      </div>
-                    );
-                  })}
+                        return (
+                          <div key={`${generation.id}-video-${index}`} className="space-y-2">
+                            <video
+                              controls
+                              playsInline
+                              src={url}
+                              className="max-h-72 w-full rounded-lg border border-gray-200 dark:border-gray-700"
+                            />
+                            <a href={downloadUrl} className={ACTION_BUTTON_CLASS_NAME}>
+                              {downloadLabel}
+                            </a>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-
-              {generation.videoUrls && generation.videoUrls.length > 0 && (
-                <div className="mt-3 space-y-3">
-                  {generation.videoUrls.map((url, index) => {
-                    const downloadUrl = generation.downloadLinks?.[index]?.url ?? url;
-
-                    return (
-                      <div key={`${generation.id}-video-${index}`} className="space-y-2">
-                        <video
-                          controls
-                          playsInline
-                          src={url}
-                          className="max-h-72 w-full rounded-lg border border-gray-200 dark:border-gray-700"
-                        />
-                        <a href={downloadUrl} className={ACTION_BUTTON_CLASS_NAME}>
-                          {downloadLabel}
-                        </a>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              </div>
-            );
+              );
             })}
           </div>
         )}
