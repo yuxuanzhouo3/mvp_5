@@ -433,15 +433,6 @@ export function AuthPage({ mode }: AuthPageProps) {
       return;
     }
 
-    if (!supabase) {
-      setError(
-        isZh
-          ? "Supabase 配置缺失，暂时无法使用 Google 登录。"
-          : "Supabase is not configured. Google sign-in is unavailable.",
-      );
-      return;
-    }
-
     setIsLoading(true);
 
     try {
@@ -456,6 +447,92 @@ export function AuthPage({ mode }: AuthPageProps) {
         ensureSession: false,
         sessionScope: "auth",
       });
+
+      // --- Android WebView: use native Google Sign-In SDK ---
+      const hasNativeBridge =
+        typeof window !== "undefined" && !!(window as any).GoogleSignIn;
+      const userAgent =
+        typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+      const isAndroidMedianShell =
+        /android/i.test(userAgent) && /median/i.test(userAgent);
+
+      if (isAndroidMedianShell && !hasNativeBridge) {
+        // Old APK without native bridge
+        setError(
+          isZh
+            ? "检测到旧版安卓安装包，不支持 App 内 Google 登录，请更新安装包。"
+            : "Outdated Android build detected. Please update the app to use Google sign-in.",
+        );
+        setIsLoading(false);
+        return;
+      }
+
+      if (hasNativeBridge) {
+        const { signInWithGoogle } = await import("@/lib/google-signin-bridge");
+        const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+
+        if (!clientId) {
+          setError(
+            isZh
+              ? "Google 客户端 ID 未配置。"
+              : "Google Client ID is not configured.",
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        // Call the native Android Sign-In SDK
+        const result = await signInWithGoogle(clientId);
+
+        // Send idToken to backend for verification & session creation
+        const response = await fetch("/api/auth/google-native", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idToken: result.idToken,
+            email: result.email,
+            displayName: result.displayName,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || "Authentication failed");
+        }
+
+        const data = await response.json();
+
+        // Store session tokens if the API returned them
+        if (data.session?.access_token) {
+          try {
+            // Store in cookie for middleware auth
+            document.cookie = `custom-jwt-token=${data.session.access_token}; path=/; max-age=${7 * 86400}; SameSite=Lax`;
+          } catch (_cookieError) {
+            console.warn("[auth] Failed to set cookie:", _cookieError);
+          }
+        }
+
+        setSuccess(
+          isZh ? "登录成功，正在跳转…" : "Sign-in successful, redirecting…",
+        );
+
+        // Reload page to pick up the new auth state
+        setTimeout(() => {
+          window.location.href = next;
+        }, 500);
+        return;
+      }
+
+      // --- Browser / non-WebView: Supabase OAuth redirect flow ---
+      if (!supabase) {
+        setError(
+          isZh
+            ? "Supabase 配置缺失，暂时无法使用 Google 登录。"
+            : "Supabase is not configured. Google sign-in is unavailable.",
+        );
+        setIsLoading(false);
+        return;
+      }
 
       const oauthStartUrl = new URL("/auth/google", window.location.origin);
       if (next && next !== "/") {
