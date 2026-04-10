@@ -175,34 +175,38 @@ export async function POST(request: NextRequest) {
       // Non-fatal: continue to return the session
     }
 
-    // ---- 4. Generate a Supabase-compatible session ----
-    // Use Supabase Admin to generate a link that we can exchange for a session
-    // Alternatively, issue a custom JWT like MornGPT does
-    const jwt = require("jsonwebtoken");
-    const JWT_SECRET =
-      process.env.SUPABASE_JWT_SECRET ||
-      process.env.JWT_SECRET ||
-      "default-secret-key-change-in-production";
-
-    const accessToken = jwt.sign(
-      {
-        sub: authUserId,
+    // ---- 4. Generate a real Supabase session ----
+    // Use Supabase Admin to generate a magic link, then extract the OTP token
+    // so the client can call supabase.auth.verifyOtp() to get a real session.
+    const { data: linkData, error: linkError } =
+      await supabaseAdmin.auth.admin.generateLink({
+        type: "magiclink",
         email: payload.email,
-        role: "authenticated",
-        aud: "authenticated",
-      },
-      JWT_SECRET,
-      { expiresIn: "1h" },
-    );
+      });
 
-    const refreshToken = jwt.sign(
-      {
-        sub: authUserId,
-        email: payload.email,
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" },
-    );
+    if (linkError || !linkData) {
+      console.error("[google-native] generateLink failed:", linkError);
+      // Fallback: return user info without session, client will need to re-auth
+      return NextResponse.json({
+        success: true,
+        user: {
+          id: authUserId,
+          email: payload.email,
+          name:
+            appUser?.display_name ||
+            displayName ||
+            payload.name ||
+            payload.email.split("@")[0],
+          avatar: appUser?.avatar_url || payload.picture || null,
+        },
+        session: null,
+        error: "Could not generate session link",
+      });
+    }
+
+    // The linkData.properties contains the hashed_token and other data
+    // needed to verify the OTP on the client side.
+    const tokenHash = linkData.properties?.hashed_token;
 
     // ---- 5. Track analytics ----
     const trackFn = isNewUser ? trackRegisterEvent : trackLoginEvent;
@@ -215,25 +219,12 @@ export async function POST(request: NextRequest) {
     );
 
     // ---- 6. Read back the app_users row for the response ----
-    const { data: appUser } = await supabaseAdmin
+    const { data: appUserFinal } = await supabaseAdmin
       .from("app_users")
       .select("id, email, display_name, avatar_url")
       .eq("id", authUserId)
       .eq("source", "global")
       .single();
-
-    const session = {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      expires_in: 3600,
-      refresh_token_expires_in: 604800,
-      token_type: "bearer",
-      user: {
-        id: authUserId,
-        email: payload.email,
-        role: "authenticated",
-      },
-    };
 
     return NextResponse.json({
       success: true,
@@ -241,13 +232,15 @@ export async function POST(request: NextRequest) {
         id: authUserId,
         email: payload.email,
         name:
-          appUser?.display_name ||
+          appUserFinal?.display_name ||
           displayName ||
           payload.name ||
           payload.email.split("@")[0],
-        avatar: appUser?.avatar_url || payload.picture || null,
+        avatar: appUserFinal?.avatar_url || payload.picture || null,
       },
-      session,
+      // Pass the token hash so the client can verify OTP and get a real session
+      tokenHash,
+      type: "magiclink",
     });
   } catch (error) {
     console.error("[google-native] Error:", error);

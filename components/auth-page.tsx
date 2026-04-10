@@ -502,13 +502,16 @@ export function AuthPage({ mode }: AuthPageProps) {
 
         const data = await response.json();
 
-        // Store session tokens if the API returned them
-        if (data.session?.access_token) {
-          try {
-            // Store in cookie for middleware auth
-            document.cookie = `custom-jwt-token=${data.session.access_token}; path=/; max-age=${7 * 86400}; SameSite=Lax`;
-          } catch (_cookieError) {
-            console.warn("[auth] Failed to set cookie:", _cookieError);
+        // Use the tokenHash to verify OTP and create a real Supabase session
+        if (data.tokenHash && supabase) {
+          const { error: verifyError } = await supabase.auth.verifyOtp({
+            token_hash: data.tokenHash,
+            type: "magiclink",
+          });
+
+          if (verifyError) {
+            console.warn("[auth] verifyOtp failed:", verifyError.message);
+            // Still show success since user was created/found on backend
           }
         }
 
