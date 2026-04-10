@@ -193,11 +193,10 @@ export async function POST(request: NextRequest) {
           id: authUserId,
           email: payload.email,
           name:
-            appUser?.display_name ||
             displayName ||
             payload.name ||
             payload.email.split("@")[0],
-          avatar: appUser?.avatar_url || payload.picture || null,
+          avatar: payload.picture || null,
         },
         session: null,
         error: "Could not generate session link",
